@@ -1,0 +1,236 @@
+<div align="center">
+
+<img src="./assets/localflow-banner.svg" alt="LocalFlow — 100% on-device voice-to-text" width="820" />
+
+<br/>
+
+**Press a key. Speak. Watch your words appear — typed straight into any app.**
+_100% on your machine. No cloud. No account. No subscription._
+
+<br/>
+
+![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-151914?style=for-the-badge)
+![Privacy](https://img.shields.io/badge/100%25-on--device-d66a2a?style=for-the-badge)
+![License](https://img.shields.io/badge/license-MIT-0d7b67?style=for-the-badge)
+![Built with](https://img.shields.io/badge/built%20with-Tauri%20%C2%B7%20Rust%20%C2%B7%20React-151914?style=for-the-badge)
+
+</div>
+
+---
+
+## 🎙️ What is LocalFlow?
+
+LocalFlow is a **voice-to-text app that runs entirely on your own computer**. You press a
+hotkey (or a mouse button), speak naturally, and your words are transcribed by
+[OpenAI Whisper](https://github.com/ggerganov/whisper.cpp) running **locally** and typed
+into whatever app you're using — your email, a chat, a doc, anything.
+
+An **optional** local AI model (via [llama.cpp](https://github.com/ggerganov/llama.cpp))
+can polish the text: remove "um / uh / like", fix punctuation, and even understand spoken
+corrections like _"meet at 6pm, no wait, 8pm"_ → **"meet at 8pm"**.
+
+> 🔒 **Nothing ever leaves your machine.** No internet connection is needed to dictate.
+> Your voice and your words are never uploaded anywhere.
+
+### ✨ Highlights
+
+| | |
+|---|---|
+| 🔒 **Fully local & private** | Whisper + optional LLM run on-device. Zero cloud, zero telemetry. |
+| ⌨️ **Trigger your way** | A keyboard hotkey, hold-to-talk, or a spare mouse button. |
+| ✍️ **Types anywhere** | Text is injected right at your cursor in any app. |
+| 🧠 **Smart cleanup** | Optional local AI removes filler and fixes punctuation. |
+| 🗣️ **Voice commands** | Say "new line", "comma", "scratch that" — and self-corrections just work. |
+| 🌗 **Beautiful UI** | Light/dark themes, live mic bubble, usage dashboard. |
+| 🚀 **Launch at login** | Always ready in your menu bar / tray. |
+| 🌐 **English + Hindi** | Including Hindi→Latin "Hinglish" romanization. |
+
+---
+
+## 🚀 Getting LocalFlow — pick your path
+
+There are **two ways** to get LocalFlow. Never touched code before? **Option A** is for you.
+
+### 🟢 Option A — Download the ready-made app (easiest, no coding)
+
+> **Never used GitHub before? No problem — just follow these clicks.**
+
+1. Go to the **[Releases page](https://github.com/aryabysani/LocalFlow-OSS/releases)**
+   (also reachable from the **"Releases"** link on the right side of this page).
+2. Under the newest release, open **"Assets"** and download the file for your computer:
+   - **macOS** → the file ending in **`.dmg`**
+   - **Windows** → the file ending in **`.exe`** (or `.msi`)
+3. **Install it:**
+   - **macOS:** double-click the `.dmg`, then drag the **LocalFlow** icon into your
+     **Applications** folder.
+   - **Windows:** double-click the `.exe` and follow the prompts.
+4. **Open it for the first time:**
+   - **macOS:** the app isn't code-signed yet, so **right-click** the LocalFlow app →
+     **Open** → **Open** (you only do this once). See
+     [MAC_INSTALL.md](./MAC_INSTALL.md) for a screenshot-level walkthrough.
+   - **Windows:** if a blue **"Windows protected your PC"** box appears, click
+     **More info** → **Run anyway** (this happens because the app is new/unsigned).
+5. **Grant permissions** when the setup wizard asks (see [Permissions](#-permissions) below).
+   That's it — press your hotkey and start talking!
+
+> ⚠️ **No releases listed yet?** This project may be brand new. Use **Option B** below to
+> build it yourself — it's only a few commands.
+
+### 🔵 Option B — Build it yourself (step by step, still beginner-friendly)
+
+"Building" means turning the source code into an app you can run. It sounds scary but it's
+mostly copy-paste. Do the one-time setup, then run two commands.
+
+<details>
+<summary><b>Step 1 — Install the free tools you need (one time)</b></summary>
+
+<br/>
+
+Install these (click each, download, run the installer, accept defaults):
+
+- **[Node.js](https://nodejs.org/)** — pick the **LTS** version.
+- **[Rust](https://rustup.rs/)** — run the one-line installer it gives you.
+- **macOS only:** open the **Terminal** app and run:
+  ```bash
+  xcode-select --install
+  ```
+- **Windows only:** install
+  **[Microsoft C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)**
+  (tick "Desktop development with C++"). WebView2 is already on Windows 11.
+
+</details>
+
+<details open>
+<summary><b>Step 2 — Get the code onto your computer</b></summary>
+
+<br/>
+
+**Easiest (no Git):**
+1. Scroll up and click the green **`< > Code`** button on this page.
+2. Click **Download ZIP**.
+3. **Unzip** the downloaded file (double-click it). You now have a folder called
+   `LocalFlow-OSS`.
+
+**Or, if you have Git:**
+```bash
+git clone https://github.com/aryabysani/LocalFlow-OSS.git
+```
+
+</details>
+
+<details open>
+<summary><b>Step 3 — Build & run it</b></summary>
+
+<br/>
+
+1. Open your terminal:
+   - **macOS:** open the **Terminal** app.
+   - **Windows:** open **PowerShell**.
+2. Go into the project folder (drag the folder onto the terminal to paste its path):
+   ```bash
+   cd path/to/LocalFlow-OSS
+   ```
+3. Install the app's building blocks (this downloads dependencies — takes a minute):
+   ```bash
+   npm install
+   ```
+4. **Just want to try it right now?** Run it in development mode:
+   ```bash
+   npm run tauri dev
+   ```
+5. **Want a real installable app?** Build it:
+   ```bash
+   npm run tauri build
+   ```
+   > The first build compiles a lot of AI code — it can take **10–20 minutes**. Later
+   > builds are much faster. ☕
+
+</details>
+
+**Where the finished app lands** (after `npm run tauri build`):
+
+| OS | Location |
+|----|----------|
+| **macOS** | `src-tauri/target/release/bundle/macos/LocalFlow.app` and a `.dmg` in `.../bundle/dmg/` |
+| **Windows** | `src-tauri\target\release\bundle\nsis\*.exe` and `.../msi/*.msi` |
+
+Open that file to install/run, then grant permissions on first launch.
+
+---
+
+## 🔐 Permissions
+
+On first run, LocalFlow's setup wizard asks for a few permissions. They're required for it
+to actually hear you and type for you — and because everything is local, **these grants
+stay on your machine**.
+
+| Permission | Why it's needed | Platform |
+|------------|-----------------|----------|
+| 🎤 **Microphone** | To hear your voice and transcribe it | macOS & Windows |
+| ♿ **Accessibility** | To type the text into other apps | macOS |
+| 🖱️ **Input Monitoring** | _Optional_ — only if you use a **mouse button** as a trigger | macOS |
+
+On macOS the app does nothing until Microphone **and** Accessibility are granted — the
+wizard links you straight to the right settings pane. Full walkthrough:
+**[MAC_INSTALL.md](./MAC_INSTALL.md)**.
+
+---
+
+## 🧠 How it works
+
+```
+   ⌨️ Hotkey / 🖱️ mouse ─▶ 🎤 record ─▶ 🧠 Whisper (local) ─▶ ✍️ cleanup ─▶ ⌨️ typed into your app
+                                                              (optional local LLM)
+```
+
+1. A global **hotkey or mouse button** toggles recording.
+2. Your mic is captured and transcribed by **Whisper**, fully offline.
+3. Text is cleaned up — filler removed, punctuation fixed, and **spoken self-corrections
+   resolved** (optionally with a local LLM). See the design notes in
+   [docs/self-correction.md](./docs/self-correction.md).
+4. The result is **typed into whatever app is focused**, and saved to your local history.
+
+### 🗣️ Voice commands cheat-sheet
+
+| Say this… | …and you get |
+|-----------|--------------|
+| "new line" / "new paragraph" | a line break |
+| "comma" / "period" / "question mark" | `,` `.` `?` |
+| "meet at 6pm **no wait** at 8pm" | "meet at 8pm" |
+| "send it to Bob**, sorry,** to Jim" | "send it to Jim" |
+| "let's meet at five **scratch that** at six" | "let's meet at six" |
+
+---
+
+## 🛠️ Tech stack
+
+- **[Tauri 2](https://tauri.app/)** — lightweight desktop shell (Rust backend + web UI)
+- **Rust** — audio capture, Whisper/LLM orchestration, global hooks, text injection
+- **React 19 + TypeScript + Vite** — the settings window & floating mic bubble
+- **[whisper.cpp](https://github.com/ggerganov/whisper.cpp)** — local speech-to-text
+- **[llama.cpp](https://github.com/ggerganov/llama.cpp)** — optional local text cleanup
+
+---
+
+## 🤝 Contributing
+
+Contributions are welcome! Fork the repo, create a branch, and open a pull request.
+Please keep changes focused and describe what you tested. Bug reports and feature ideas via
+[Issues](https://github.com/aryabysani/LocalFlow-OSS/issues) are appreciated too.
+
+---
+
+## 📜 License
+
+Released under the **[MIT License](./LICENSE)** — free to use, modify, and distribute.
+
+## 💚 Credits
+
+Built on the incredible open-source work of **whisper.cpp**, **llama.cpp**, and **Tauri**.
+Whisper and LLM models are downloaded from their respective open model repositories and run
+entirely on your device.
+
+<div align="center">
+<br/>
+<sub><b>LocalFlow</b> · your voice, on your machine.</sub>
+</div>

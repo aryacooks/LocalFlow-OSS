@@ -1,0 +1,90 @@
+[package]
+name = "localflow"
+version = "0.1.0"
+description = "LocalFlow — 100% local voice-to-text for Windows"
+authors = ["LocalFlow"]
+edition = "2021"
+
+[lib]
+name = "localflow_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png"] }
+tauri-plugin-opener = "2"
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-autostart = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+cpal = "0.17.3"
+ringbuf = "0.5.0"
+whisper-rs = { version = "0.16.0" }
+reqwest = { version = "0.12", features = ["stream"] }
+tokio = { version = "1", features = ["full"] }
+futures-util = "0.3"
+rusqlite = { version = "0.32", features = ["bundled"] }
+once_cell = "1.19"
+log = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+regex = "1"
+
+# ── Cross-platform input / clipboard / telemetry ──
+# Used by inject.rs (clipboard + keystroke simulation) and lib.rs (system stats).
+# (earcon.rs plays sound natively per-OS to avoid a second cpal version.)
+arboard = "3"
+enigo = "0.2"
+sysinfo = "0.32"
+
+# Whisper GPU acceleration: Vulkan on Windows, Metal on macOS.
+[target.'cfg(windows)'.dependencies.whisper-rs]
+version = "0.16.0"
+features = ["vulkan"]
+
+[target.'cfg(target_os = "macos")'.dependencies.whisper-rs]
+version = "0.16.0"
+features = ["metal"]
+
+# macOS mouse-button triggers via a CGEventTap (hook_macos.rs). Keyboard still goes
+# through tauri-plugin-global-shortcut; mouse buttons aren't covered by that plugin.
+[target.'cfg(target_os = "macos")'.dependencies]
+core-graphics = "0.23"
+core-foundation = "0.9"
+# Objective-C runtime: read the AVCaptureDevice microphone authorization status
+# for the first-run permissions wizard (mac_permissions.rs).
+objc = "0.2"
+# Obj-C blocks — needed for AVCaptureDevice requestAccessForMediaType's completion
+# handler, which we use to trigger the mic prompt *through AVFoundation* so its
+# authorization-status cache refreshes after the user grants (mac_permissions.rs).
+block = "0.1"
+
+# NOTE: macOS global hotkeys go through tauri-plugin-global-shortcut (main-thread
+# safe). rdev was removed — its macOS keyboard listener calls HIToolbox TIS APIs
+# off the main thread, which modern macOS aborts (dispatch_assert_queue → SIGTRAP).
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_Foundation",
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_System_Threading",
+  "Win32_System_ProcessStatus",
+  "Win32_Graphics_Gdi",
+  "Win32_System_LibraryLoader",
+  "Win32_System_Memory",
+  "Win32_System_Ole",
+  "Win32_System_DataExchange",
+  "Win32_System_Com",
+  "Win32_Media",
+  "Win32_Media_Audio",
+  "Win32_Media_Audio_Endpoints",
+  "Win32_System_SystemInformation",
+] }
+# Read the Windows microphone-privacy ConsentStore for the permissions wizard.
+winreg = "0.52"
+
+[patch.crates-io]
+whisper-rs-sys = { path = "whisper-rs-sys-patched" }

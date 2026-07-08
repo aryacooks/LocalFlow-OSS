@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>LocalFlow needs microphone access to transcribe your voice on-device.</string>
+    <!-- Disable App Nap. LocalFlow is a background voice utility whose global MOUSE
+         triggers run through a CGEventTap serviced by a CFRunLoop on a background
+         thread. When the window is hidden and the app goes idle, App Nap throttles
+         that run loop and mouse triggers silently stop (keyboard still works because
+         it uses system-level RegisterEventHotKey). Turning App Nap off keeps the tap
+         thread alive so mouse buttons work whenever the app is running. -->
+    <key>NSAppSleepDisabled</key>
+    <true/>
+    <!-- Keep the app out of the Dock; it lives in the menu bar / tray. -->
+    <key>LSUIElement</key>
+    <false/>
+</dict>
+</plist>

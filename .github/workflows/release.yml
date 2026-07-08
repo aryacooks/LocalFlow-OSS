@@ -1,0 +1,98 @@
+# Builds LocalFlow installers for macOS (.dmg, universal) and Windows (.exe) and
+# attaches them to a GitHub Release. Runs when you push a version tag, e.g.:
+#
+#     git tag v0.1.0 && git push origin v0.1.0
+#
+# It also runs on demand from the Actions tab (workflow_dispatch).
+#
+# ── macOS signing + notarization ────────────────────────────────────────────
+# Builds run UNSIGNED until you add the Apple secrets below; once present,
+# tauri-action signs + notarizes automatically (no other changes needed):
+#   APPLE_CERTIFICATE            base64 of your "Developer ID Application" .p12
+#   APPLE_CERTIFICATE_PASSWORD   the password you set when exporting the .p12
+#   APPLE_SIGNING_IDENTITY       e.g. "Developer ID Application: Your Name (TEAMID)"
+#   APPLE_ID                     your Apple ID email
+#   APPLE_PASSWORD               an app-specific password (appleid.apple.com)
+#   APPLE_TEAM_ID                your 10-char Team ID
+# Add them under: GitHub repo → Settings → Secrets and variables → Actions.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  release:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: "--target universal-apple-darwin --bundles dmg"
+            rust_targets: "aarch64-apple-darwin,x86_64-apple-darwin"
+          - platform: windows-latest
+            args: "--bundles nsis"
+            rust_targets: ""
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_targets }}
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      # whisper-rs is built with the `vulkan` feature on Windows, which needs the
+      # Vulkan SDK (shader compiler + headers) at build time. macOS uses `metal`,
+      # which ships with the OS — no extra install there.
+      - name: Install Vulkan SDK (Windows)
+        if: matrix.platform == 'windows-latest'
+        uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          vulkan_version: 1.3.290.0
+          install_runtime: true
+          cache: true
+          stripdown: true
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build and release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # macOS signing + notarization (no-ops while the secrets are unset)
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "LocalFlow ${{ github.ref_name }}"
+          releaseBody: "Download the installer for your platform below. macOS: open the .dmg and drag LocalFlow to Applications. Windows: run the .exe (if SmartScreen warns, click More info → Run anyway)."
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}

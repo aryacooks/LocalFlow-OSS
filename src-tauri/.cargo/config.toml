@@ -1,0 +1,12 @@
+# VULKAN_SDK is read by whisper-rs-sys only when the `vulkan` feature is enabled
+# (Windows). It is an inert env var on macOS/Linux, so it's safe to set globally.
+[env]
+VULKAN_SDK = "C:\\VulkanSDK\\1.4.350.0"
+
+# NOTE (Windows only): the original config set `target-dir = "C:\\t"` to dodge the
+# Windows 260-char path limit. That value is INVALID on macOS/Linux (the ":" breaks
+# DYLD_FALLBACK_LIBRARY_PATH), so it must NOT live in this shared config.
+# If you hit long-path errors on Windows, either enable Win32 long paths, or set the
+# target dir per-shell instead of here, e.g.:
+#   PowerShell:  $env:CARGO_TARGET_DIR = "C:\t"
+#   cmd:         set CARGO_TARGET_DIR=C:\t
