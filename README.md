@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="./assets/localflow-banner.svg" alt="LocalFlow — 100% on-device voice-to-text" width="820" />
+<img src="./assets/localflow-banner.svg" alt="LocalFlow — animated on-device voice-to-text banner" width="820" />
 
 <br/>
 
