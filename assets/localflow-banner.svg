@@ -10,9 +10,6 @@
     <filter id="shadow" x="-20%" y="-30%" width="140%" height="170%">
       <feDropShadow dx="0" dy="14" stdDeviation="14" flood-color="#111111" flood-opacity=".16"/>
     </filter>
-    <filter id="barShadow" x="-40%" y="-30%" width="180%" height="170%">
-      <feDropShadow dx="0" dy="6" stdDeviation="5" flood-color="#111111" flood-opacity=".22"/>
-    </filter>
   </defs>
 
   <!-- Brand surface -->
@@ -46,7 +43,7 @@
   </g>
 
   <!-- LocalFlow wave-mark -->
-  <g fill="none" stroke="#fffaf1" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round">
+  <g fill="none" stroke="#fffaf1" stroke-width="4.2" stroke-linecap="round" stroke-linejoin="round">
     <animateTransform attributeName="transform" type="translate" values="0 0;0 0;-250 0;-250 0;0 0;0 0" dur="5.6s" repeatCount="indefinite" keyTimes="0;.17;.29;.79;.91;1" calcMode="spline" keySplines=".72 0 .28 1;.72 0 .28 1;.72 0 .28 1;.72 0 .28 1;.72 0 .28 1"/>
     <animate attributeName="stroke" values="#fffaf1;#fffaf1;#151914;#151914;#fffaf1;#fffaf1" dur="5.6s" repeatCount="indefinite" keyTimes="0;.17;.29;.79;.91;1" calcMode="spline" keySplines=".72 0 .28 1;.72 0 .28 1;.72 0 .28 1;.72 0 .28 1;.72 0 .28 1"/>
     <!-- The exact AudioWaveform path from lucide-react, scaled for the banner. -->
@@ -54,37 +51,37 @@
   </g>
 
   <!-- Speech waveform, revealed only while the capsule is open -->
-  <g fill="#151914" filter="url(#barShadow)">
+  <g fill="#151914">
     <animate attributeName="opacity" values="0;0;1;1;0;0" dur="5.6s" repeatCount="indefinite" keyTimes="0;.22;.32;.77;.86;1"/>
-    <rect x="732" y="156" width="14" height="16" rx="7" opacity=".48">
+    <rect x="728" y="156" width="16" height="16" rx="3">
       <animate attributeName="height" values="16;42;16" dur=".72s" repeatCount="indefinite"/>
       <animate attributeName="y" values="156;143;156" dur=".72s" repeatCount="indefinite"/>
     </rect>
-    <rect x="758" y="146" width="14" height="36" rx="7" opacity=".72">
+    <rect x="754" y="146" width="16" height="36" rx="3">
       <animate attributeName="height" values="36;66;36" dur=".72s" begin="-.09s" repeatCount="indefinite"/>
       <animate attributeName="y" values="146;131;146" dur=".72s" begin="-.09s" repeatCount="indefinite"/>
     </rect>
-    <rect x="784" y="132" width="14" height="64" rx="7">
+    <rect x="780" y="132" width="16" height="64" rx="3">
       <animate attributeName="height" values="64;92;64" dur=".72s" begin="-.31s" repeatCount="indefinite"/>
       <animate attributeName="y" values="132;118;132" dur=".72s" begin="-.31s" repeatCount="indefinite"/>
     </rect>
-    <rect x="810" y="145" width="14" height="38" rx="7" opacity=".74">
+    <rect x="806" y="145" width="16" height="38" rx="3">
       <animate attributeName="height" values="38;70;38" dur=".72s" begin="-.18s" repeatCount="indefinite"/>
       <animate attributeName="y" values="145;129;145" dur=".72s" begin="-.18s" repeatCount="indefinite"/>
     </rect>
-    <rect x="836" y="153" width="14" height="22" rx="7" opacity=".48">
+    <rect x="832" y="153" width="16" height="22" rx="3">
       <animate attributeName="height" values="22;50;22" dur=".72s" begin="-.43s" repeatCount="indefinite"/>
       <animate attributeName="y" values="153;139;153" dur=".72s" begin="-.43s" repeatCount="indefinite"/>
     </rect>
-    <rect x="862" y="145" width="14" height="38" rx="7" opacity=".74">
+    <rect x="858" y="145" width="16" height="38" rx="3">
       <animate attributeName="height" values="38;70;38" dur=".72s" begin="-.23s" repeatCount="indefinite"/>
       <animate attributeName="y" values="145;129;145" dur=".72s" begin="-.23s" repeatCount="indefinite"/>
     </rect>
-    <rect x="888" y="132" width="14" height="64" rx="7">
+    <rect x="884" y="132" width="16" height="64" rx="3">
       <animate attributeName="height" values="64;92;64" dur=".72s" begin="-.51s" repeatCount="indefinite"/>
       <animate attributeName="y" values="132;118;132" dur=".72s" begin="-.51s" repeatCount="indefinite"/>
     </rect>
-    <rect x="914" y="146" width="14" height="36" rx="7" opacity=".72">
+    <rect x="910" y="146" width="16" height="36" rx="3">
       <animate attributeName="height" values="36;66;36" dur=".72s" begin="-.13s" repeatCount="indefinite"/>
       <animate attributeName="y" values="146;131;146" dur=".72s" begin="-.13s" repeatCount="indefinite"/>
     </rect>
