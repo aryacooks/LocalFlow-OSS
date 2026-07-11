@@ -76,85 +76,131 @@ There are **two ways** to get LocalFlow. Never touched code before? **Option A**
 > ⚠️ **No releases listed yet?** This project may be brand new. Use **Option B** below to
 > build it yourself — it's only a few commands.
 
-### 🔵 Option B — Build it yourself (step by step, still beginner-friendly)
+### 🔵 Option B — Build it yourself (all copy-paste, beginner-friendly)
 
-"Building" means turning the source code into an app you can run. It sounds scary but it's
-mostly copy-paste. Do the one-time setup, then run two commands.
+"Building" just means turning the source code into a real app. **You don't need to
+understand any of it** — you copy a command, paste it into your terminal, press **Enter**,
+and wait for it to finish before pasting the next one.
 
-<details>
-<summary><b>Step 1 — Install the free tools you need (one time)</b></summary>
-
-<br/>
-
-Install these (click each, download, run the installer, accept defaults):
-
-- **[Node.js](https://nodejs.org/)** — pick the **LTS** version.
-- **[Rust](https://rustup.rs/)** — run the one-line installer it gives you.
-- **macOS only:** open the **Terminal** app and run:
-  ```bash
-  xcode-select --install
-  ```
-- **Windows only:** install
-  **[Microsoft C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)**
-  (tick "Desktop development with C++"). WebView2 is already on Windows 11.
-
-</details>
+> **First, open your terminal:**
+> - **macOS** → open the **Terminal** app (find it with Spotlight: press `⌘ + Space`, type "Terminal").
+> - **Windows** → open **PowerShell** (click Start, type "PowerShell").
+>
+> Then just paste the commands below **one line at a time**, top to bottom.
 
 <details open>
-<summary><b>Step 2 — Get the code onto your computer</b></summary>
+<summary><b>Step 1 — Install the free tools (one time only) — 🍎 macOS</b></summary>
 
 <br/>
 
-**Easiest (no Git):**
-1. Scroll up and click the green **`< > Code`** button on this page.
-2. Click **Download ZIP**.
-3. **Unzip** the downloaded file (double-click it). You now have a folder called
-   `LocalFlow-OSS`.
+Paste these **one at a time**. Some will ask for your Mac password (the text stays
+invisible while you type — that's normal, just type it and press Enter) or ask you to
+press **Enter** / **Y** to continue.
 
-**Or, if you have Git:**
 ```bash
-git clone https://github.com/aryabysani/LocalFlow-OSS.git
+# 1) Install Homebrew — the "installer" for developer tools. (Skip if you already have it.)
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+```
+```bash
+# 2) Let this terminal find Homebrew (needed on Apple-Silicon Macs)
+echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> ~/.zprofile && eval "$(/opt/homebrew/bin/brew shellenv)"
+```
+```bash
+# 3) Install Node.js, the pnpm helper, and Apple's build tools
+brew install node pnpm
+xcode-select --install
+```
+```bash
+# 4) Install Rust — when it asks, just press Enter to accept the default (option 1)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+```bash
+# 5) Switch Rust on in this terminal
+source "$HOME/.cargo/env"
 ```
 
 </details>
 
-<details open>
-<summary><b>Step 3 — Build & run it</b></summary>
+<details>
+<summary><b>Step 1 — Install the free tools (one time only) — 🪟 Windows</b></summary>
 
 <br/>
 
-1. Open your terminal:
-   - **macOS:** open the **Terminal** app.
-   - **Windows:** open **PowerShell**.
-2. Go into the project folder (drag the folder onto the terminal to paste its path):
-   ```bash
-   cd path/to/LocalFlow-OSS
-   ```
-3. Install the app's building blocks (this downloads dependencies — takes a minute):
-   ```bash
-   npm install
-   ```
-4. **Just want to try it right now?** Run it in development mode:
-   ```bash
-   npm run tauri dev
-   ```
-5. **Want a real installable app?** Build it:
-   ```bash
-   npm run tauri build
-   ```
-   > The first build compiles a lot of AI code — it can take **10–20 minutes**. Later
-   > builds are much faster. ☕
+Paste these into **PowerShell** one at a time. If Windows asks for permission, say **Yes**.
+
+```powershell
+# 1) Install Node.js (LTS) and Rust
+winget install OpenJS.NodeJS.LTS
+winget install Rustlang.Rustup
+```
+```powershell
+# 2) Install the pnpm helper the app uses
+npm install -g pnpm
+```
+```powershell
+# 3) Install the C++ build tools Rust needs (this one takes a few minutes)
+winget install Microsoft.VisualStudio.2022.BuildTools --override "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+```
+
+Then **close PowerShell and open it again** so the new tools are picked up.
+(WebView2 is already built into Windows 11 — nothing to do.)
 
 </details>
 
-**Where the finished app lands** (after `npm run tauri build`):
+<details open>
+<summary><b>Step 2 — Download the code</b></summary>
 
-| OS | Location |
+<br/>
+
+Paste these two lines:
+
+```bash
+git clone https://github.com/aryabysani/LocalFlow-OSS.git
+cd LocalFlow-OSS
+```
+
+> **Prefer clicking instead of Git?** Scroll to the top of this page → green
+> **`< > Code`** button → **Download ZIP** → double-click to unzip. Then in your terminal
+> type `cd ` (with a space after it) and **drag the unzipped folder onto the terminal
+> window** — it pastes the path for you — and press **Enter**.
+
+</details>
+
+<details open>
+<summary><b>Step 3 — Build &amp; run it</b></summary>
+
+<br/>
+
+```bash
+# Download the app's building blocks (takes a minute or two)
+pnpm install
+```
+
+Now pick **one** of these:
+
+```bash
+# A) Just try it right now — opens the app in test mode
+pnpm tauri dev
+```
+```bash
+# B) Make a real, installable app you can keep and share
+pnpm tauri build
+```
+
+> ☕ The **first** `pnpm tauri build` compiles a lot of AI code and can take
+> **10–20 minutes**. Later builds are much faster.
+
+</details>
+
+**Where the finished app appears** (after `pnpm tauri build`):
+
+| Your computer | Look here for the app |
 |----|----------|
-| **macOS** | `src-tauri/target/release/bundle/macos/LocalFlow.app` and a `.dmg` in `.../bundle/dmg/` |
-| **Windows** | `src-tauri\target\release\bundle\nsis\*.exe` and `.../msi/*.msi` |
+| **macOS** | `src-tauri/target/release/bundle/dmg/` → the **`.dmg`** (or the `.app` in `.../bundle/macos/`) |
+| **Windows** | `src-tauri\target\release\bundle\nsis\` → the **`.exe`** (or the `.msi` in `.../bundle/msi/`) |
 
-Open that file to install/run, then grant permissions on first launch.
+Open that file to install, then grant permissions on first launch (see
+[Permissions](#-permissions) below).
 
 ---
 
