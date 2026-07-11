@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 360" width="1200" height="360" role="img" aria-labelledby="title description">
   <title id="title">LocalFlow — private voice to text</title>
-  <desc id="description">The LocalFlow mark rests in a black square, slides left into a black listening capsule, reveals a live waveform, then returns to its resting state.</desc>
+  <desc id="description">The LocalFlow mark rests in a black square, slides left into a white listening bar, reveals eight live speech bars, then returns to its resting state.</desc>
 
   <defs>
     <linearGradient id="surface" x1="0" y1="0" x2="1" y2="1">
@@ -30,58 +30,77 @@
 
   <!--
     The idle mark begins as a black square. During the listening phase it expands
-    left into a capsule; the mark travels left and exposes the live speech bars.
+    left into a white bar; the mark travels left and exposes the live speech bars.
   -->
   <!-- Static fallback for renderers that intentionally do not run SVG animation. -->
   <g filter="url(#shadow)">
     <rect x="840" y="108" width="112" height="112" rx="32" fill="#111111"/>
   </g>
   <g fill="none" stroke="#ffffff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
-    <animate attributeName="opacity" values="1;1;0;0;1;1" dur="9s" repeatCount="indefinite" keyTimes="0;.25;.33;.72;.82;1"/>
+    <animate attributeName="opacity" values="1;1;0;0;1;1" dur="5.6s" repeatCount="indefinite" keyTimes="0;.17;.29;.79;.91;1"/>
     <path d="M862 169v8c0 7 5 12 11 12s11-5 11-12v-30c0-8 5-14 12-14s12 6 12 14v62c0 8 5 14 12 14s12-6 12-14v-35c0-7 5-12 11-12s11 5 11 12v7"/>
   </g>
   <g filter="url(#shadow)">
-    <rect x="840" y="108" width="112" height="112" rx="32" fill="#111111">
-      <animate attributeName="x" values="840;840;590;590;840;840" dur="9s" repeatCount="indefinite" keyTimes="0;.25;.32;.72;.82;1" calcMode="spline" keySplines=".4 0 .2 1;.4 0 .2 1;.4 0 .2 1;.4 0 .2 1;.4 0 .2 1"/>
-      <animate attributeName="width" values="112;112;362;362;112;112" dur="9s" repeatCount="indefinite" keyTimes="0;.25;.32;.72;.82;1" calcMode="spline" keySplines=".4 0 .2 1;.4 0 .2 1;.4 0 .2 1;.4 0 .2 1;.4 0 .2 1"/>
-      <animate attributeName="rx" values="32;32;56;56;32;32" dur="9s" repeatCount="indefinite" keyTimes="0;.25;.32;.72;.82;1"/>
+    <rect x="840" y="108" width="112" height="112" rx="28" fill="#111111" stroke="#111111" stroke-width="1">
+      <animate attributeName="x" values="840;840;590;590;840;840" dur="5.6s" repeatCount="indefinite" keyTimes="0;.17;.29;.79;.91;1" calcMode="spline" keySplines=".72 0 .28 1;.72 0 .28 1;.72 0 .28 1;.72 0 .28 1;.72 0 .28 1"/>
+      <animate attributeName="width" values="112;112;362;362;112;112" dur="5.6s" repeatCount="indefinite" keyTimes="0;.17;.29;.79;.91;1" calcMode="spline" keySplines=".72 0 .28 1;.72 0 .28 1;.72 0 .28 1;.72 0 .28 1;.72 0 .28 1"/>
+      <animate attributeName="rx" values="28;28;10;10;28;28" dur="5.6s" repeatCount="indefinite" keyTimes="0;.17;.29;.79;.91;1"/>
+      <animate attributeName="fill" values="#111111;#111111;#ffffff;#ffffff;#111111;#111111" dur="5.6s" repeatCount="indefinite" keyTimes="0;.17;.29;.79;.91;1"/>
+      <animate attributeName="stroke" values="#111111;#111111;#d3d3ce;#d3d3ce;#111111;#111111" dur="5.6s" repeatCount="indefinite" keyTimes="0;.17;.29;.79;.91;1"/>
     </rect>
   </g>
 
   <!-- LocalFlow wave-mark -->
   <g fill="none" stroke="#ffffff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
-    <animateTransform attributeName="transform" type="translate" values="0 0;0 0;-250 0;-250 0;0 0;0 0" dur="9s" repeatCount="indefinite" keyTimes="0;.25;.32;.72;.82;1" calcMode="spline" keySplines=".4 0 .2 1;.4 0 .2 1;.4 0 .2 1;.4 0 .2 1;.4 0 .2 1"/>
+    <animateTransform attributeName="transform" type="translate" values="0 0;0 0;-250 0;-250 0;0 0;0 0" dur="5.6s" repeatCount="indefinite" keyTimes="0;.17;.29;.79;.91;1" calcMode="spline" keySplines=".72 0 .28 1;.72 0 .28 1;.72 0 .28 1;.72 0 .28 1;.72 0 .28 1"/>
+    <animate attributeName="stroke" values="#ffffff;#ffffff;#151914;#151914;#ffffff;#ffffff" dur="5.6s" repeatCount="indefinite" keyTimes="0;.17;.29;.79;.91;1"/>
     <path d="M862 169v8c0 7 5 12 11 12s11-5 11-12v-30c0-8 5-14 12-14s12 6 12 14v62c0 8 5 14 12 14s12-6 12-14v-35c0-7 5-12 11-12s11 5 11 12v7"/>
   </g>
 
   <!-- Speech waveform, revealed only while the capsule is open -->
-  <g fill="#ffffff">
-    <animate attributeName="opacity" values="0;0;1;1;0;0" dur="9s" repeatCount="indefinite" keyTimes="0;.28;.35;.69;.78;1"/>
+  <g fill="#151914">
+    <animate attributeName="opacity" values="0;0;1;1;0;0" dur="5.6s" repeatCount="indefinite" keyTimes="0;.22;.32;.77;.86;1"/>
     <rect x="732" y="156" width="14" height="16" rx="7" opacity=".48">
-      <animate attributeName="height" values="16;42;16;56;16" dur=".92s" repeatCount="indefinite"/>
-      <animate attributeName="y" values="156;143;156;136;156" dur=".92s" repeatCount="indefinite"/>
+      <animate attributeName="height" values="16;42;16" dur=".72s" repeatCount="indefinite"/>
+      <animate attributeName="y" values="156;143;156" dur=".72s" repeatCount="indefinite"/>
     </rect>
     <rect x="758" y="146" width="14" height="36" rx="7" opacity=".72">
-      <animate attributeName="height" values="36;66;28;76;36" dur="1.14s" begin="-.21s" repeatCount="indefinite"/>
-      <animate attributeName="y" values="146;131;150;126;146" dur="1.14s" begin="-.21s" repeatCount="indefinite"/>
+      <animate attributeName="height" values="36;66;36" dur=".72s" begin="-.09s" repeatCount="indefinite"/>
+      <animate attributeName="y" values="146;131;146" dur=".72s" begin="-.09s" repeatCount="indefinite"/>
     </rect>
     <rect x="784" y="132" width="14" height="64" rx="7">
-      <animate attributeName="height" values="64;92;50;84;64" dur="1.03s" begin="-.47s" repeatCount="indefinite"/>
-      <animate attributeName="y" values="132;118;139;122;132" dur="1.03s" begin="-.47s" repeatCount="indefinite"/>
+      <animate attributeName="height" values="64;92;64" dur=".72s" begin="-.31s" repeatCount="indefinite"/>
+      <animate attributeName="y" values="132;118;132" dur=".72s" begin="-.31s" repeatCount="indefinite"/>
     </rect>
     <rect x="810" y="145" width="14" height="38" rx="7" opacity=".74">
-      <animate attributeName="height" values="38;70;30;60;38" dur="1.21s" begin="-.67s" repeatCount="indefinite"/>
-      <animate attributeName="y" values="145;129;149;134;145" dur="1.21s" begin="-.67s" repeatCount="indefinite"/>
+      <animate attributeName="height" values="38;70;38" dur=".72s" begin="-.18s" repeatCount="indefinite"/>
+      <animate attributeName="y" values="145;129;145" dur=".72s" begin="-.18s" repeatCount="indefinite"/>
     </rect>
     <rect x="836" y="153" width="14" height="22" rx="7" opacity=".48">
-      <animate attributeName="height" values="22;50;18;43;22" dur=".98s" begin="-.33s" repeatCount="indefinite"/>
-      <animate attributeName="y" values="153;139;155;142;153" dur=".98s" begin="-.33s" repeatCount="indefinite"/>
+      <animate attributeName="height" values="22;50;22" dur=".72s" begin="-.43s" repeatCount="indefinite"/>
+      <animate attributeName="y" values="153;139;153" dur=".72s" begin="-.43s" repeatCount="indefinite"/>
+    </rect>
+    <rect x="862" y="145" width="14" height="38" rx="7" opacity=".74">
+      <animate attributeName="height" values="38;70;38" dur=".72s" begin="-.23s" repeatCount="indefinite"/>
+      <animate attributeName="y" values="145;129;145" dur=".72s" begin="-.23s" repeatCount="indefinite"/>
+    </rect>
+    <rect x="888" y="132" width="14" height="64" rx="7">
+      <animate attributeName="height" values="64;92;64" dur=".72s" begin="-.51s" repeatCount="indefinite"/>
+      <animate attributeName="y" values="132;118;132" dur=".72s" begin="-.51s" repeatCount="indefinite"/>
+    </rect>
+    <rect x="914" y="146" width="14" height="36" rx="7" opacity=".72">
+      <animate attributeName="height" values="36;66;36" dur=".72s" begin="-.13s" repeatCount="indefinite"/>
+      <animate attributeName="y" values="146;131;146" dur=".72s" begin="-.13s" repeatCount="indefinite"/>
     </rect>
   </g>
 
-  <!-- Listening state copy -->
-  <g fill="#ffffff" font-family="Avenir Next, Inter, Helvetica Neue, Arial, sans-serif">
-    <animate attributeName="opacity" values="0;0;1;1;0;0" dur="9s" repeatCount="indefinite" keyTimes="0;.31;.39;.67;.75;1"/>
-    <text x="729" y="204" font-size="11" font-weight="800" letter-spacing="2.3" opacity=".65">LISTENING</text>
+  <!-- State labels follow the same idle/listening cadence as the supplied widget. -->
+  <g fill="#59605c" font-family="Avenir Next, Inter, Helvetica Neue, Arial, sans-serif">
+    <animate attributeName="opacity" values="1;1;0;0;1;1" dur="5.6s" repeatCount="indefinite" keyTimes="0;.19;.29;.79;.88;1"/>
+    <text x="896" y="253" text-anchor="middle" font-size="12" font-weight="900" letter-spacing="2.2">IDLE</text>
+  </g>
+  <g fill="#0d7b67" font-family="Avenir Next, Inter, Helvetica Neue, Arial, sans-serif">
+    <animate attributeName="opacity" values="0;0;1;1;0;0" dur="5.6s" repeatCount="indefinite" keyTimes="0;.22;.32;.77;.86;1"/>
+    <text x="771" y="253" text-anchor="middle" font-size="12" font-weight="900" letter-spacing="2.2">LISTENING</text>
   </g>
 </svg>
