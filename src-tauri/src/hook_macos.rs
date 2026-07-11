@@ -51,6 +51,16 @@ pub fn refresh_mouse_binds(app: &AppHandle) {
     }
 }
 
+/// Whether either mouse trigger is enabled. This is intentionally backed by the
+/// in-memory cache so it is safe to use while deciding whether to show macOS's
+/// Input Monitoring prompt during startup.
+fn has_mouse_bind() -> bool {
+    let binds = MOUSE_BINDS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    binds.0 != "none" || binds.1 != "none"
+}
+
 pub fn init_hook(
     app: AppHandle,
     audio: Arc<crate::audio::AudioState>,
@@ -61,6 +71,15 @@ pub fn init_hook(
     refresh_mouse_binds(&app);
     #[cfg(target_os = "macos")]
     {
+        // TCC permissions are attached to the executable/application identity. A
+        // grant for `tauri dev` therefore does not grant the packaged LocalFlow.app.
+        // If a user already configured a mouse trigger, request the packaged app's
+        // own grant at launch. The tap thread below keeps retrying after they allow it.
+        if has_mouse_bind() && !crate::mac_permissions::input_monitoring_granted() {
+            println!("macOS: requesting Input Monitoring for configured mouse trigger.");
+            crate::mac_permissions::prompt_input_monitoring();
+        }
+
         // Prevent App Nap before installing the tap (see disable_app_nap for why).
         macos_mouse::disable_app_nap();
         macos_mouse::spawn_mouse_tap(app, audio, pipeline);
@@ -154,6 +173,23 @@ mod macos_mouse {
             // later starts mouse triggers without needing an app restart.
             let mut logged_denied = false;
             loop {
+                // Do not use successful CGEventTap creation as the permission test.
+                // Without Input Monitoring, macOS can restrict the event mask/stream to
+                // events delivered to this process. That produces the exact misleading
+                // symptom where a mouse bind works in LocalFlow's focused window but not
+                // in other apps. Preflight the global-listen grant explicitly first.
+                if !crate::mac_permissions::input_monitoring_granted() {
+                    if super::has_mouse_bind() && !logged_denied {
+                        eprintln!(
+                            "macOS: Input Monitoring is required for global mouse triggers. \
+                             Waiting for the LocalFlow permission… Keyboard shortcuts are unaffected."
+                        );
+                        logged_denied = true;
+                    }
+                    std::thread::sleep(Duration::from_secs(2));
+                    continue;
+                }
+
                 let cb_app = app.clone();
                 let cb_audio = audio.clone();
                 let cb_pipeline = pipeline.clone();
@@ -184,7 +220,16 @@ mod macos_mouse {
                         }
                         let button =
                             event.get_integer_value_field(EventField::MOUSE_EVENT_BUTTON_NUMBER);
-                        handle_mouse(&cb_app, &cb_audio, &cb_pipeline, &cb_held, etype, button);
+                        // This closure is invoked from CoreGraphics C code. A Rust panic
+                        // unwinding across that FFI boundary is undefined behavior and, in
+                        // practice, tears down this run-loop thread — permanently killing
+                        // mouse triggers while keyboard shortcuts (a separate OS mechanism)
+                        // keep working. Catch any panic so a one-off failure (e.g. a poisoned
+                        // mutex left by an unrelated panic elsewhere) can never take the tap
+                        // down; handle_mouse also recovers poisoned locks so it won't panic.
+                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            handle_mouse(&cb_app, &cb_audio, &cb_pipeline, &cb_held, etype, button);
+                        }));
                         // ListenOnly tap — never modify/consume; let the click pass through.
                         None
                     },
@@ -198,9 +243,8 @@ mod macos_mouse {
                     Err(_) => {
                         if !logged_denied {
                             eprintln!(
-                                "macOS: could not create mouse event tap. Grant LocalFlow \
-                                 Input Monitoring (System Settings → Privacy & Security) to use \
-                                 mouse triggers. Retrying… Keyboard shortcuts are unaffected."
+                                "macOS: Input Monitoring is granted, but the global mouse event \
+                                 tap could not be created. Retrying… Keyboard shortcuts are unaffected."
                             );
                             logged_denied = true;
                         }
@@ -247,11 +291,17 @@ mod macos_mouse {
 
         // Read binds from the in-memory cache — never the DB — so this real-time callback
         // can't block on the DB mutex and get the tap disabled by macOS's timeout.
-        let (mouse_instant, mouse_toggle) = {
-            let b = super::MOUSE_BINDS.lock().unwrap();
-            b.clone()
-        };
-        let is_processing = *pipeline.is_processing.lock().unwrap();
+        // Every lock here recovers from poisoning (`into_inner`) instead of `.unwrap()`:
+        // a panic elsewhere in the app must not be able to poison a mutex and make this
+        // FFI callback panic, which would kill the tap thread and disable mouse triggers.
+        let (mouse_instant, mouse_toggle) = super::MOUSE_BINDS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let is_processing = *pipeline
+            .is_processing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         // Window/recording access must happen on the main thread on macOS, so each
         // action is dispatched there via run_on_main_thread.
@@ -259,8 +309,14 @@ mod macos_mouse {
         // 1. Instant dictation (hold-to-talk): down starts, up stops.
         if mouse_instant != "none" && bind_matches(&mouse_instant, name) {
             if is_down {
-                let mut h = held.lock().unwrap();
-                if !*h && !is_processing && !*audio.is_recording.lock().unwrap() {
+                let mut h = held
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let recording = *audio
+                    .is_recording
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if !*h && !is_processing && !recording {
                     *h = true;
                     drop(h);
                     let (a, au) = (app.clone(), audio.clone());
@@ -268,7 +324,9 @@ mod macos_mouse {
                 }
             } else {
                 let was_held = {
-                    let mut h = held.lock().unwrap();
+                    let mut h = held
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     let v = *h;
                     *h = false;
                     v

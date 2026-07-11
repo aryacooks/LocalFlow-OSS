@@ -1086,6 +1086,67 @@ textarea {
   color: var(--accent);
 }
 
+/* Before/after example on the Formatting options page. */
+.cleanup-example {
+  margin-top: 12px;
+  max-width: 640px;
+  border: 1.5px solid var(--separator);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 5%, var(--panel));
+  box-shadow: 2px 2px 0px var(--separator);
+  overflow: hidden;
+}
+
+.cleanup-ex-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+}
+
+.cleanup-ex-row + .cleanup-ex-row {
+  border-top: 1.5px dashed var(--separator-soft);
+}
+
+.cleanup-ex-tag {
+  flex-shrink: 0;
+  width: 54px;
+  text-align: center;
+  padding: 3px 0;
+  border-radius: 5px;
+  border: 1.5px solid var(--separator);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.cleanup-ex-tag.say {
+  background: var(--control);
+  color: var(--secondary);
+}
+
+.cleanup-ex-tag.get {
+  background: var(--success);
+  color: #fffaf1;
+}
+
+.cleanup-ex-text {
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.cleanup-ex-text.say {
+  color: var(--secondary);
+  font-style: italic;
+}
+
+.cleanup-ex-text.get {
+  color: var(--label);
+  font-weight: 600;
+}
+
 .keycap-row {
   display: flex;
   flex-wrap: wrap;

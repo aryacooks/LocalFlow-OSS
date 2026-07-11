@@ -86,14 +86,6 @@ pub fn available_llm_models() -> Vec<LlmModelInfo> {
             size_mb: 702,
             description: "Recommended. Good cleanup quality and works well on most computers.".into(),
         },
-        LlmModelInfo {
-            id: "qwen-2.5-0.5b".into(),
-            name: "Lightweight".into(),
-            filename: "qwen2.5-0.5b-instruct-q4_k_m.gguf".into(),
-            url: "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf".into(),
-            size_mb: 350,
-            description: "Smallest and fastest. Best if your computer is older or low on memory.".into(),
-        },
     ]
 }
 
@@ -457,6 +449,13 @@ pub fn run_inference(app: &AppHandle, prompt: &str) -> Result<String, String> {
     let models_dir = get_llm_models_dir(app)?;
     let active_model =
         get_llm_setting(app, "llm_active_model", "Llama-3.2-1B-Instruct-Q4_K_M.gguf");
+
+    // No model selected (the user unselected it, keeping only the helper installed) —
+    // there is nothing to run, so signal the caller to use basic cleanup instead.
+    if active_model.trim().is_empty() {
+        return Err("No cleanup model selected".to_string());
+    }
+
     let model_path = models_dir.join(&active_model);
 
     if !model_path.exists() {

@@ -1,9 +1,9 @@
 //! macOS permission status + helpers for the first-run onboarding wizard.
 //!
-//! LocalFlow needs two TCC-gated permissions on macOS to work end to end:
+//! LocalFlow uses three TCC-gated permissions on macOS:
 //!   • **Microphone** — to record your voice (cpal capture triggers the prompt).
-//!   • **Accessibility** — to type the transcribed text into other apps and run the
-//!     optional global mouse hook (native CoreGraphics events).
+//!   • **Accessibility** — to type the transcribed text into other apps.
+//!   • **Input Monitoring** — only for optional global mouse-button triggers.
 //!
 //! Without these the app silently does nothing, so the wizard surfaces their live
 //! status and deep-links into the right System Settings pane. On non-macOS builds
@@ -170,6 +170,20 @@ pub fn get_permission_status() -> PermissionStatus {
     }
 }
 
+/// Native hook startup uses the same preflight check as the UI. Keeping this here
+/// avoids the event-tap code accidentally treating a process-local tap as a working
+/// global hook when the packaged app has not been granted Input Monitoring yet.
+pub(crate) fn input_monitoring_granted() -> bool {
+    imp::input_monitoring_granted()
+}
+
+/// Request Input Monitoring from the main app thread. macOS grants privacy access
+/// per application identity, so the packaged app needs its own grant even when the
+/// development executable was already allowed.
+pub(crate) fn prompt_input_monitoring() -> bool {
+    imp::prompt_input_monitoring()
+}
+
 /// Trigger the macOS Accessibility prompt (adds the app to the list) and return the
 /// resulting trust state. No-op (returns true) off macOS.
 #[tauri::command]
@@ -180,7 +194,7 @@ pub fn request_accessibility_permission() -> bool {
 /// Prompt for the optional macOS Input Monitoring grant used by global mouse buttons.
 #[tauri::command]
 pub fn request_input_monitoring_permission() -> bool {
-    imp::prompt_input_monitoring()
+    prompt_input_monitoring()
 }
 
 /// Show the microphone permission prompt via AVFoundation and return the current

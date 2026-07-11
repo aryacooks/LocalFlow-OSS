@@ -503,6 +503,33 @@ fn size_main_window(win: &tauri::WebviewWindow) {
     }
 }
 
+/// Sets `is_processing = true` on creation and guarantees it returns to `false` on drop —
+/// including via an early `return` or a panic anywhere in `run_pipeline`. Without this, a
+/// failure mid-pipeline would leave the flag stuck `true`, which blocks the next toggle
+/// from *both* the keyboard and mouse hooks (they all gate on `!is_processing`). Recovers
+/// from a poisoned lock so the reset can never itself panic.
+struct ProcessingGuard(Arc<PipelineState>);
+
+impl ProcessingGuard {
+    fn new(pipeline: &Arc<PipelineState>) -> Self {
+        *pipeline
+            .is_processing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+        Self(pipeline.clone())
+    }
+}
+
+impl Drop for ProcessingGuard {
+    fn drop(&mut self) {
+        *self
+            .0
+            .is_processing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = false;
+    }
+}
+
 /// Run the STT pipeline after recording stops
 pub async fn run_pipeline(
     app: &tauri::AppHandle,
@@ -511,7 +538,9 @@ pub async fn run_pipeline(
 ) {
     use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
-    *pipeline.is_processing.lock().unwrap() = true;
+    // Held for the whole function: clears `is_processing` on every exit path (return or
+    // panic), so the flag can never get stuck and lock out the next dictation toggle.
+    let _processing = ProcessingGuard::new(pipeline);
     app.emit("recording-stopped", ()).ok();
     app.emit("processing-started", ()).ok();
 
@@ -519,7 +548,6 @@ pub async fn run_pipeline(
     let audio_data: Vec<f32> = {
         let mut buf = audio.buffer.lock().unwrap();
         if buf.is_empty() {
-            *pipeline.is_processing.lock().unwrap() = false;
             app.emit("processing-done", serde_json::json!({"error": "No audio"}))
                 .ok();
             return;
@@ -540,7 +568,6 @@ pub async fn run_pipeline(
         (audio_data.iter().map(|s| s * s).sum::<f32>() / audio_data.len() as f32).sqrt()
     };
     if rms < 0.005 || audio_data.len() < audio::SAMPLE_RATE as usize / 2 {
-        *pipeline.is_processing.lock().unwrap() = false;
         app.emit(
             "processing-done",
             serde_json::json!({"error": "No speech detected"}),
@@ -578,7 +605,6 @@ pub async fn run_pipeline(
     let model_path = match whisper::get_active_model_path(app) {
         Ok(p) => p,
         Err(e) => {
-            *pipeline.is_processing.lock().unwrap() = false;
             app.emit("processing-done", serde_json::json!({"error": e}))
                 .ok();
             return;
@@ -586,7 +612,6 @@ pub async fn run_pipeline(
     };
 
     if !model_path.exists() {
-        *pipeline.is_processing.lock().unwrap() = false;
         app.emit(
             "processing-done",
             serde_json::json!({"error": "Model not downloaded. Go to Models page."}),
@@ -597,7 +622,6 @@ pub async fn run_pipeline(
 
     // Guard against corrupt/partial model files (e.g. a saved 404 error body).
     if std::fs::metadata(&model_path).map(|m| m.len()).unwrap_or(0) < 1_000_000 {
-        *pipeline.is_processing.lock().unwrap() = false;
         app.emit(
             "processing-done",
             serde_json::json!({"error": "Model file is corrupt or incomplete. Delete and re-download it on the Models page."}),
@@ -659,7 +683,6 @@ pub async fn run_pipeline(
         Ok(Err(e)) => {
             let msg = format!("Transcription error: {}", e);
             eprintln!("{}", msg);
-            *pipeline.is_processing.lock().unwrap() = false;
             app.emit("processing-done", serde_json::json!({"error": msg}))
                 .ok();
             return;
@@ -667,7 +690,6 @@ pub async fn run_pipeline(
         Err(e) => {
             let msg = format!("Task join error: {}", e);
             eprintln!("{}", msg);
-            *pipeline.is_processing.lock().unwrap() = false;
             app.emit("processing-done", serde_json::json!({"error": msg}))
                 .ok();
             return;
@@ -675,7 +697,6 @@ pub async fn run_pipeline(
     };
 
     if raw.is_empty() {
-        *pipeline.is_processing.lock().unwrap() = false;
         app.emit(
             "processing-done",
             serde_json::json!({"error": "No speech detected"}),
@@ -780,7 +801,6 @@ pub async fn run_pipeline(
         eprintln!("Injection failed: {}", e);
     }
 
-    *pipeline.is_processing.lock().unwrap() = false;
     app.emit("recording-stopped", ()).ok();
 }
 

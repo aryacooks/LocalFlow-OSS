@@ -97,6 +97,16 @@ export default function LLMSettingsPage() {
     setStatusMessage(`Selected ${filename} as active formatting model.`);
   };
 
+  // Clear the active model but keep cleanup.LF installed. With no model selected,
+  // dictation gets basic tidying (spacing + capitalization) instead of AI cleanup.
+  const handleUnselectModel = async () => {
+    setActiveModel("");
+    await setSetting("llm_active_model", "");
+    setStatusMessage(
+      "No cleanup model selected. Dictation will get basic tidying only (spacing and capitalization)."
+    );
+  };
+
   // Two-click confirm (native confirm() is unreliable in the Tauri webview).
   const handleDeleteModel = async (model: LlmModelInfo) => {
     if (confirmDelete !== model.id) {
@@ -173,6 +183,20 @@ export default function LLMSettingsPage() {
             <p className="row-desc" style={{ margin: "4px 0 0 0" }}>
               Removes filler words like "um" and "uh", fixes punctuation, and cleans up your sentences. Runs privately on your computer. Needs the two downloads below.
             </p>
+            <div className="cleanup-example">
+              <div className="cleanup-ex-row">
+                <span className="cleanup-ex-tag say">You say</span>
+                <span className="cleanup-ex-text say">
+                  um so like we should ship it friday no wait monday cause the the tests aren't done
+                </span>
+              </div>
+              <div className="cleanup-ex-row">
+                <span className="cleanup-ex-tag get">You get</span>
+                <span className="cleanup-ex-text get">
+                  We should ship monday cause the the tests aren't done.
+                </span>
+              </div>
+            </div>
           </div>
           <button
             className={`switch ${enabled ? "on" : ""}`}
@@ -217,7 +241,7 @@ export default function LLMSettingsPage() {
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <span className="row-title" style={{ fontSize: 14 }}>Cleanup helper</span>
+              <span className="row-title" style={{ fontSize: 14 }}>cleanup.LF</span>
               {cliInstalled ? (
                 <span className="badge success">Installed</span>
               ) : (
@@ -278,9 +302,13 @@ export default function LLMSettingsPage() {
               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                 {model.downloaded ? (
                   <>
-                    {!isActive && (
+                    {!isActive ? (
                       <button className="button" onClick={() => handleSetActiveModel(model.filename)}>
                         Select
+                      </button>
+                    ) : (
+                      <button className="button" onClick={handleUnselectModel}>
+                        Unselect
                       </button>
                     )}
                     <button
