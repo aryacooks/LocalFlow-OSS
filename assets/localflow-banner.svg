@@ -10,6 +10,9 @@
     <filter id="shadow" x="-20%" y="-30%" width="140%" height="170%">
       <feDropShadow dx="0" dy="14" stdDeviation="14" flood-color="#111111" flood-opacity=".16"/>
     </filter>
+    <filter id="barShadow" x="-40%" y="-30%" width="180%" height="170%">
+      <feDropShadow dx="0" dy="6" stdDeviation="5" flood-color="#111111" flood-opacity=".22"/>
+    </filter>
   </defs>
 
   <!-- Brand surface -->
@@ -32,33 +35,26 @@
     The idle mark begins as a black square. During the listening phase it expands
     left into a white bar; the mark travels left and exposes the live speech bars.
   -->
-  <!-- Static fallback for renderers that intentionally do not run SVG animation. -->
   <g filter="url(#shadow)">
-    <rect x="840" y="108" width="112" height="112" rx="32" fill="#111111"/>
-  </g>
-  <g fill="none" stroke="#ffffff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
-    <animate attributeName="opacity" values="1;1;0;0;1;1" dur="5.6s" repeatCount="indefinite" keyTimes="0;.17;.29;.79;.91;1"/>
-    <path d="M862 169v8c0 7 5 12 11 12s11-5 11-12v-30c0-8 5-14 12-14s12 6 12 14v62c0 8 5 14 12 14s12-6 12-14v-35c0-7 5-12 11-12s11 5 11 12v7"/>
-  </g>
-  <g filter="url(#shadow)">
-    <rect x="840" y="108" width="112" height="112" rx="28" fill="#111111" stroke="#111111" stroke-width="1">
+    <rect x="840" y="108" width="112" height="112" rx="24" fill="#151914" stroke="#151914" stroke-width="1">
       <animate attributeName="x" values="840;840;590;590;840;840" dur="5.6s" repeatCount="indefinite" keyTimes="0;.17;.29;.79;.91;1" calcMode="spline" keySplines=".72 0 .28 1;.72 0 .28 1;.72 0 .28 1;.72 0 .28 1;.72 0 .28 1"/>
       <animate attributeName="width" values="112;112;362;362;112;112" dur="5.6s" repeatCount="indefinite" keyTimes="0;.17;.29;.79;.91;1" calcMode="spline" keySplines=".72 0 .28 1;.72 0 .28 1;.72 0 .28 1;.72 0 .28 1;.72 0 .28 1"/>
-      <animate attributeName="rx" values="28;28;10;10;28;28" dur="5.6s" repeatCount="indefinite" keyTimes="0;.17;.29;.79;.91;1"/>
-      <animate attributeName="fill" values="#111111;#111111;#ffffff;#ffffff;#111111;#111111" dur="5.6s" repeatCount="indefinite" keyTimes="0;.17;.29;.79;.91;1"/>
-      <animate attributeName="stroke" values="#111111;#111111;#d3d3ce;#d3d3ce;#111111;#111111" dur="5.6s" repeatCount="indefinite" keyTimes="0;.17;.29;.79;.91;1"/>
+      <animate attributeName="rx" values="24;24;16;16;24;24" dur="5.6s" repeatCount="indefinite" keyTimes="0;.17;.29;.79;.91;1" calcMode="spline" keySplines=".72 0 .28 1;.72 0 .28 1;.72 0 .28 1;.72 0 .28 1;.72 0 .28 1"/>
+      <animate attributeName="fill" values="#151914;#151914;#ffffff;#ffffff;#151914;#151914" dur="5.6s" repeatCount="indefinite" keyTimes="0;.17;.29;.79;.91;1" calcMode="spline" keySplines=".72 0 .28 1;.72 0 .28 1;.72 0 .28 1;.72 0 .28 1;.72 0 .28 1"/>
+      <animate attributeName="stroke" values="#151914;#151914;#d3d3ce;#d3d3ce;#151914;#151914" dur="5.6s" repeatCount="indefinite" keyTimes="0;.17;.29;.79;.91;1" calcMode="spline" keySplines=".72 0 .28 1;.72 0 .28 1;.72 0 .28 1;.72 0 .28 1;.72 0 .28 1"/>
     </rect>
   </g>
 
   <!-- LocalFlow wave-mark -->
-  <g fill="none" stroke="#ffffff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+  <g fill="none" stroke="#fffaf1" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round">
     <animateTransform attributeName="transform" type="translate" values="0 0;0 0;-250 0;-250 0;0 0;0 0" dur="5.6s" repeatCount="indefinite" keyTimes="0;.17;.29;.79;.91;1" calcMode="spline" keySplines=".72 0 .28 1;.72 0 .28 1;.72 0 .28 1;.72 0 .28 1;.72 0 .28 1"/>
-    <animate attributeName="stroke" values="#ffffff;#ffffff;#151914;#151914;#ffffff;#ffffff" dur="5.6s" repeatCount="indefinite" keyTimes="0;.17;.29;.79;.91;1"/>
-    <path d="M862 169v8c0 7 5 12 11 12s11-5 11-12v-30c0-8 5-14 12-14s12 6 12 14v62c0 8 5 14 12 14s12-6 12-14v-35c0-7 5-12 11-12s11 5 11 12v7"/>
+    <animate attributeName="stroke" values="#fffaf1;#fffaf1;#151914;#151914;#fffaf1;#fffaf1" dur="5.6s" repeatCount="indefinite" keyTimes="0;.17;.29;.79;.91;1" calcMode="spline" keySplines=".72 0 .28 1;.72 0 .28 1;.72 0 .28 1;.72 0 .28 1;.72 0 .28 1"/>
+    <!-- The exact AudioWaveform path from lucide-react, scaled for the banner. -->
+    <path transform="translate(870 138) scale(2.2)" d="M2 13a2 2 0 0 0 2-2V7a2 2 0 0 1 4 0v13a2 2 0 0 0 4 0V4a2 2 0 0 1 4 0v13a2 2 0 0 0 4 0v-4a2 2 0 0 1 2-2"/>
   </g>
 
   <!-- Speech waveform, revealed only while the capsule is open -->
-  <g fill="#151914">
+  <g fill="#151914" filter="url(#barShadow)">
     <animate attributeName="opacity" values="0;0;1;1;0;0" dur="5.6s" repeatCount="indefinite" keyTimes="0;.22;.32;.77;.86;1"/>
     <rect x="732" y="156" width="14" height="16" rx="7" opacity=".48">
       <animate attributeName="height" values="16;42;16" dur=".72s" repeatCount="indefinite"/>
