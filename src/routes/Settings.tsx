@@ -41,7 +41,7 @@ function SettingRow({
 }: {
   icon?: React.ElementType;
   label: string;
-  description?: string;
+  description?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
@@ -104,7 +104,7 @@ function PermissionsSection() {
   }: {
     icon: React.ElementType;
     label: string;
-    description: string;
+    description: React.ReactNode;
     granted: boolean;
     pane: string;
     onGrant?: () => void;
@@ -151,7 +151,13 @@ function PermissionsSection() {
       <Row
         icon={Mic}
         label="Microphone"
-        description="Lets LocalFlow hear you. Required to record your voice."
+        description={
+          <>
+            <strong style={{ color: "var(--label)" }}>Only listens while you're dictating</strong> — when you press your <strong style={{ color: "var(--label)" }}>shortcut</strong> to start recording, and stops the moment you finish.
+            <br />
+            <mark className="perm-hl" style={{ display: "inline-block", marginTop: 4 }}>It never listens in the background.</mark>
+          </>
+        }
         granted={perms.microphone}
         pane="microphone"
         onGrant={() => requestMicrophonePermission().catch(() => {})}
@@ -160,7 +166,11 @@ function PermissionsSection() {
         <Row
           icon={Accessibility}
           label="Accessibility"
-          description="Lets LocalFlow type into other apps and read the focused app. Required to insert text."
+          description={
+            <>
+              Lets LocalFlow <strong style={{ color: "var(--label)" }}>type the transcribed text into whatever app you're using</strong>, and see which app is in front so it can match its style. Without it, <mark className="perm-hl">LocalFlow can still turn your voice into text but can't paste it anywhere.</mark>
+            </>
+          }
           granted={perms.accessibility}
           pane="accessibility"
           onGrant={() => requestAccessibilityPermission().catch(() => {})}

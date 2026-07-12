@@ -216,8 +216,8 @@ export default function OnboardingWizard({ onClose }: { onClose: () => void }) {
   const deviceWord = perms.is_macos ? "Mac" : perms.is_windows ? "PC" : "computer";
   const settingsLabel = perms.is_macos ? "Open System Settings" : "Open Privacy settings";
   const micDesc = perms.is_macos
-    ? "LocalFlow records your voice locally to turn it into text. macOS will ask for permission the first time."
-    : "LocalFlow records your voice locally to turn it into text. If Windows is blocking the mic, turn on microphone access in Privacy settings.";
+    ? "Only listens while you're dictating — when you press your shortcut to start recording, and stops the moment you finish. It never listens in the background. macOS will ask for permission the first time."
+    : "Only listens while you're dictating — when you press your shortcut to start recording, and stops the moment you finish. It never listens in the background. If Windows is blocking the mic, turn on microphone access in Privacy settings.";
 
   return (
     <div className="onb-backdrop">
@@ -255,7 +255,7 @@ export default function OnboardingWizard({ onClose }: { onClose: () => void }) {
           <div className="onb-perm-summary">
             <div className="onb-perm-summary-label">For LocalFlow to work fully, it needs:</div>
             <div className="onb-perm-chips">
-              <PermChip label="Microphone" hint="to hear you" ok={microphoneReady} />
+              <PermChip label="Microphone" hint="to hear you while dictating" ok={microphoneReady} />
               {perms.is_macos && (
                 <PermChip label="Accessibility" hint="to type into apps" ok={perms.accessibility} />
               )}
@@ -313,7 +313,7 @@ export default function OnboardingWizard({ onClose }: { onClose: () => void }) {
               icon={Accessibility}
               done={perms.accessibility}
               title="Allow Accessibility"
-              desc="This lets LocalFlow type the transcribed text into whatever app you're using, and read which app is focused. Without it, nothing gets typed."
+              desc="Lets LocalFlow type the transcribed text into whatever app you're using, and see which app is in front so it can match its style. Without it, LocalFlow can still turn your voice into text but can't paste it anywhere."
             >
               {!perms.accessibility ? (
                 <div className="onb-actions">

@@ -1147,6 +1147,17 @@ textarea {
   font-weight: 600;
 }
 
+/* Inline highlighter for key phrases in permission descriptions. */
+.perm-hl {
+  background: var(--warning);
+  color: #151914;
+  padding: 0 4px;
+  border-radius: 3px;
+  font-weight: 700;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
 .keycap-row {
   display: flex;
   flex-wrap: wrap;

@@ -2,7 +2,16 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <!-- Microphone access for dictation -->
+    <!-- LocalFlow's ENTIRE privacy-sensitive surface is declared here plus the
+         microphone usage string in Info.plist. It deliberately requests NOTHING else.
+         Do NOT add camera, video, location, screen-recording, contacts, photos, or
+         calendar access: the app has no use for them. In particular there is no
+         NSCameraUsageDescription, so macOS will refuse (and terminate) any attempt to
+         open the camera — camera use is therefore impossible by construction.
+         The only other elevated capabilities are Accessibility (to type text into the
+         focused app) and Input Monitoring (optional, for mouse-button triggers); those
+         are granted at runtime via TCC, not here. -->
+    <!-- Microphone access for dictation (audio only — never video) -->
     <key>com.apple.security.device.audio-input</key>
     <true/>
     <!-- Required for unsigned/JIT WebView under hardened runtime -->
