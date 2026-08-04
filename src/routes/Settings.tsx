@@ -19,14 +19,19 @@ function Section({
   title,
   children,
   attention,
+  className,
 }: {
   title: string;
   children: React.ReactNode;
   /** Pulse the section gold to flag it needs the user's attention (e.g. a missing permission). */
   attention?: boolean;
+  className?: string;
 }) {
   return (
-    <section style={{ marginBottom: 18 }} className={attention ? "section-attn" : undefined}>
+    <section
+      style={{ marginBottom: 18 }}
+      className={["settings-section", attention ? "section-attn" : "", className ?? ""].filter(Boolean).join(" ")}
+    >
       <div className="section-label">{title}</div>
       <div className="table-panel">{children}</div>
     </section>
@@ -147,6 +152,7 @@ function PermissionsSection() {
     <Section
       title={perms.is_macos ? "Permissions (macOS)" : "Permissions (Windows)"}
       attention={missingPermission}
+      className="settings-permissions"
     >
       <Row
         icon={Mic}
@@ -467,7 +473,7 @@ export default function SettingsPage() {
   }[keybindKeyboardMode] ?? "Hold-to-talk";
 
   return (
-    <div className="page narrow" style={{ position: "relative" }}>
+    <div className="page settings-page" style={{ position: "relative" }}>
       {pendingDisable && (
         <div
           style={{
@@ -522,7 +528,7 @@ export default function SettingsPage() {
         </div>
       )}
       {showBanner && (
-        <div className="banner-card" style={{ backgroundImage: "url('/redish.png')" }}>
+        <div className="banner-card settings-banner" style={{ backgroundImage: "url('/redish.png')" }}>
           <div className="banner-content">
             <h2 className="banner-title">Configured for <em>your</em> workflow.</h2>
             <p className="banner-desc">
@@ -537,16 +543,17 @@ export default function SettingsPage() {
         </div>
       )}
 
-      <div className="page-header">
+      <div className="page-header settings-page-header">
         <div>
           <p className="page-kicker">Preferences</p>
           <h2 className="page-title">Settings</h2>
         </div>
       </div>
 
-      <PermissionsSection />
+      <div className="settings-bento-grid">
+        <PermissionsSection />
 
-      <Section title="Audio input">
+      <Section title="Audio input" className="settings-audio">
         <SettingRow icon={Mic} label="Microphone" description="Which microphone to listen to">
           <select
             className="select"
@@ -568,7 +575,7 @@ export default function SettingsPage() {
         </SettingRow>
       </Section>
 
-      <Section title="Language">
+      <Section title="Language" className="settings-language">
         <SettingRow icon={Globe} label="Language you speak" description="Pick 'Auto-detect' if you speak more than one language">
           <select className="select" style={{ width: 260 }} value={language} onChange={(e) => setLanguage(e.target.value)}>
             {LANGUAGES.map((item) => (
@@ -580,7 +587,7 @@ export default function SettingsPage() {
         </SettingRow>
       </Section>
 
-      <Section title="Display">
+      <Section title="Display" className="settings-display">
         <SettingRow
           icon={MonitorCheck}
           label="Screen size"
@@ -648,7 +655,7 @@ export default function SettingsPage() {
         </SettingRow>
       </Section>
 
-      <Section title="Startup">
+      <Section title="Startup" className="settings-startup">
         <SettingRow icon={Power} label="Launch at login" description="Open LocalFlow automatically when you start your computer">
           <Switch
             checked={autostart}
@@ -666,7 +673,7 @@ export default function SettingsPage() {
         </SettingRow>
       </Section>
 
-      <Section title="Privacy">
+      <Section title="Privacy" className="settings-privacy">
         <SettingRow icon={Shield} label="Incognito mode" description="Pause saving — nothing you dictate is recorded while this is on">
           <Switch checked={privacyMode} onChange={togglePrivacy} />
         </SettingRow>
@@ -682,7 +689,7 @@ export default function SettingsPage() {
         </SettingRow>
       </Section>
 
-      <Section title="Triggers">
+      <Section title="Triggers" className="settings-triggers">
         <SettingRow icon={MonitorCheck} label="Toggle dictation" description="Press once to start, press again to stop.">
           <span className="keycap">{shortcutLabel(shortcutToggle)}</span>
         </SettingRow>
@@ -703,12 +710,21 @@ export default function SettingsPage() {
         </div>
       </Section>
 
-      <section className="glass-panel mac-callout">
-        <Shield size={16} color="var(--success)" />
-        <p className="row-desc" style={{ margin: 0 }}>
-          LocalFlow doesn't track you. Your voice and text never leave this computer.
-        </p>
+      <section className="privacy-strip settings-privacy-callout">
+        <div className="privacy-strip-copy">
+          <span className="privacy-strip-eyebrow">Privacy</span>
+          <p className="privacy-strip-title">
+            LocalFlow doesn't track you.
+            <span> Your voice and text never leave this computer.</span>
+          </p>
+        </div>
+        <div className="privacy-strip-proof">
+          <span className="privacy-strip-chip">No account</span>
+          <span className="privacy-strip-chip">No uploads</span>
+          <span className="privacy-strip-chip">Works offline</span>
+        </div>
       </section>
+      </div>
     </div>
   );
 }

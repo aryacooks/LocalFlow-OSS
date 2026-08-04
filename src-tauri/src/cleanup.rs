@@ -4,12 +4,178 @@ use once_cell::sync::Lazy;
 /// This satisfies the requirement for graceful degradation.
 use regex::Regex;
 
-// Filler words to strip
-static FILLER_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(
-        r"(?i)\b(um+|uh+|like|you know|sort of|kind of|i mean|well|so|right|okay|actually|basically|literally|honestly|seriously|you see|i guess|i think|i feel like|to be honest|to tell you the truth|at the end of the day)\b[,.]?\s*"
-    ).unwrap()
-});
+// ── Filler words ────────────────────────────────────────────────────────────
+// Filler removal used to be one big alternation applied everywhere, which ate
+// meaningful words: "ok right now" lost both "ok" and "right" and came out as
+// just "now". Most of these words are only filler in a particular position, so
+// the decision is made per-occurrence instead of per-word:
+//
+//  • NOISE     — non-words ("um", "uh", "hmm"). Dropped anywhere.
+//  • DISCOURSE — real words that are filler only when they open a clause AND are
+//                set off by a comma (or hug a NOISE token). "So, we shipped it"
+//                loses "so"; "so that works" keeps it; "right now" keeps "right"
+//                because no comma follows it.
+//  • TAIL      — trailing tags ("you know", "i mean"), also filler at the very
+//                end of the text, but only after a clause break so questions
+//                like "do you know" survive.
+//  • HEDGE     — "kind of"/"sort of", dropped unless the neighbouring words show
+//                the literal noun sense ("what kind of person").
+//
+// Anything genuinely load-bearing ("I think", "I feel like") is not on any list.
+
+/// Sounds that are never real words.
+const NOISE: &[&str] = &[
+    "um", "umm", "ummm", "uh", "uhh", "uhhh", "uhm", "erm", "hmm", "hmmm", "mmm", "mhm",
+];
+
+/// Longest-first so "you know" wins before a bare word could half-match.
+const DISCOURSE: &[&[&str]] = &[
+    &["to", "tell", "you", "the", "truth"],
+    &["at", "the", "end", "of", "the", "day"],
+    &["to", "be", "honest"],
+    &["you", "know"],
+    &["i", "mean"],
+    &["you", "see"],
+    &["i", "guess"],
+    &["anyway"],
+    &["actually"],
+    &["basically"],
+    &["literally"],
+    &["honestly"],
+    &["seriously"],
+    &["obviously"],
+    &["okay"],
+    &["ok"],
+    &["right"],
+    &["well"],
+    &["so"],
+    &["like"],
+    &["look"],
+];
+
+/// Discourse markers that are also filler when they trail the whole utterance.
+const TAIL: &[&[&str]] = &[&["you", "know"], &["i", "mean"], &["you", "see"]];
+
+const HEDGE: &[&[&str]] = &[&["kind", "of"], &["sort", "of"]];
+
+/// Words before a hedge that make it the literal noun sense ("what kind of …").
+const HEDGE_KEEP_LEFT: &[&str] = &[
+    "what", "which", "this", "that", "these", "those", "some", "any", "a", "an", "the", "every",
+    "each", "no", "another", "certain",
+];
+
+/// Words after a hedge that make it the literal noun sense ("… kind of person").
+const HEDGE_KEEP_RIGHT: &[&str] = &[
+    "a", "an", "the", "thing", "things", "person", "people", "stuff", "way", "ways", "day", "guy",
+    "man", "woman", "music", "food", "work", "job", "deal", "life",
+];
+
+/// Lowercased alphanumeric core of a token, ignoring attached punctuation.
+fn core_of(tok: &str) -> String {
+    tok.chars()
+        .filter(|c| c.is_alphanumeric() || *c == '\'')
+        .collect::<String>()
+        .to_lowercase()
+}
+
+/// Does this token end a clause? Closing quotes/brackets are looked through.
+fn ends_with_break(tok: &str) -> bool {
+    tok.trim_end_matches(|c: char| matches!(c, '"' | '\'' | ')' | ']' | '}'))
+        .ends_with([
+            '.',
+            ',',
+            '!',
+            '?',
+            ';',
+            ':',
+            '\u{2014}',
+            '\u{2013}',
+            '\u{201d}',
+        ])
+}
+
+fn ends_with_comma(tok: &str) -> bool {
+    tok.trim_end_matches(|c: char| matches!(c, '"' | '\'' | ')' | ']' | '}'))
+        .ends_with([',', '\u{2014}', '\u{2013}'])
+}
+
+fn phrase_at(cores: &[String], i: usize, phrase: &[&str]) -> bool {
+    i + phrase.len() <= cores.len() && phrase.iter().enumerate().all(|(k, w)| cores[i + k] == *w)
+}
+
+/// How many tokens starting at `i` are filler, if any. `kept` is the output so far
+/// (position is judged against the surviving text, so "um so, yeah" still sees "so"
+/// as clause-initial once "um" has been dropped).
+fn filler_len(toks: &[&str], cores: &[String], kept: &[String], i: usize) -> Option<usize> {
+    if NOISE.contains(&cores[i].as_str()) {
+        return Some(1);
+    }
+
+    let clause_start = kept.last().map(|t| ends_with_break(t)).unwrap_or(true);
+
+    for phrase in HEDGE {
+        if !phrase_at(cores, i, phrase) {
+            continue;
+        }
+        let prev = kept.last().map(|t| core_of(t)).unwrap_or_default();
+        let next = cores.get(i + phrase.len()).cloned().unwrap_or_default();
+        if !HEDGE_KEEP_LEFT.contains(&prev.as_str()) && !HEDGE_KEEP_RIGHT.contains(&next.as_str()) {
+            return Some(phrase.len());
+        }
+    }
+
+    for phrase in DISCOURSE {
+        if !phrase_at(cores, i, phrase) {
+            continue;
+        }
+        let end = i + phrase.len();
+        let set_off = ends_with_comma(toks[end - 1]);
+        let hugs_noise = cores
+            .get(end)
+            .is_some_and(|c| NOISE.contains(&c.as_str()));
+        let at_tail = end == toks.len() && TAIL.contains(phrase);
+        if clause_start && (set_off || hugs_noise || at_tail) {
+            return Some(phrase.len());
+        }
+    }
+
+    None
+}
+
+/// Drop filler words, keeping every word that is doing real work.
+fn strip_fillers(text: &str) -> String {
+    let toks: Vec<&str> = text.split_whitespace().collect();
+    let cores: Vec<String> = toks.iter().map(|t| core_of(t)).collect();
+    let mut out: Vec<String> = Vec::with_capacity(toks.len());
+
+    let mut i = 0;
+    while i < toks.len() {
+        if let Some(len) = filler_len(&toks, &cores, &out, i) {
+            // A terminator riding on the dropped phrase belongs to the sentence, not
+            // to the filler: "it was weird, you know." must keep its full stop.
+            if let Some(last_char) = toks[i + len - 1].chars().last() {
+                if matches!(last_char, '.' | '!' | '?') {
+                    if let Some(prev) = out.last_mut() {
+                        if prev.ends_with([',', ';', ':']) {
+                            // The comma was there to set off the filler; the sentence
+                            // ends here now, so it becomes the terminator.
+                            prev.pop();
+                            prev.push(last_char);
+                        } else if !prev.ends_with(['.', '!', '?']) {
+                            prev.push(last_char);
+                        }
+                    }
+                }
+            }
+            i += len;
+            continue;
+        }
+        out.push(toks[i].to_string());
+        i += 1;
+    }
+
+    out.join(" ")
+}
 
 // ── Spoken self-corrections ─────────────────────────────────────────────────
 // Collapse "<wrong> <cue> <right>" → "<right>", e.g.
@@ -69,7 +235,10 @@ fn correction_pick(caps: &regex::Captures) -> String {
     if !c2.trim().is_empty() {
         return c2.to_string();
     }
-    caps.name("c1").map(|m| m.as_str()).unwrap_or("").to_string()
+    caps.name("c1")
+        .map(|m| m.as_str())
+        .unwrap_or("")
+        .to_string()
 }
 
 /// Apply spoken self-corrections, compound cues first then delimited single-word cues.
@@ -103,7 +272,7 @@ pub fn regex_cleanup(raw: &str) -> String {
     let mut text = resolve_corrections(raw);
 
     // Remove filler words
-    text = FILLER_RE.replace_all(&text, " ").to_string();
+    text = strip_fillers(&text);
 
     // Basic sentence casing
     text = sentence_case(&text);
@@ -111,13 +280,11 @@ pub fn regex_cleanup(raw: &str) -> String {
     // Clean up extra spaces
     text = text.split_whitespace().collect::<Vec<_>>().join(" ");
 
-    // Ensure sentence ends with punctuation
-    let text = text.trim().to_string();
-    if !text.is_empty() && !text.ends_with(['.', '!', '?', ',', ';', ':']) {
-        format!("{}.", text)
-    } else {
-        text
-    }
+    // NOTE: terminal punctuation is deliberately NOT added here. Spoken commands
+    // ("question mark", "exclamation mark") have not been resolved yet, so adding
+    // a full stop now produces "Are you sure?." once they are. `finalize_dictation`
+    // adds it after, when the real ending is known.
+    text.trim().to_string()
 }
 
 fn sentence_case(text: &str) -> String {
@@ -169,11 +336,20 @@ static SPOKEN_SUBS: Lazy<Vec<(Regex, &'static str)>> = Lazy::new(|| {
     ]
 });
 
-// Tidy passes run after substitution.
-static SPACE_BEFORE_PUNCT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"[ \t]+([,.;:!?])").unwrap());
+// Tidy passes run after substitution. Only pull punctuation left when it behaves like
+// punctuation (followed by whitespace/end); keep token prefixes such as `!important`
+// and `.class` byte-for-byte.
+static SPACE_BEFORE_PUNCT_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"[ \t]+([,.;:!?]+)([ \t\r\n]|$)").unwrap());
 static MULTISPACE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"[ \t]{2,}").unwrap());
 static AROUND_NL_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"[ \t]*\n[ \t]*").unwrap());
 static MULTI_NL_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\n{3,}").unwrap());
+// Small local models occasionally return the right rewrite with punctuation from a
+// deleted sentence still at the front, e.g. ". Let's meet today.". Only remove an
+// orphan run followed by whitespace, so valid code-like text such as `!important`
+// remains untouched.
+static LEADING_ORPHAN_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"^\s*[.,;:!?]+(?:\s+|$)").unwrap());
 // A newline followed only by stray punctuation at the very end (e.g. regex_cleanup
 // auto-appended a "." after a trailing "new line").
 static TAIL_ORPHAN_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\n[ \t]*[.,;:!?]+\s*$").unwrap());
@@ -196,8 +372,26 @@ pub fn apply_spoken_commands(input: &str) -> String {
             .rfind(|c: char| matches!(c, '.' | '!' | '?' | '\n' | ',' | ';' | ':'))
             .map(|i| i + 1)
             .unwrap_or(0);
-        let after = text[end..].to_string();
+        // Whisper and the cleanup model usually punctuate the editing command itself:
+        // "Cancel that. Next sentence" or "cancel that, next clause". That punctuation
+        // belongs to the command, not the retained text, so consume it together with
+        // surrounding whitespace before joining the two surviving pieces.
+        let after = text[end..]
+            .trim_start_matches(|c: char| {
+                c.is_whitespace()
+                    || matches!(
+                        c,
+                        '.' | ',' | '!' | '?' | ';' | ':' | '-' | '\u{2013}' | '\u{2014}'
+                    )
+            })
+            .to_string();
         text.truncate(boundary);
+        if !text.is_empty()
+            && !after.is_empty()
+            && !text.chars().last().is_some_and(char::is_whitespace)
+        {
+            text.push(' ');
+        }
         text.push_str(&after);
     }
 
@@ -207,42 +401,111 @@ pub fn apply_spoken_commands(input: &str) -> String {
     }
 
     // 3. Tidy spacing without clobbering intentional newlines.
-    text = SPACE_BEFORE_PUNCT_RE.replace_all(&text, "$1").to_string();
+    text = SPACE_BEFORE_PUNCT_RE.replace_all(&text, "$1$2").to_string();
     text = MULTISPACE_RE.replace_all(&text, " ").to_string();
     text = AROUND_NL_RE.replace_all(&text, "\n").to_string();
     text = MULTI_NL_RE.replace_all(&text, "\n\n").to_string();
     text = text.trim().to_string();
     text = TAIL_ORPHAN_RE.replace(&text, "").trim_end().to_string();
+    text = LEADING_ORPHAN_RE
+        .replace(&text, "")
+        .trim_start()
+        .to_string();
 
     // 4. Re-capitalize sentence starts and the first word of each new line.
     recapitalize(&text)
 }
 
-/// Capitalize the first letter and the first letter after each `.`/`!`/`?`/newline.
+/// Capitalize the first letter and sentence starts after `.`/`!`/`?` plus whitespace.
+/// Requiring a separator keeps punctuation inside tokens intact (`example.com`,
+/// `!important`) while newlines always begin a new sentence.
 fn recapitalize(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut cap_next = true;
+    let mut sentence_has_content = false;
+    let mut terminal_pending = false;
+
     for ch in text.chars() {
         if cap_next && ch.is_alphabetic() {
             out.extend(ch.to_uppercase());
             cap_next = false;
-        } else {
-            out.push(ch);
-            if matches!(ch, '.' | '!' | '?' | '\n') {
-                cap_next = true;
-            } else if !ch.is_whitespace() {
+            sentence_has_content = true;
+            terminal_pending = false;
+            continue;
+        }
+
+        out.push(ch);
+        if ch == '\n' {
+            cap_next = true;
+            sentence_has_content = false;
+            terminal_pending = false;
+        } else if matches!(ch, '.' | '!' | '?') {
+            if sentence_has_content {
+                terminal_pending = true;
+            } else if cap_next {
+                // Leading token punctuation is not a sentence (`!important`, `.class`).
                 cap_next = false;
             }
-            // whitespace between an ender and the next word leaves cap_next as-is
+        } else if ch.is_whitespace() {
+            if terminal_pending {
+                cap_next = true;
+                sentence_has_content = false;
+            }
+        } else {
+            terminal_pending = false;
+            if ch.is_alphanumeric() {
+                sentence_has_content = true;
+            }
+            if cap_next && !matches!(ch, '"' | '\'' | '(' | '[' | '{') {
+                cap_next = false;
+            }
         }
     }
     out
 }
 
+// A full stop stranded after a stronger mark, e.g. "Are you sure?." — happens when
+// something appended a period before "question mark" became "?".
+static TERMINAL_DUP_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"([!?])\.+").unwrap());
+
+/// Characters that already close a sentence, so no full stop should be added.
+/// A dangling comma/colon is left alone too — the user clearly wasn't finished.
+fn already_terminated(text: &str) -> bool {
+    text.trim_end_matches(|c: char| {
+        matches!(c, '"' | '\'' | ')' | ']' | '}' | '\u{201d}' | '\u{2019}')
+    })
+    .ends_with([
+        '.',
+        '!',
+        '?',
+        ',',
+        ';',
+        ':',
+        '\u{2026}',
+        '-',
+        '\u{2014}',
+        '\u{2013}',
+    ])
+}
+
 /// Final post-processing applied to dictated text before injection: strip any LLM
-/// wrapping, then resolve spoken commands.
+/// wrapping, resolve spoken commands, then punctuate the ending.
+///
+/// Order matters. Spoken "question mark"/"exclamation mark" become real `?`/`!`
+/// here, so the ending is only known once `apply_spoken_commands` has run — that
+/// is why the full stop is added at this point and nowhere earlier.
 fn finalize_dictation(text: &str) -> String {
-    apply_spoken_commands(&trim_surrounding_quotes(text))
+    let text = apply_spoken_commands(&trim_surrounding_quotes(text));
+    let text = TERMINAL_DUP_RE.replace_all(&text, "$1").into_owned();
+    let text = text.trim_end();
+    // A lone token is not a sentence — `!important`, a filename, a single word
+    // dropped into a form field — so it is left exactly as dictated.
+    let is_single_token = !text.chars().any(char::is_whitespace);
+    if text.is_empty() || is_single_token || already_terminated(text) {
+        text.to_string()
+    } else {
+        format!("{}.", text)
+    }
 }
 
 /// Build the LLM cleanup prompt
@@ -268,9 +531,12 @@ Task: Clean up the raw voice transcript to make it clean, natural, and readable.
 Target App Context: {context_hint}
 {style}
 Rules:
-- Remove filler words (um, uh, like, you know, sort of, kind of, i mean, etc.)
+- Remove filler words (um, uh, you know, i mean, etc.) ONLY where they carry no meaning.
+- NEVER delete a word that is doing real work. "right" in "right now" or "that's right", "like" in "I like it", "so" in "so that it works", "well" in "well done", "kind of" in "what kind of person" must all stay. When in doubt, keep the word.
 - Resolve self-corrections (e.g., "went to the office no I mean the park" -> "went to the park")
+- Treat "scratch that", "delete that", "cancel that", and "ignore that" as editing commands: remove the preceding clause and the command itself without leaving stray punctuation.
 - Fix capitalization and basic punctuation.
+- End each sentence with the punctuation that actually fits it. Questions end with "?" and exclamations with "!". Never append a full stop after a "?" or "!", and never turn a question into a statement.
 - Output ONLY the final cleaned text. Do NOT include preambles, explanations, or quotes.
 
 Examples:
@@ -285,6 +551,15 @@ Output: "Hey Mahesh, let's meet at 8pm."
 
 Input: "send it to bob sorry to jim"
 Output: "Send it to Jim."
+
+Input: "Let's not meet tomorrow. Cancel that. Let's meet today."
+Output: "Let's meet today."
+
+Input: "um ok right now i'm heading out"
+Output: "OK, right now I'm heading out."
+
+Input: "so are you coming to the meeting question mark"
+Output: "Are you coming to the meeting?"
 
 Input: "{raw_text}"
 Output: "#,
@@ -464,7 +739,10 @@ pub fn trim_surrounding_quotes(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_spoken_commands, resolve_corrections};
+    use super::{
+        apply_spoken_commands, finalize_dictation, regex_cleanup, resolve_corrections,
+        strip_fillers,
+    };
 
     #[test]
     fn correction_no_actually_keeps_second_connector() {
@@ -501,10 +779,7 @@ mod tests {
     #[test]
     fn correction_does_not_touch_ordinary_no() {
         // "no" without a leading delimiter and not part of a compound cue is left alone.
-        assert_eq!(
-            resolve_corrections("i said no to him"),
-            "i said no to him"
-        );
+        assert_eq!(resolve_corrections("i said no to him"), "i said no to him");
         assert_eq!(
             resolve_corrections("i'm sorry about that"),
             "i'm sorry about that"
@@ -549,6 +824,68 @@ mod tests {
     }
 
     #[test]
+    fn cancel_that_drops_its_own_period() {
+        assert_eq!(
+            apply_spoken_commands("Let's not meet tomorrow. Cancel that. Let's meet today."),
+            "Let's meet today."
+        );
+    }
+
+    #[test]
+    fn fallback_cleanup_handles_cancel_that_end_to_end() {
+        let cleaned = regex_cleanup("Let's not meet tomorrow. Cancel that. Let's meet today.");
+        assert_eq!(finalize_dictation(&cleaned), "Let's meet today.");
+    }
+
+    #[test]
+    fn delete_that_does_not_double_the_previous_sentence_period() {
+        assert_eq!(
+            apply_spoken_commands(
+                "The first plan is approved. The second plan is wrong. Delete that. Use the third plan."
+            ),
+            "The first plan is approved. Use the third plan."
+        );
+    }
+
+    #[test]
+    fn cancel_that_drops_command_commas() {
+        assert_eq!(
+            apply_spoken_commands("buy milk, cancel that, buy eggs"),
+            "Buy eggs"
+        );
+    }
+
+    #[test]
+    fn command_at_the_end_leaves_no_orphan_punctuation() {
+        assert_eq!(
+            apply_spoken_commands("Keep this sentence. Remove this one. Ignore that."),
+            "Keep this sentence."
+        );
+        assert_eq!(apply_spoken_commands("Cancel that."), "");
+    }
+
+    #[test]
+    fn finalizer_removes_llm_leading_orphan_punctuation() {
+        assert_eq!(
+            finalize_dictation(". Let's meet today."),
+            "Let's meet today."
+        );
+        assert_eq!(finalize_dictation("!important"), "!important");
+    }
+
+    #[test]
+    fn capitalization_does_not_break_punctuation_inside_tokens() {
+        assert_eq!(
+            apply_spoken_commands("visit example.com and use !important"),
+            "Visit example.com and use !important"
+        );
+        assert_eq!(
+            apply_spoken_commands("first sentence. second sentence"),
+            "First sentence. Second sentence"
+        );
+    }
+
+    #[test]
     fn question_and_exclamation() {
         assert_eq!(
             apply_spoken_commands("are you sure question mark"),
@@ -572,6 +909,58 @@ mod tests {
     fn trailing_new_line_with_auto_period_is_not_orphaned() {
         // regex_cleanup auto-appends a "." which can land after a trailing newline.
         assert_eq!(apply_spoken_commands("done new line."), "Done");
+    }
+
+    // ── Filler removal keeps meaningful words ──────────────────────────────
+
+    #[test]
+    fn keeps_words_that_are_doing_real_work() {
+        // The reported bug: "ok right now" collapsed to "now".
+        assert_eq!(strip_fillers("ok right now"), "ok right now");
+        assert_eq!(strip_fillers("turn right at the light"), "turn right at the light");
+        assert_eq!(strip_fillers("that's right"), "that's right");
+        assert_eq!(strip_fillers("I like this song"), "I like this song");
+        assert_eq!(strip_fillers("size it so that it fits"), "size it so that it fits");
+        assert_eq!(strip_fillers("well done everyone"), "well done everyone");
+        assert_eq!(strip_fillers("what kind of person says that"), "what kind of person says that");
+        assert_eq!(strip_fillers("do you know the answer"), "do you know the answer");
+    }
+
+    #[test]
+    fn drops_actual_fillers() {
+        assert_eq!(strip_fillers("um yeah"), "yeah");
+        assert_eq!(strip_fillers("So, we shipped it"), "we shipped it");
+        assert_eq!(strip_fillers("it was, honestly, terrible"), "it was, terrible");
+        assert_eq!(strip_fillers("it was kind of weird"), "it was weird");
+        assert_eq!(strip_fillers("it broke again, you know."), "it broke again.");
+    }
+
+    // ── Terminal punctuation ───────────────────────────────────────────────
+
+    #[test]
+    fn spoken_question_mark_does_not_get_a_full_stop() {
+        let cleaned = regex_cleanup("um are you coming to the meeting question mark");
+        assert_eq!(finalize_dictation(&cleaned), "Are you coming to the meeting?");
+    }
+
+    #[test]
+    fn spoken_exclamation_does_not_get_a_full_stop() {
+        let cleaned = regex_cleanup("watch out exclamation mark");
+        assert_eq!(finalize_dictation(&cleaned), "Watch out!");
+    }
+
+    #[test]
+    fn full_stop_still_added_to_a_plain_statement() {
+        let cleaned = regex_cleanup("we ship on monday");
+        assert_eq!(finalize_dictation(&cleaned), "We ship on monday.");
+    }
+
+    #[test]
+    fn existing_terminator_is_never_doubled() {
+        assert_eq!(finalize_dictation("Are you sure?"), "Are you sure?");
+        assert_eq!(finalize_dictation("Stop!"), "Stop!");
+        assert_eq!(finalize_dictation("Are you sure?."), "Are you sure?");
+        assert_eq!(finalize_dictation("He said \"hi!\""), "He said \"hi!\"");
     }
 
     #[test]

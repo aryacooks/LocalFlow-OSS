@@ -219,6 +219,7 @@ export interface WordsPerDay {
   date: string;
   words: number;
   wpm: number;
+  dictations: number;
 }
 
 export interface AppUsage {

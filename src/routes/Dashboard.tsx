@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import {
   Bar,
   BarChart,
@@ -12,13 +12,196 @@ import {
 } from "recharts";
 import { Mic, Timer, TrendingUp, Cpu, Zap, Activity } from "lucide-react";
 import InfoCircleIcon from "../components/ui/info-circle-icon";
-import { DashboardStats, getDashboardStats, getSystemStats, SystemStats, getSetting, setSetting } from "../lib/ipc";
+import { DashboardStats, getDashboardStats, getSystemStats, SystemStats, getSetting, setSetting, WordsPerDay } from "../lib/ipc";
 import { keyLabel } from "../lib/utils";
 import { useAppStore } from "../lib/store";
 
 const CHART_COLORS = ["#007aff", "#34c759", "#5ac8fa", "#ff9500", "#af52de", "#8e8e93"];
 
 const IS_MAC = typeof navigator !== "undefined" && /mac/i.test(navigator.userAgent);
+
+// Typing at 60 WPM is the baseline every "time saved" figure is measured against.
+const TYPING_WPM = 60;
+
+// ── Time buckets ───────────────────────────────────────────────────────────
+// The backend hands back one row per local day (three years of them). Everything
+// the dashboard shows by day / week / month / year is rolled up from that single
+// series here, so the totals and the chart can never disagree.
+
+type Period = "today" | "week" | "month" | "year";
+type Grain = "daily" | "weekly" | "monthly" | "yearly";
+
+const PERIODS: { id: Period; label: string; note: string }[] = [
+  { id: "today", label: "Today", note: "since midnight" },
+  { id: "week", label: "Week", note: "since Monday" },
+  { id: "month", label: "Month", note: "this calendar month" },
+  { id: "year", label: "Year", note: "this calendar year" },
+];
+
+const GRAINS: { id: Grain; label: string; note: string }[] = [
+  { id: "daily", label: "Daily", note: "Last 14 days" },
+  { id: "weekly", label: "Weekly", note: "Last 12 weeks" },
+  { id: "monthly", label: "Monthly", note: "Last 12 months" },
+  { id: "yearly", label: "Yearly", note: "Last 5 years" },
+];
+
+/** Local YYYY-MM-DD, matching the keys the backend groups by. */
+function dateKey(d: Date): string {
+  return (
+    d.getFullYear() +
+    "-" +
+    String(d.getMonth() + 1).padStart(2, "0") +
+    "-" +
+    String(d.getDate()).padStart(2, "0")
+  );
+}
+
+function parseKey(key: string): Date {
+  const [y, m, d] = key.split("-").map(Number);
+  return new Date(y, m - 1, d);
+}
+
+/** Monday of the week containing `d`. */
+function startOfWeek(d: Date): Date {
+  const out = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  // getDay() is 0 for Sunday, which is the *end* of the week here.
+  out.setDate(out.getDate() - ((out.getDay() + 6) % 7));
+  return out;
+}
+
+/** Inclusive first day of the calendar period containing today. */
+function periodStart(period: Period, today: Date): Date {
+  switch (period) {
+    case "today":
+      return new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    case "week":
+      return startOfWeek(today);
+    case "month":
+      return new Date(today.getFullYear(), today.getMonth(), 1);
+    case "year":
+      return new Date(today.getFullYear(), 0, 1);
+  }
+}
+
+/** Words + dictations recorded since the start of the given calendar period. */
+function totalsFor(days: WordsPerDay[], period: Period, today = new Date()) {
+  const from = dateKey(periodStart(period, today));
+  const to = dateKey(today);
+  let words = 0;
+  let dictations = 0;
+  for (const day of days) {
+    if (day.date >= from && day.date <= to) {
+      words += day.words;
+      dictations += day.dictations ?? 0;
+    }
+  }
+  return { words, dictations, minutesSaved: words / TYPING_WPM };
+}
+
+type Bucket = { label: string; words: number; dictations: number };
+
+/** Roll the daily series into chart buckets, keeping empty periods so gaps show. */
+function bucketSeries(days: WordsPerDay[], grain: Grain, today = new Date()): Bucket[] {
+  const byKey = new Map(days.map((d) => [d.date, d]));
+  const add = (bucket: Bucket, key: string) => {
+    const day = byKey.get(key);
+    if (day) {
+      bucket.words += day.words;
+      bucket.dictations += day.dictations ?? 0;
+    }
+  };
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const out: Bucket[] = [];
+
+  if (grain === "daily") {
+    for (let i = 13; i >= 0; i--) {
+      const d = new Date(today.getFullYear(), today.getMonth(), today.getDate() - i);
+      const bucket: Bucket = { label: `${d.getDate()} ${months[d.getMonth()]}`, words: 0, dictations: 0 };
+      add(bucket, dateKey(d));
+      out.push(bucket);
+    }
+  } else if (grain === "weekly") {
+    const thisWeek = startOfWeek(today);
+    for (let i = 11; i >= 0; i--) {
+      const start = new Date(thisWeek);
+      start.setDate(start.getDate() - i * 7);
+      const bucket: Bucket = { label: `${start.getDate()} ${months[start.getMonth()]}`, words: 0, dictations: 0 };
+      for (let d = 0; d < 7; d++) {
+        const day = new Date(start);
+        day.setDate(start.getDate() + d);
+        add(bucket, dateKey(day));
+      }
+      out.push(bucket);
+    }
+  } else if (grain === "monthly") {
+    for (let i = 11; i >= 0; i--) {
+      const start = new Date(today.getFullYear(), today.getMonth() - i, 1);
+      const bucket: Bucket = { label: months[start.getMonth()], words: 0, dictations: 0 };
+      const end = new Date(start.getFullYear(), start.getMonth() + 1, 1);
+      for (const day of days) {
+        const d = parseKey(day.date);
+        if (d >= start && d < end) {
+          bucket.words += day.words;
+          bucket.dictations += day.dictations ?? 0;
+        }
+      }
+      out.push(bucket);
+    }
+  } else {
+    for (let i = 4; i >= 0; i--) {
+      const year = today.getFullYear() - i;
+      const bucket: Bucket = { label: String(year), words: 0, dictations: 0 };
+      for (const day of days) {
+        if (day.date.startsWith(`${year}-`)) {
+          bucket.words += day.words;
+          bucket.dictations += day.dictations ?? 0;
+        }
+      }
+      out.push(bucket);
+    }
+  }
+
+  return out;
+}
+
+/** "0 min" / "45 min" / "3h 20m" — the one place minutes get rendered. */
+function formatMinutes(m: number): string {
+  if (m <= 0) return "0 min";
+  if (m < 60) return `${Math.round(m)} min`;
+  const h = Math.floor(m / 60);
+  const min = Math.round(m % 60);
+  return min === 0 ? `${h}h` : `${h}h ${min}m`;
+}
+
+/** The small pill row used to switch period / grain. */
+function SegmentedControl<T extends string>({
+  options,
+  value,
+  onChange,
+  ariaLabel,
+}: {
+  options: { id: T; label: string }[];
+  value: T;
+  onChange: (id: T) => void;
+  ariaLabel: string;
+}) {
+  return (
+    <div className="segmented" role="tablist" aria-label={ariaLabel}>
+      {options.map((opt) => (
+        <button
+          key={opt.id}
+          type="button"
+          role="tab"
+          aria-selected={value === opt.id}
+          className={`segmented-option ${value === opt.id ? "is-active" : ""}`}
+          onClick={() => onChange(opt.id)}
+        >
+          {opt.label}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 // "Local only" status, with no pill chrome — just a status dot and text that types
 // itself out word-by-word, holds, clears, and loops smoothly (typewriter effect).
@@ -135,41 +318,27 @@ function WpmGauge({ wpm }: { wpm: number }) {
   }
 
   return (
-    <div className="glass-panel" style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", position: "relative", minHeight: 185 }}>
-      <span className="stat-label">Words Per Minute</span>
-      <span className="stat-value" style={{ fontSize: 34, fontWeight: 700, margin: "2px 0 6px 0", letterSpacing: "-1px" }}>
+    <div className="glass-panel dashboard-wpm-panel" style={{ minHeight: 185 }}>
+      <div className="dashboard-wpm-header">
+        <span className="stat-label">Words Per Minute</span>
+      </div>
+      <span className="stat-value dashboard-wpm-value">
         {wpm > 0 ? Math.round(wpm) : "--"}
       </span>
-      <div style={{ position: "relative", width: 140, height: 75, overflow: "hidden" }}>
-        <svg width="140" height="75" viewBox="0 0 140 70">
-          <defs>
-            <linearGradient id="wpm-arc-gradient" x1="0%" y1="0%" x2="100%" y2="0%">
-              <stop offset="0%" stopColor="#d66a2a" />
-              <stop offset="100%" stopColor="#eedca7" />
-            </linearGradient>
-          </defs>
-          <path
-            d="M 10 65 A 60 60 0 0 1 130 65"
-            fill="none"
-            stroke="var(--quaternary)"
-            strokeWidth="9"
-            strokeLinecap="round"
-          />
-          <path
-            d="M 10 65 A 60 60 0 0 1 130 65"
-            fill="none"
-            stroke="url(#wpm-arc-gradient)"
-            strokeWidth="9"
-            strokeLinecap="round"
-            strokeDasharray="188.5"
-            strokeDashoffset={188.5 - (188.5 * pct) / 100}
-            style={{ transition: "stroke-dashoffset 0.8s ease-out" }}
-          />
-        </svg>
-        <div style={{ position: "absolute", bottom: 4, left: 0, right: 0, textAlign: "center", display: "flex", flexDirection: "column", gap: 1 }}>
-          <span style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--secondary)", fontWeight: 500 }}>{text}</span>
-          <span style={{ fontSize: 12, fontWeight: 700, color: "var(--success)" }}>{badge}</span>
-        </div>
+      <div
+        className="dashboard-wpm-track"
+        role="progressbar"
+        aria-label="Writing speed percentile"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={pct}
+      >
+        <span className="dashboard-wpm-progress" style={{ width: `${pct}%` }} />
+        <span className="dashboard-wpm-marker" style={{ left: `${pct}%` }} />
+      </div>
+      <div className="dashboard-wpm-footer">
+        <span className="dashboard-wpm-description">{text}</span>
+        <span className="dashboard-wpm-rank">{badge}</span>
       </div>
     </div>
   );
@@ -234,83 +403,66 @@ function StreakCalendar({ wordsPerDay, currentStreak, longestStreak }: { wordsPe
   const daysOfWeek = ["S", "M", "T", "W", "T", "F", "S"];
 
   return (
-    <div className="glass-panel" style={{ display: "flex", flexDirection: "column", gap: 8, minHeight: 185 }}>
+    <div className="glass-panel dashboard-streak-panel" style={{ display: "flex", flexDirection: "column", gap: 8, minHeight: 185 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 2 }}>
         <span className="row-title" style={{ fontSize: 13, fontWeight: 600, color: "var(--label)" }}>Activity Streak</span>
         <span className="stat-footnote" style={{ fontSize: 11 }}>
-          Current: <strong style={{ color: "var(--accent)" }}>{currentStreak}d</strong> | Max: <strong>{longestStreak}d</strong>
+          Current: <strong style={{ color: "var(--label)" }}>{currentStreak}d</strong> | Max: <strong>{longestStreak}d</strong>
         </span>
       </div>
 
-      <div style={{ display: "flex", flexDirection: "column", gap: 3, width: "100%", overflow: "hidden", padding: 4 }}>
-        {/* Month labels */}
-        <div style={{ display: "flex", gap: 3, paddingLeft: 18, height: 12 }}>
-          {columnMonths.map((m, idx) => (
-            <div key={idx} style={{ width: 10, fontSize: 8, color: "var(--secondary)", textAlign: "left", whiteSpace: "nowrap" }}>
-              {m}
-            </div>
-          ))}
-        </div>
+      <div className="streak-grid">
+        {/* top-left spacer, then a month label per week column */}
+        <div className="streak-corner" />
+        {columnMonths.map((m, idx) => (
+          <div key={`m${idx}`} className="streak-month">{m}</div>
+        ))}
 
-        {/* Rows of days */}
+        {/* one row per weekday: day label + a cell per week */}
         {[0, 1, 2, 3, 4, 5, 6].map((rowIdx) => (
-          <div key={rowIdx} style={{ display: "flex", alignItems: "center", gap: 3 }}>
-            {/* Day name */}
-            <div style={{ width: 14, fontSize: 8, color: "var(--tertiary)", fontWeight: 600, textAlign: "center" }}>
-              {daysOfWeek[rowIdx]}
-            </div>
-
-            {/* Squares */}
+          <Fragment key={rowIdx}>
+            <div className="streak-daylabel">{daysOfWeek[rowIdx]}</div>
             {cols.map((col, colIdx) => {
               const day = col[rowIdx];
-              let bgColor = "var(--quaternary)";
-              let border = "none";
-              
+              let bgColor = "transparent";
+              let border = "1px solid var(--separator-soft)";
+
               if (day.isFuture) {
-                bgColor = "transparent";
+                border = "none";
               } else if (day.words > 0) {
-                const opacity = Math.min(0.25 + (day.words / 250), 1.0);
-                bgColor = `rgba(48, 209, 88, ${opacity})`;
+                const intensity = Math.min(28 + Math.round((day.words / 650) * 62), 90);
+                bgColor = `color-mix(in srgb, var(--success) ${intensity}%, var(--panel))`;
+                border = "none";
               }
 
               if (day.isToday) {
-                border = "1.5px solid var(--accent)";
+                border = "1px solid var(--label)";
               }
 
               const dateStr = day.date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
-              const tooltipText = day.words > 0 
+              const tooltipText = day.words > 0
                 ? `${day.words} words on ${dateStr}`
                 : `No words on ${dateStr}`;
-              
-              const isAnimeBorder = day.words > 120;
-              const cellClass = `streak-cell ${isAnimeBorder ? "anime-cell-border" : ""}`;
 
               return (
                 <div
                   key={colIdx}
-                  className={cellClass}
+                  className="streak-cell"
                   data-tooltip={tooltipText}
-                  style={{
-                    width: 10,
-                    height: 10,
-                    borderRadius: 2,
-                    backgroundColor: bgColor,
-                    border: border,
-                    boxSizing: "border-box",
-                  }}
+                  style={{ backgroundColor: bgColor, border }}
                 />
               );
             })}
-          </div>
+          </Fragment>
         ))}
       </div>
       
       <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 4, fontSize: 8, color: "var(--secondary)", marginTop: 2 }}>
         <span>Less</span>
-        <div style={{ width: 7, height: 7, borderRadius: 1, backgroundColor: "var(--quaternary)" }} />
-        <div style={{ width: 7, height: 7, borderRadius: 1, backgroundColor: "rgba(48, 209, 88, 0.4)" }} />
-        <div style={{ width: 7, height: 7, borderRadius: 1, backgroundColor: "rgba(48, 209, 88, 0.7)" }} />
-        <div style={{ width: 7, height: 7, borderRadius: 1, backgroundColor: "rgba(48, 209, 88, 1.0)" }} />
+        <div style={{ width: 7, height: 7, borderRadius: 1, border: "1px solid var(--separator-soft)" }} />
+        <div style={{ width: 7, height: 7, borderRadius: 1, backgroundColor: "color-mix(in srgb, var(--success) 35%, var(--panel))" }} />
+        <div style={{ width: 7, height: 7, borderRadius: 1, backgroundColor: "color-mix(in srgb, var(--success) 60%, var(--panel))" }} />
+        <div style={{ width: 7, height: 7, borderRadius: 1, backgroundColor: "color-mix(in srgb, var(--success) 88%, var(--panel))" }} />
         <span>More</span>
       </div>
     </div>
@@ -325,8 +477,10 @@ export default function Dashboard() {
   const [sysStats, setSysStats] = useState<SystemStats | null>(null);
   const [shortcutToggle, setShortcutToggle] = useState("Ctrl+Alt");
   const [keybindKeyboardName, setKeybindKeyboardName] = useState("Ctrl+Q");
-  const [keybindMouse, setKeybindMouse] = useState("middle");
-  const [keybindMouseName, setKeybindMouseName] = useState("Middle Click");
+  const [keybindMouseToggle, setKeybindMouseToggle] = useState("none");
+  const [keybindMouseInstant, setKeybindMouseInstant] = useState("none");
+  const [period, setPeriod] = useState<Period>("today");
+  const [grain, setGrain] = useState<Grain>("daily");
   const { isRecording, isProcessing, lastTranscript, startRecording, stopRecording } = useAppStore();
 
   useEffect(() => {
@@ -340,13 +494,24 @@ export default function Dashboard() {
     getSetting("keybind_keyboard_name").then((val) => {
       if (val) setKeybindKeyboardName(val);
     });
-    getSetting("keybind_mouse").then((val) => {
-      if (val) setKeybindMouse(val);
+    getSetting("keybind_mouse_toggle").then((val) => {
+      if (val) setKeybindMouseToggle(val);
     });
-    getSetting("keybind_mouse_name").then((val) => {
-      if (val) setKeybindMouseName(val);
+    getSetting("keybind_mouse_instant").then((val) => {
+      if (val) setKeybindMouseInstant(val);
     });
   }, []);
+
+  // Friendly label for a stored mouse-button value, or null when unset ("none").
+  const mouseLabel = (v: string): string | null => {
+    switch (v) {
+      case "middle": return "Middle click";
+      case "right": return "Right click";
+      case "button4": case "back": return "Mouse 4";
+      case "button5": case "forward": return "Mouse 5";
+      default: return null;
+    }
+  };
 
   useEffect(() => {
     getDashboardStats()
@@ -378,15 +543,17 @@ export default function Dashboard() {
     setStats(freshStats);
   };
 
-  const formatMinutes = (m: number) => {
-    if (m === 0) return "0 min";
-    if (m < 60) return `${Math.round(m)} min`;
-    const h = Math.floor(m / 60);
-    const min = Math.round(m % 60);
-    return `${h}h ${min}m`;
-  };
+  const displayStats = stats;
+  const displayTranscript = lastTranscript?.cleaned || null;
+  const wordsPerDay = displayStats?.words_per_day ?? [];
 
-  const last7DaysData = stats?.words_per_day?.slice(-7) ?? [];
+  // Both panels read from the same daily series, so the headline number and the
+  // chart can never tell different stories.
+  const periodTotals = totalsFor(wordsPerDay, period);
+  const periodMeta = PERIODS.find((p) => p.id === period)!;
+  const chartData = bucketSeries(wordsPerDay, grain);
+  const grainMeta = GRAINS.find((g) => g.id === grain)!;
+  const hasChartData = chartData.some((b) => b.words > 0);
 
   if (loading) {
     return (
@@ -399,7 +566,7 @@ export default function Dashboard() {
   }
 
   return (
-    <div className="page" style={{ paddingBottom: 15 }}>
+    <div className={`page dashboard-page ${displayTranscript ? "has-last-transcript" : ""}`} style={{ paddingBottom: 15 }}>
       {/* Dynamic Toggle CSS Style Block */}
       <style>{`
         .live-pulse {
@@ -427,7 +594,7 @@ export default function Dashboard() {
       `}</style>
 
       {showBanner && (
-        <div className="banner-card" style={{ backgroundImage: "url('/red extra.png')" }}>
+        <div className="banner-card dashboard-banner" style={{ backgroundImage: "url('/red extra.png')" }}>
           <div className="banner-content">
             <h2 className="banner-title">Writes the way <em>you</em> think.</h2>
             <p className="banner-desc">
@@ -442,7 +609,7 @@ export default function Dashboard() {
         </div>
       )}
 
-      <div className="page-header">
+      <div className="page-header dashboard-header">
         <div>
           <p className="page-kicker">Workspace Overview</p>
           <h2 className="page-title">Your dictation dashboard</h2>
@@ -450,7 +617,8 @@ export default function Dashboard() {
             {[
               { label: "Toggle", keys: shortcutToggle.split("+") },
               { label: "Instant", keys: keybindKeyboardName.split("+") },
-              ...(keybindMouse !== "none" ? [{ label: "Mouse", keys: [keybindMouseName] }] : []),
+              ...(mouseLabel(keybindMouseToggle) ? [{ label: "Mouse", keys: [mouseLabel(keybindMouseToggle)!] }] : []),
+              ...(mouseLabel(keybindMouseInstant) ? [{ label: "Mouse hold", keys: [mouseLabel(keybindMouseInstant)!] }] : []),
             ].map(({ label, keys }) => (
               <span
                 key={label}
@@ -489,16 +657,16 @@ export default function Dashboard() {
         </button>
       </div>
 
-      {lastTranscript && (
-        <section className="glass-panel" style={{ marginBottom: 12 }}>
+      {displayTranscript && (
+        <section className="glass-panel dashboard-last-transcript" style={{ marginBottom: 12 }}>
           <div className="section-label">Last transcription</div>
           <p style={{ margin: 0, color: "var(--label)", fontSize: 14, lineHeight: "20px", fontWeight: 500 }}>
-            {lastTranscript.cleaned}
+            {displayTranscript}
           </p>
         </section>
       )}
 
-      <div className="glass-panel" style={{ display: "flex", gap: 12, alignItems: "flex-start", marginBottom: 12 }}>
+      <div className="glass-panel dashboard-background-note" style={{ display: "flex", gap: 12, alignItems: "flex-start", marginBottom: 12 }}>
         <span style={{ marginTop: 2, flexShrink: 0, display: "inline-flex" }}>
           <InfoCircleIcon size={16} color="var(--accent)" loop />
         </span>
@@ -519,86 +687,147 @@ export default function Dashboard() {
       </div>
 
       {/* Bento Grid */}
-      <div className="grid cols-3" style={{ marginBottom: 12, gap: 12 }}>
+      <div className="grid cols-3 dashboard-primary-grid" style={{ marginBottom: 12, gap: 12 }}>
         {/* WPM percentiles */}
-        <WpmGauge wpm={stats?.avg_wpm_7d ?? 0} />
+        <WpmGauge wpm={displayStats?.avg_wpm_7d ?? 0} />
 
         {/* Streak calendar */}
         <StreakCalendar
-          wordsPerDay={stats?.words_per_day ?? []}
-          currentStreak={stats?.streak_days ?? 0}
-          longestStreak={stats?.longest_streak ?? 0}
+          wordsPerDay={displayStats?.words_per_day ?? []}
+          currentStreak={displayStats?.streak_days ?? 0}
+          longestStreak={displayStats?.longest_streak ?? 0}
         />
 
         {/* Core numbers */}
-        <div className="glass-panel" style={{ display: "flex", flexDirection: "column", justifyContent: "space-between", minHeight: 185 }}>
+        <div className="glass-panel dashboard-core-panel" style={{ display: "flex", flexDirection: "column", justifyContent: "space-between", minHeight: 185 }}>
           <div>
-            <div className="stat-label">Words Today</div>
+            <div className="dashboard-core-head">
+              <span className="stat-label">Words</span>
+              <SegmentedControl
+                ariaLabel="Time period"
+                options={PERIODS}
+                value={period}
+                onChange={setPeriod}
+              />
+            </div>
             <div className="stat-value" style={{ fontSize: 32, fontWeight: 700, margin: "2px 0 10px 0" }}>
-              {(stats?.words_today ?? 0).toLocaleString()}
+              {periodTotals.words.toLocaleString()}
             </div>
           </div>
           <div style={{ borderTop: "1px solid var(--separator-soft)", paddingTop: 8 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
               <Timer size={14} color="var(--accent)" />
-              <span className="stat-label" style={{ fontSize: 11 }}>Time Saved</span>
+              <span className="stat-label" style={{ fontSize: 11 }}>
+                Time saved {periodMeta.label.toLowerCase() === "today" ? "today" : `this ${periodMeta.label.toLowerCase()}`}
+              </span>
             </div>
             <div className="stat-value accent" style={{ fontSize: 26, fontWeight: 700, color: "var(--accent)" }}>
-              {formatMinutes(stats?.time_saved_minutes ?? 0)}
+              {formatMinutes(periodTotals.minutesSaved)}
             </div>
             <span className="stat-footnote" style={{ fontSize: 10, display: "block", marginTop: 2 }}>
-              Dictations recorded: {(stats?.total_dictations ?? 0).toLocaleString()} (versus 60wpm typing).
+              {periodTotals.dictations.toLocaleString()} dictations {periodMeta.note} · versus typing at {TYPING_WPM} wpm.
             </span>
           </div>
         </div>
       </div>
 
-      <div className="grid cols-2" style={{ marginBottom: 12, gap: 12 }}>
+      <div className="grid cols-2 dashboard-secondary-grid" style={{ marginBottom: 12, gap: 12 }}>
         {/* Total lifetime words dictated & chart */}
-        <div className="glass-panel" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <div>
-            <div className="stat-label">Total Lifetime Dictations</div>
-            <div className="stat-value" style={{ fontSize: 28, fontWeight: 700 }}>
-              {(stats?.total_words ?? 0).toLocaleString()} <span style={{ fontSize: 14, fontWeight: 500, color: "var(--secondary)" }}>words</span>
+        <div className="glass-panel dashboard-lifetime-panel" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {/* Lifetime totals: words dictated, and the time that bought back. */}
+          <div className="dashboard-lifetime-totals">
+            <div>
+              <div className="stat-label">Total Lifetime Dictations</div>
+              <div className="stat-value" style={{ fontSize: 28, fontWeight: 700 }}>
+                {(displayStats?.total_words ?? 0).toLocaleString()} <span style={{ fontSize: 14, fontWeight: 500, color: "var(--secondary)" }}>words</span>
+              </div>
+              <span className="stat-footnote" style={{ fontSize: 10 }}>
+                across {(displayStats?.total_dictations ?? 0).toLocaleString()} dictations
+              </span>
+            </div>
+            <div className="dashboard-lifetime-saved">
+              <div className="stat-label" style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                <Timer size={12} color="var(--accent)" /> Total time saved
+              </div>
+              <div className="stat-value" style={{ fontSize: 28, fontWeight: 700, color: "var(--accent)" }}>
+                {formatMinutes(displayStats?.time_saved_minutes ?? 0)}
+              </div>
+              <span className="stat-footnote" style={{ fontSize: 10 }}>
+                versus typing at {TYPING_WPM} wpm
+              </span>
             </div>
           </div>
-          
-          <div style={{ height: 110, width: "100%" }}>
-            <div className="section-label" style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, marginBottom: 6 }}>
-              <TrendingUp size={12} /> Words (Last 7 days)
+
+          <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 130 }}>
+            <div className="dashboard-chart-head">
+              <span className="section-label" style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, margin: 0 }}>
+                <TrendingUp size={12} /> {grainMeta.note}
+              </span>
+              <SegmentedControl
+                ariaLabel="Chart grouping"
+                options={GRAINS}
+                value={grain}
+                onChange={setGrain}
+              />
             </div>
-            {last7DaysData.length > 0 ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={last7DaysData}>
-                  <XAxis
-                    dataKey="date"
-                    tick={{ fontSize: 9, fill: "var(--secondary)" }}
-                    axisLine={false}
-                    tickLine={false}
-                    tickFormatter={(v) => v.slice(8)} // just display DD
-                  />
-                  <Tooltip
-                    contentStyle={{
-                      backgroundColor: "var(--panel-solid)",
-                      borderColor: "var(--separator)",
-                      borderRadius: 6,
-                      fontSize: 11,
-                      color: "var(--label)",
-                    }}
-                  />
-                  <Line type="monotone" dataKey="words" stroke="var(--accent)" strokeWidth={2} dot={false} />
-                </LineChart>
-              </ResponsiveContainer>
-            ) : (
-              <div style={{ height: "100%", display: "grid", placeItems: "center", fontSize: 11, color: "var(--tertiary)" }}>
-                No historical data
-              </div>
-            )}
+            <div style={{ flex: 1, minHeight: 100, width: "100%" }}>
+              {hasChartData ? (
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={chartData} margin={{ top: 6, right: 6, bottom: 0, left: 0 }}>
+                    <XAxis
+                      dataKey="label"
+                      tick={{ fontSize: 9, fill: "var(--secondary)" }}
+                      axisLine={false}
+                      tickLine={false}
+                      interval="preserveStartEnd"
+                      minTickGap={12}
+                    />
+                    <YAxis type="number" hide domain={[0, "dataMax + 40"]} />
+                    <Tooltip
+                      contentStyle={{
+                        backgroundColor: "var(--panel-solid)",
+                        borderColor: "var(--separator)",
+                        borderRadius: 6,
+                        fontSize: 11,
+                        color: "var(--label)",
+                      }}
+                      formatter={(value, name) => {
+                        const n = Number(value) || 0;
+                        return name === "Words"
+                          ? [`${n.toLocaleString()} words · ${formatMinutes(n / TYPING_WPM)} saved`, "Words"]
+                          : [n.toLocaleString(), String(name)];
+                      }}
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="words"
+                      name="Words"
+                      stroke="var(--accent)"
+                      strokeWidth={2}
+                      dot={{ r: 2, fill: "var(--accent)", strokeWidth: 0 }}
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="dictations"
+                      name="Dictations"
+                      stroke="var(--success)"
+                      strokeWidth={1.5}
+                      strokeDasharray="4 3"
+                      dot={false}
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
+              ) : (
+                <div style={{ height: "100%", display: "grid", placeItems: "center", fontSize: 11, color: "var(--tertiary)" }}>
+                  No dictations in this range yet
+                </div>
+              )}
+            </div>
           </div>
         </div>
 
         {/* Top apps usage & toggles */}
-        <div className="glass-panel" style={{ display: "flex", flexDirection: "column", justifyContent: "space-between", gap: 8 }}>
+        <div className="glass-panel dashboard-targets-panel" style={{ display: "flex", flexDirection: "column", justifyContent: "space-between", gap: 8 }}>
           <div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
               <span className="section-label">Top Dictation Targets</span>
@@ -625,9 +854,9 @@ export default function Dashboard() {
                     </span>
                   </div>
                 </div>
-              ) : stats && stats.top_apps && stats.top_apps.length > 0 ? (
+              ) : displayStats && displayStats.top_apps && displayStats.top_apps.length > 0 ? (
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={stats.top_apps.slice(0, 3)} layout="vertical" barSize={10}>
+                  <BarChart data={displayStats.top_apps.slice(0, 5)} layout="vertical" barSize={10}>
                     <XAxis type="number" hide />
                     <YAxis
                       type="category"
@@ -635,7 +864,8 @@ export default function Dashboard() {
                       tick={{ fontSize: 10, fill: "var(--secondary)" }}
                       axisLine={false}
                       tickLine={false}
-                      width={80}
+                      interval={0}
+                      width={90}
                     />
                     <Tooltip
                       contentStyle={{
@@ -647,7 +877,7 @@ export default function Dashboard() {
                       }}
                     />
                     <Bar dataKey="word_count" radius={[0, 3, 3, 0]}>
-                      {stats.top_apps.slice(0, 3).map((_, index) => (
+                      {displayStats.top_apps.slice(0, 5).map((_, index) => (
                         <Cell key={index} fill={CHART_COLORS[index % CHART_COLORS.length]} />
                       ))}
                     </Bar>
@@ -667,7 +897,7 @@ export default function Dashboard() {
       </div>
 
       {/* Analytics Panel */}
-      <section className="glass-panel" style={{ marginTop: 12 }}>
+      <section className="glass-panel dashboard-analytics" style={{ marginTop: 12 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8, borderBottom: "1px solid var(--separator-soft)", paddingBottom: 6 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px" }}>
             <Cpu size={12} color="var(--secondary)" />

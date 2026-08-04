@@ -1,4 +1,4 @@
-import { ExternalLink, Sparkles } from "lucide-react";
+import { ExternalLink } from "lucide-react";
 import logoWhite from "../assets/brand/logo_white.png";
 import WifiOffIcon from "../components/ui/wifi-off-icon";
 import Stack3Icon from "../components/ui/stack-3-icon";
@@ -64,7 +64,7 @@ export default function AboutPage() {
           <h2 className="page-title">About LocalFlow</h2>
         </div>
         <div style={{ display: "flex", gap: 6, alignItems: "center", flexShrink: 0 }}>
-          <span className="badge" style={{ background: "var(--warning)", color: "var(--separator)", border: "1.5px solid var(--separator)", boxShadow: "2px 2px 0px var(--separator)", fontWeight: 900, fontSize: 10, padding: "2px 8px" }}>
+          <span className="badge" style={{ background: "var(--warning)", color: "var(--warning-text)", border: "1.5px solid var(--separator)", boxShadow: "2px 2px 0px var(--separator)", fontWeight: 900, fontSize: 10, padding: "2px 8px" }}>
             VOL. 01 // LOCAL FLOW
           </span>
           <span className="badge" style={{ background: "var(--accent)", color: "var(--accent-text)", border: "1.5px solid var(--separator)", boxShadow: "2px 2px 0px var(--separator)", fontWeight: 900, fontSize: 10, padding: "2px 8px" }}>
@@ -115,10 +115,10 @@ export default function AboutPage() {
         {/* Creator stamp */}
         <section className="glass-panel" style={{ display: "flex", flexDirection: "column", justifyContent: "space-between", padding: 20, background: "var(--warning)" }}>
           <div>
-            <div style={{ fontSize: 9, fontWeight: 900, textTransform: "uppercase", letterSpacing: "1px", color: "var(--separator)" }}>
+            <div style={{ fontSize: 9, fontWeight: 900, textTransform: "uppercase", letterSpacing: "1px", color: "var(--warning-text)" }}>
               // CREATOR
             </div>
-            <h3 style={{ fontSize: 18, fontWeight: 800, margin: "8px 0 4px", color: "var(--separator)" }}>Arya</h3>
+            <h3 style={{ fontSize: 18, fontWeight: 800, margin: "8px 0 4px", color: "var(--warning-text)" }}>Arya</h3>
             <p style={{ fontSize: 12, color: "rgba(21, 25, 20, 0.72)", lineHeight: "17px", margin: 0 }}>
               Didn't like paying for a voice-to-text transcriber, so I made one that's free. Enjoy!
             </p>
@@ -150,8 +150,8 @@ export default function AboutPage() {
 
       {/* Trust Pillars */}
       <section style={{ marginBottom: 20 }}>
-        <div className="section-label" style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 12 }}>
-          <Sparkles size={12} color="var(--accent)" /> Core System Trust Pillars
+        <div className="section-label" style={{ marginBottom: 12 }}>
+          Core System Trust Pillars
         </div>
 
         <div className="grid cols-2" style={{ gap: 16 }}>

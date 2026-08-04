@@ -7,9 +7,11 @@
   --accent-strong: #151914; /* Ink Black */
   --accent-text: #fffaf1; /* Cream text on accent */
   --success: #0d7b67; /* Teal Forest */
+  --success-text: #fffaf1;
   --danger: #d66a2a;
   --error: #c0392b; /* Brick Red — true error, distinct from burnt-orange danger */
   --warning: #eedca7; /* Manga Gold */
+  --warning-text: #151914;
   --window: #FFFFEB; /* Cream BG (light mode) */
   --sidebar: #FFFFEB;
   --panel: #fffaf1; /* Cream Card BG */
@@ -47,9 +49,11 @@ html.dark {
   --accent-strong: #fffaf1; /* Off-white label */
   --accent-text: #151914; /* Ink Black text on gold */
   --success: #b8d9c5; /* Mint Green */
-  --danger: #d66a2a;
+  --success-text: #151914;
+  --danger: #ef8d53;
   --error: #e0695e; /* Brick Red, lifted for dark surfaces */
   --warning: #eedca7;
+  --warning-text: #151914;
   --window: #151914; /* Ink Black BG */
   --sidebar: #151914;
   --panel: #242923; /* Dark Card BG */
@@ -219,6 +223,9 @@ a {
 }
 
 .mac-sidebar {
+  position: relative;
+  z-index: 2;
+  isolation: isolate;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -880,7 +887,7 @@ textarea {
 
 .button:hover {
   background: var(--control-hover);
-  color: var(--separator);
+  color: var(--label);
   transform: translate(-1px, -1px);
   box-shadow: 4px 4px 0px var(--separator);
 }
@@ -907,6 +914,7 @@ textarea {
 
 .button.primary:hover {
   background: var(--accent);
+  color: var(--accent-text);
 }
 
 .button.danger {
@@ -941,6 +949,15 @@ textarea {
   outline: none;
   box-shadow: 2px 2px 0px var(--separator);
   transition: border-color 150ms ease, box-shadow 150ms ease, background 150ms ease, transform 100ms ease;
+}
+
+.field::placeholder,
+.textarea::placeholder,
+.note-title-input::placeholder,
+.note-textarea::placeholder,
+.onb-test::placeholder {
+  color: var(--tertiary);
+  opacity: 1;
 }
 
 .select {
@@ -1129,7 +1146,7 @@ textarea {
 
 .cleanup-ex-tag.get {
   background: var(--success);
-  color: #fffaf1;
+  color: var(--success-text);
 }
 
 .cleanup-ex-text {
@@ -1242,7 +1259,7 @@ textarea {
 
 .note-item.active {
   background: var(--accent);
-  color: white;
+  color: var(--accent-text);
 }
 
 .note-editor {
@@ -1610,6 +1627,569 @@ textarea {
   color: #ffffff;
 }
 
+/* Settings bento: use the desktop canvas horizontally while preserving content-sized sections. */
+.settings-page {
+  width: min(100%, var(--page-max));
+}
+
+.settings-page .settings-banner {
+  margin-bottom: 16px;
+}
+
+.settings-page-header {
+  margin-bottom: 14px;
+}
+
+.settings-bento-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-areas:
+    "permissions permissions"
+    "audio language"
+    "display privacy"
+    "display startup"
+    "display triggers"
+    "callout callout";
+  gap: 14px;
+  align-items: stretch;
+}
+
+.settings-section {
+  min-width: 0;
+  margin-bottom: 0 !important;
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-section > .section-label {
+  flex-shrink: 0;
+  margin: 0 2px 6px;
+}
+
+.settings-section > .table-panel {
+  flex: 1;
+  min-height: 0;
+}
+
+.settings-permissions { grid-area: permissions; }
+.settings-audio { grid-area: audio; }
+.settings-language { grid-area: language; }
+.settings-display { grid-area: display; }
+.settings-startup { grid-area: startup; }
+.settings-privacy { grid-area: privacy; }
+.settings-triggers { grid-area: triggers; }
+.settings-privacy-callout { grid-area: callout; }
+
+.settings-bento-grid .setting-row {
+  min-height: 54px;
+  padding: 10px 12px;
+  gap: 12px;
+}
+
+.settings-bento-grid .setting-row > :first-child {
+  min-width: 0;
+}
+
+.settings-bento-grid .setting-row > :last-child {
+  min-width: 0;
+  max-width: 210px;
+  text-align: right;
+}
+
+.settings-bento-grid .settings-permissions .setting-row > :last-child,
+.settings-bento-grid .settings-display .setting-row > :last-child {
+  max-width: none;
+}
+
+.settings-bento-grid .select {
+  width: min(200px, 100%) !important;
+}
+
+.settings-bento-grid .setting-title {
+  font-weight: 700;
+}
+
+.settings-bento-grid .setting-desc {
+  font-size: 11px;
+  line-height: 15px;
+}
+
+.settings-privacy-callout {
+  margin-top: 0 !important;
+  min-height: 48px;
+}
+
+/* ── Segmented control ─────────────────────────────────────────────────────
+   Day/Week/Month/Year switches on the dashboard. Small enough to sit inline in
+   a panel header without competing with the number it filters. */
+.segmented {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 999px;
+  border: 1px solid var(--separator-soft);
+  background: var(--control);
+  flex-shrink: 0;
+}
+
+.segmented-option {
+  appearance: none;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 15px;
+  color: var(--secondary);
+  transition: background 0.15s ease, color 0.15s ease;
+  white-space: nowrap;
+}
+
+.segmented-option:hover {
+  color: var(--label);
+}
+
+.segmented-option.is-active {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.dashboard-core-head,
+.dashboard-chart-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+/* Lifetime words and lifetime time-saved read as a pair, so they sit side by
+   side and wrap together on narrow widths. */
+.dashboard-lifetime-totals {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.dashboard-lifetime-saved {
+  text-align: right;
+  padding-left: 12px;
+  border-left: 1px solid var(--separator-soft);
+}
+
+@media (max-width: 720px) {
+  .dashboard-lifetime-saved {
+    text-align: left;
+    padding-left: 0;
+    border-left: none;
+  }
+}
+
+/* Privacy strip — the closing statement of the Settings page. No icon: the
+   claim carries itself, and the three chips are the proof. */
+.privacy-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px 20px;
+  padding: 14px 18px;
+  border: 1.5px solid var(--separator);
+  border-radius: 10px;
+  box-shadow: 3px 3px 0 var(--separator);
+  background: var(--warning);
+  color: var(--warning-text);
+}
+
+.privacy-strip-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.privacy-strip-eyebrow {
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 1.4px;
+  text-transform: uppercase;
+  opacity: 0.55;
+}
+
+.privacy-strip-title {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 800;
+  line-height: 19px;
+  color: var(--warning-text);
+}
+
+/* Second half is the supporting detail — same line, lighter weight. */
+.privacy-strip-title span {
+  font-weight: 500;
+  opacity: 0.75;
+}
+
+.privacy-strip-proof {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+
+.privacy-strip-chip {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.2px;
+  text-transform: uppercase;
+  padding: 4px 9px;
+  border-radius: 999px;
+  border: 1.5px solid var(--warning-text);
+  background: transparent;
+  color: var(--warning-text);
+  white-space: nowrap;
+}
+
+@media (max-width: 620px) {
+  .privacy-strip {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
+
+@media (max-width: 980px) {
+  .settings-bento-grid {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "permissions"
+      "audio"
+      "language"
+      "display"
+      "privacy"
+      "startup"
+      "triggers"
+      "callout";
+  }
+
+  .settings-bento-grid .setting-row > :last-child {
+    max-width: none;
+  }
+
+  .settings-bento-grid .select {
+    width: min(260px, 100%) !important;
+  }
+}
+
+/* Dashboard viewport layout: use the available height without compressing the data cards. */
+@media (min-width: 821px) {
+  .dashboard-page {
+    box-sizing: border-box;
+    height: 100%;
+    min-height: 0;
+    padding: 14px 16px 16px !important;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr) minmax(0, 1fr) auto;
+    gap: 12px;
+  }
+
+  .dashboard-page.has-last-transcript {
+    grid-template-rows: auto auto minmax(0, 1fr) minmax(0, 1fr) auto;
+  }
+
+  .dashboard-last-transcript {
+    align-self: start;
+    margin-bottom: 0 !important;
+    padding: 11px 14px !important;
+  }
+
+  .dashboard-last-transcript .section-label {
+    margin-bottom: 4px;
+  }
+
+  .dashboard-last-transcript p {
+    overflow-wrap: anywhere;
+  }
+
+  .dashboard-page .glass-panel {
+    padding: clamp(11px, 1.1vw, 16px);
+  }
+
+  .dashboard-banner,
+  .dashboard-background-note {
+    display: none !important;
+  }
+
+  .dashboard-header {
+    align-items: center;
+    min-height: 58px;
+    margin-bottom: 0;
+  }
+
+  .dashboard-header .page-kicker {
+    display: none;
+  }
+
+  .dashboard-header .page-title {
+    font-size: 24px;
+    line-height: 28px;
+  }
+
+  .dashboard-header > div > div {
+    gap: 7px !important;
+    margin-top: 7px !important;
+  }
+
+  .dashboard-primary-grid,
+  .dashboard-secondary-grid {
+    min-height: 0;
+    height: 100%;
+    gap: 12px !important;
+    margin-bottom: 0 !important;
+  }
+
+  .dashboard-page .dashboard-primary-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .dashboard-wpm-panel,
+  .dashboard-streak-panel,
+  .dashboard-core-panel {
+    min-height: 0 !important;
+    height: 100%;
+  }
+
+  .dashboard-wpm-panel {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: space-between;
+    gap: 9px;
+    overflow: hidden;
+  }
+
+  .dashboard-wpm-panel > .dashboard-wpm-value {
+    align-self: flex-start;
+    margin: 0 !important;
+    font-size: clamp(48px, 5vw, 68px) !important;
+    line-height: 1;
+    flex: 1;
+    display: flex;
+    align-items: center;
+  }
+
+  .dashboard-wpm-header,
+  .dashboard-wpm-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-width: 0;
+  }
+
+  .dashboard-wpm-track {
+    position: relative;
+    width: 100%;
+    height: 9px;
+    flex-shrink: 0;
+    border: 1.5px solid var(--separator);
+    border-radius: 4px;
+    background: var(--control);
+    box-shadow: 1.5px 1.5px 0 var(--separator);
+    overflow: visible;
+  }
+
+  .dashboard-wpm-progress {
+    position: absolute;
+    inset: 0 auto 0 0;
+    max-width: 100%;
+    border-radius: 2px;
+    background: linear-gradient(90deg, var(--accent), var(--warning));
+  }
+
+  .dashboard-wpm-marker {
+    position: absolute;
+    top: 50%;
+    width: 3px;
+    height: 15px;
+    border-radius: 2px;
+    background: var(--label);
+    transform: translate(-50%, -50%);
+  }
+
+  .dashboard-wpm-description {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--secondary);
+    font-size: 10px;
+    font-weight: 800;
+    text-overflow: ellipsis;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  .dashboard-wpm-rank {
+    flex-shrink: 0;
+    padding: 3px 7px;
+    border: 1px solid color-mix(in srgb, var(--success) 45%, var(--separator));
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--success) 10%, var(--panel));
+    color: var(--success);
+    font-size: 11px;
+    font-weight: 800;
+    line-height: 14px;
+  }
+
+  .dashboard-streak-panel {
+    gap: 8px !important;
+    justify-content: space-between;
+  }
+
+  .dashboard-core-panel .stat-value {
+    line-height: 34px;
+  }
+
+  /* Let the "Words Today" block grow and centre so the big number fills the panel
+     instead of leaving a gap between it and the "Time Saved" footer. */
+  .dashboard-core-panel > div:first-child {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+  }
+
+  .dashboard-core-panel > div:first-child .stat-value {
+    margin: 6px 0 0 0 !important;
+    font-size: clamp(40px, 4.4vw, 60px) !important;
+    line-height: 1;
+  }
+
+  .dashboard-lifetime-panel,
+  .dashboard-targets-panel {
+    min-height: 0;
+    height: 100%;
+  }
+
+  .dashboard-lifetime-panel {
+    gap: 8px !important;
+  }
+
+  .dashboard-lifetime-panel > div:last-child {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 84px;
+    height: auto !important;
+  }
+
+  .dashboard-lifetime-panel > div:last-child > .recharts-responsive-container {
+    flex: 1;
+    min-height: 0;
+    height: auto !important;
+  }
+
+  .dashboard-lifetime-panel .stat-value {
+    margin-top: 3px;
+    font-size: 28px !important;
+    line-height: 31px;
+  }
+
+  .dashboard-targets-panel > div:first-child {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    flex-direction: column;
+  }
+
+  .dashboard-targets-panel > div > div:last-child {
+    flex: 1;
+    min-height: 92px;
+    height: auto !important;
+  }
+
+  .dashboard-targets-panel > div:first-child > div:first-child {
+    margin-bottom: 6px !important;
+  }
+
+  .dashboard-targets-panel > div:last-child {
+    display: none;
+  }
+
+  .dashboard-analytics {
+    margin-top: 0 !important;
+    min-height: 92px;
+  }
+
+  .dashboard-analytics > div:first-child {
+    margin-bottom: 8px !important;
+    padding-bottom: 6px !important;
+  }
+
+  .dashboard-page .dashboard-analytics .grid.cols-4 {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 821px) and (max-height: 650px) {
+  .dashboard-page.has-last-transcript {
+    gap: 8px;
+    padding: 10px 14px 12px !important;
+  }
+
+  .dashboard-header {
+    min-height: 42px;
+  }
+
+  .dashboard-header > div > div {
+    display: none !important;
+  }
+
+  .dashboard-wpm-panel {
+    gap: 6px;
+    padding: 8px 10px !important;
+  }
+
+  .dashboard-wpm-panel > .dashboard-wpm-value {
+    font-size: 36px !important;
+    line-height: 38px;
+  }
+
+  .dashboard-wpm-description {
+    font-size: 9px;
+  }
+
+  .dashboard-wpm-rank {
+    padding: 2px 6px;
+    font-size: 10px;
+    line-height: 13px;
+  }
+
+  .dashboard-core-panel .stat-footnote {
+    display: none !important;
+  }
+
+  .dashboard-lifetime-panel {
+    gap: 4px !important;
+  }
+
+  .dashboard-lifetime-panel > div:last-child {
+    min-height: 64px;
+  }
+
+  .dashboard-analytics {
+    min-height: 80px;
+  }
+
+  .dashboard-analytics .grid.cols-4 > div > div:last-child {
+    display: none;
+  }
+}
+
 /* Model specifications grid */
 .model-specs-grid {
   display: grid;
@@ -1713,6 +2293,41 @@ h1, h2, h3, h4, h5, h6, .page-title, .banner-title, .row-title, .setting-title, 
 }
 
 /* Github-like Tooltip for Activity Streak */
+/* Activity-streak heatmap: a responsive grid that fills the whole panel body so the
+   calendar looks full instead of a small block floating in empty space. */
+.streak-grid {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 16px repeat(12, minmax(0, 1fr));
+  grid-template-rows: 12px repeat(7, minmax(0, 1fr));
+  gap: 4px;
+  width: 100%;
+}
+
+.streak-month {
+  align-self: end;
+  font-size: 9px;
+  color: var(--secondary);
+  white-space: nowrap;
+}
+
+.streak-daylabel {
+  align-self: center;
+  justify-self: center;
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--tertiary);
+}
+
+.streak-grid .streak-cell {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  border-radius: 3px;
+  box-sizing: border-box;
+}
+
 .streak-cell {
   position: relative;
 }
@@ -1741,13 +2356,6 @@ h1, h2, h3, h4, h5, h6, .page-title, .banner-title, .row-title, .setting-title, 
 .streak-cell:hover::after {
   opacity: 1;
   transform: translateX(-50%) scale(1);
-}
-
-/* Anime cell offset border style */
-.anime-cell-border {
-  outline: 1.5px solid var(--accent) !important;
-  outline-offset: 1.5px;
-  border-radius: 1px !important;
 }
 
 /* ───────────────────────── Onboarding wizard ───────────────────────── */
@@ -1900,6 +2508,10 @@ h1, h2, h3, h4, h5, h6, .page-title, .banner-title, .row-title, .setting-title, 
 .section-attn .section-label {
   color: #b07d00;
   animation: attn-blink 1.2s ease-in-out infinite;
+}
+
+html.dark .section-attn .section-label {
+  color: var(--warning);
 }
 .section-attn .table-panel {
   animation: attn-panel 1.3s ease-in-out infinite;

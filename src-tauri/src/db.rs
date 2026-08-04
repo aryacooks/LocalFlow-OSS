@@ -48,6 +48,9 @@ pub struct WordsPerDay {
     pub date: String,
     pub words: i64,
     pub wpm: f64,
+    /// How many separate dictations happened that day. The dashboard rolls these
+    /// up into week/month/year buckets, so the daily grain has to come through.
+    pub dictations: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -383,7 +386,8 @@ pub fn get_dashboard_stats(db: State<'_, DbState>) -> Result<DashboardStats, Str
     // Words today
     let words_today: i64 = conn
         .query_row(
-            "SELECT COALESCE(SUM(word_count), 0) FROM dictation_history WHERE date(timestamp) = date('now') AND privacy_mode=0",
+            // 'localtime' on both sides so "today" means the user's today, not UTC's.
+            "SELECT COALESCE(SUM(word_count), 0) FROM dictation_history WHERE date(timestamp, 'localtime') = date('now', 'localtime') AND privacy_mode=0",
             [],
             |r| r.get(0),
         )
@@ -436,7 +440,8 @@ pub fn get_dashboard_stats(db: State<'_, DbState>) -> Result<DashboardStats, Str
 
 fn calculate_streaks(conn: &Connection) -> (i64, i64) {
     let mut stmt = match conn.prepare(
-        "SELECT date(timestamp) as day, SUM(word_count) as total
+        // Local days, matching the streak grid the frontend draws.
+        "SELECT date(timestamp, 'localtime') as day, SUM(word_count) as total
          FROM dictation_history
          WHERE privacy_mode=0
          GROUP BY day
@@ -514,15 +519,23 @@ fn calculate_streaks(conn: &Connection) -> (i64, i64) {
 }
 
 fn get_words_per_day(conn: &Connection) -> Result<Vec<WordsPerDay>, String> {
+    // Three years of daily grain. The dashboard's Day/Week/Month/Year views are all
+    // rolled up from this one series on the frontend, so the window has to be long
+    // enough for a couple of full years of history.
+    //
+    // Grouped by LOCAL date: timestamps are stored as UTC (`datetime('now')`), while
+    // the UI thinks in the user's own days. Without 'localtime' a late-evening
+    // dictation lands on tomorrow for anyone east of UTC.
     let mut stmt = conn
         .prepare(
-            "SELECT date(timestamp) as day,
+            "SELECT date(timestamp, 'localtime') as day,
                     SUM(word_count) as words,
                     CASE WHEN SUM(duration_secs) > 0
                          THEN SUM(word_count) / (SUM(duration_secs) / 60.0)
-                         ELSE 0 END as wpm
+                         ELSE 0 END as wpm,
+                    COUNT(*) as dictations
              FROM dictation_history
-             WHERE timestamp >= datetime('now', '-30 days') AND privacy_mode=0
+             WHERE timestamp >= datetime('now', '-1095 days') AND privacy_mode=0
              GROUP BY day
              ORDER BY day ASC",
         )
@@ -534,6 +547,7 @@ fn get_words_per_day(conn: &Connection) -> Result<Vec<WordsPerDay>, String> {
                 date: row.get(0)?,
                 words: row.get(1)?,
                 wpm: row.get(2)?,
+                dictations: row.get(3)?,
             })
         })
         .map_err(|e| e.to_string())?
