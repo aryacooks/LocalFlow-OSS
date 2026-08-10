@@ -1,3 +1,10 @@
+# LocalFlow is a single package, not a monorepo. pnpm still requires a `packages`
+# field once this file exists — without it `pnpm install` fails outright with
+# "packages field missing or empty", which is what broke the v0.1.0 and v0.1.1
+# release builds. Listing the repo root keeps the file valid.
+packages:
+  - "."
+
 allowBuilds:
   esbuild: true
   msw: true
