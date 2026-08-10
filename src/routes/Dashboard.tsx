@@ -10,7 +10,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { Mic, Timer, TrendingUp, Cpu, Zap, Activity } from "lucide-react";
+import { Mic, Timer, TrendingUp, Cpu, Zap, Activity, Scissors, Hourglass } from "lucide-react";
 import InfoCircleIcon from "../components/ui/info-circle-icon";
 import { DashboardStats, getDashboardStats, getSystemStats, SystemStats, getSetting, setSetting, WordsPerDay } from "../lib/ipc";
 import { keyLabel } from "../lib/utils";
@@ -964,6 +964,29 @@ export default function Dashboard() {
             <div style={{ fontSize: 9, color: "var(--tertiary)" }}>
               Everything runs on your computer
             </div>
+          </div>
+        </div>
+
+        {/*
+          Recording limits. The 10 minutes below mirrors MAX_RECORDING_SECS in
+          src-tauri/src/audio.rs — change both together.
+        */}
+        <div className="dashboard-limits">
+          <div className="dashboard-limit-note">
+            <Scissors size={12} color="var(--warning)" />
+            <p>
+              <strong>One recording holds up to 10 minutes.</strong> If you keep talking past that,
+              the oldest audio is dropped to make room — so on a very long take it's the{" "}
+              <em>beginning</em> that gets cut off, not the end.
+            </p>
+          </div>
+          <div className="dashboard-limit-note">
+            <Hourglass size={12} color="var(--accent)" />
+            <p>
+              <strong>Longer recordings take longer to transcribe.</strong> The wait after you stop
+              scales with how long you spoke, so a 10-minute take takes noticeably longer to come
+              back than a short one.
+            </p>
           </div>
         </div>
       </section>

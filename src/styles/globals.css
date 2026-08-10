@@ -1719,6 +1719,46 @@ textarea {
   min-height: 48px;
 }
 
+/* Recording-limit notes, closing out the diagnostics panel. Deliberately quiet —
+   this is reference material, not something to read on every visit. */
+.dashboard-limits {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 8px 20px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--separator-soft);
+}
+
+.dashboard-limit-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+}
+
+.dashboard-limit-note svg {
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.dashboard-limit-note p {
+  margin: 0;
+  font-size: 10.5px;
+  line-height: 15px;
+  color: var(--tertiary);
+}
+
+.dashboard-limit-note strong {
+  color: var(--secondary);
+  font-weight: 700;
+}
+
+.dashboard-limit-note em {
+  font-style: normal;
+  color: var(--secondary);
+  font-weight: 600;
+}
+
 /* ── Segmented control ─────────────────────────────────────────────────────
    Day/Week/Month/Year switches on the dashboard. Small enough to sit inline in
    a panel header without competing with the number it filters. */

@@ -4,9 +4,26 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use tauri::State;
 
-// Pre-allocation hint for the capture ring buffer (16 kHz * 30 s). The real cap is
-// computed per-device as `actual_rate * 300` (5 min); the VecDeque grows past this
-// hint as needed for longer recordings / higher capture rates.
+// Longest single recording we keep. Past this the buffer rolls, dropping the oldest
+// audio, so the cap trades memory against how much of a very long take survives.
+//
+// Cost is linear and paid only while recording: the buffer holds f32 mono samples at the
+// device's capture rate, so 10 min at 48 kHz is 600 * 48000 * 4 B ≈ 115 MB of address
+// space. Physical pages are only committed as audio actually arrives, so a 5-second
+// dictation still costs ~1 MB — the reservation itself is close to free.
+//
+// Two caveats worth knowing before raising this further: transcription time scales with
+// length (a 10-minute take is a long wait with no partial output), and Whisper's decoder
+// is more likely to lock into a repetition loop the longer the audio runs — see
+// `whisper::collapse_repetitions`.
+//
+// The Dashboard states this limit to the user (src/routes/Dashboard.tsx, "Recording
+// limits" under Diagnostics) — change both together.
+const MAX_RECORDING_SECS: usize = 600;
+
+// Pre-allocation hint used before the device's real capture rate is known (16 kHz * 30 s).
+// `start_audio_capture` reserves the full per-device cap up front, so the audio callback
+// never has to reallocate.
 pub const SAMPLE_RATE: u32 = 16000;
 const BUFFER_CAPACITY: usize = 480_000;
 
@@ -106,11 +123,17 @@ pub fn start_capture_internal(
     // Remember the capture rate so the pipeline can resample to 16 kHz for Whisper.
     *state.sample_rate.lock().unwrap() = actual_rate;
 
-    // Hold up to 300 s (5 min) of audio at the capture rate.
-    let max_samples = (actual_rate as usize) * 300;
+    let max_samples = (actual_rate as usize) * MAX_RECORDING_SECS;
 
-    // Clear buffer on start
-    state.buffer.lock().unwrap().clear();
+    // Start empty, and reserve the whole cap now. `process_input` runs on the realtime
+    // audio thread, where a mid-recording reallocation would mean copying tens of MB and
+    // risking a dropout — reserving here moves that cost off the audio thread entirely.
+    {
+        let mut buffer = state.buffer.lock().unwrap();
+        buffer.clear();
+        buffer.shrink_to_fit();
+        buffer.reserve_exact(max_samples);
+    }
 
     // Build the stream for the device's native sample format, converting to f32.
     let stream = match sample_format {

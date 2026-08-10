@@ -16,6 +16,22 @@ pub struct LlmModelInfo {
     pub description: String,
 }
 
+/// Deletes the temp prompt file on every exit path from `run_inference`, including the
+/// early returns for a failed spawn and a non-zero exit.
+///
+/// The file holds the user's dictated text verbatim — it exists only because llama-cli
+/// reads its prompt from a file — so it must never outlive the call that wrote it. A
+/// manual `remove_file` at the end of the function was skipped whenever the subprocess
+/// failed to spawn, stranding a transcript in the temp directory until the OS swept it.
+struct TempPromptFile(PathBuf);
+
+impl Drop for TempPromptFile {
+    fn drop(&mut self) {
+        // Best-effort: nothing useful to do if the file is already gone.
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
 /// Platform-specific name of the llama.cpp CLI binary.
 fn llama_cli_filename() -> &'static str {
     if cfg!(windows) {
@@ -488,6 +504,8 @@ pub fn run_inference(app: &AppHandle, prompt: &str) -> Result<String, String> {
         (prompt.to_string(), None)
     };
 
+    // Armed before the write, so even a partially written file is cleaned up.
+    let _prompt_file = TempPromptFile(temp_dir.clone());
     fs::write(&temp_dir, &formatted_prompt)
         .map_err(|e| format!("Failed to write temporary prompt file: {}", e))?;
 
@@ -516,8 +534,7 @@ pub fn run_inference(app: &AppHandle, prompt: &str) -> Result<String, String> {
         .output()
         .map_err(|e| format!("Failed to run llama-cli subprocess: {}", e))?;
 
-    // Cleanup prompt file
-    let _ = fs::remove_file(&temp_dir);
+    // The prompt file is removed by `_prompt_file`'s Drop, on this path and every other.
 
     if !output.status.success() {
         let err_msg = String::from_utf8_lossy(&output.stderr);
@@ -540,5 +557,38 @@ fn get_llm_setting(app: &AppHandle, key: &str, default: &str) -> String {
         val.unwrap_or_else(|_| default.to_string())
     } else {
         default.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TempPromptFile;
+    use std::fs;
+
+    /// The prompt file holds dictated text, so it must not survive the call — not even
+    /// when the caller bails out early (the failed-spawn path that used to strand it).
+    #[test]
+    fn temp_prompt_file_is_removed_on_every_path() {
+        let path = std::env::temp_dir().join("localflow_prompt_test_guard.txt");
+
+        // Simulate run_inference returning early after the file was written.
+        let result: Result<(), String> = (|| {
+            let _guard = TempPromptFile(path.clone());
+            fs::write(&path, "dictated text").unwrap();
+            assert!(path.exists(), "file should exist while the guard is alive");
+            Err("subprocess failed to spawn".to_string())
+        })();
+
+        assert!(result.is_err());
+        assert!(!path.exists(), "temp prompt file leaked after an early return");
+    }
+
+    #[test]
+    fn temp_prompt_file_guard_tolerates_a_missing_file() {
+        // fs::write failing leaves nothing behind; Drop must not panic.
+        let path = std::env::temp_dir().join("localflow_prompt_test_absent.txt");
+        let _ = fs::remove_file(&path);
+        drop(TempPromptFile(path.clone()));
+        assert!(!path.exists());
     }
 }

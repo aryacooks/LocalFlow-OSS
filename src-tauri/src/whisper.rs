@@ -8,6 +8,107 @@ use serde::{Deserialize, Serialize};
 static NON_SPEECH_TAG: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"[\[\(\{][^\]\)\}]*[\]\)\}]").unwrap());
 
+/// Decoder settings shared by every transcription path.
+///
+/// Both `transcribe` and the hotkey pipeline in `lib.rs` build their own `FullParams`;
+/// they call this so the two can't drift apart. The values match whisper.cpp's current
+/// defaults, but they are set explicitly so an upstream change can't silently turn them
+/// off — a long dictation degenerating into the same sentence 47 times over is the
+/// failure they exist to prevent.
+///
+///  • suppress_blank/nst — drop the subtitle-style artifacts Whisper learned from its
+///                         caption training data ("[BLANK_AUDIO]", "(Upbeat music)").
+///  • no_context         — never seed a 30 s window with the previous window's decoded
+///                         text, so one bad decode can't feed itself forward.
+///  • temperature + _inc — start greedy, then retry a window at rising temperature when
+///                         the result looks degenerate. Without the increment there is no
+///                         escape hatch once the decoder locks into a loop.
+///  • entropy / logprob  — the "looks degenerate" test: low token entropy or a poor
+///                         average log-probability triggers that retry.
+pub fn apply_decoder_guards(params: &mut FullParams<'_, '_>) {
+    params.set_suppress_blank(true);
+    params.set_suppress_nst(true);
+    params.set_no_context(true);
+    params.set_temperature(0.0);
+    params.set_temperature_inc(0.2);
+    params.set_entropy_thold(2.4);
+    params.set_logprob_thold(-1.0);
+    params.set_no_speech_thold(0.6);
+}
+
+/// Collapse runs of the same sentence repeated back to back.
+///
+/// Whisper's decoder can lock into a repetition loop on long recordings: it emits one
+/// sentence over and over for the rest of the audio and never recovers. A real 3-minute
+/// dictation in the wild came back as 56 sentences of which 47 were one unbroken run of
+/// the same question — 64% of the transcript. The decoder guards in `transcribe` make
+/// this rarer, but they cannot make it impossible, so this is the deterministic backstop.
+///
+/// Only *consecutive* exact duplicates collapse, because that is the shape a decoder loop
+/// always takes. Deliberate repetition for emphasis is preserved: a short sentence has to
+/// repeat at least three times before it is treated as a loop, so "No. No." survives while
+/// "No. No. No. No." collapses.
+pub fn collapse_repetitions(text: &str) -> String {
+    // Split after ., ! or ? so each piece keeps its own terminator.
+    let mut sentences: Vec<&str> = Vec::new();
+    let mut start = 0;
+    let bytes = text.as_bytes();
+    for (i, ch) in text.char_indices() {
+        if matches!(ch, '.' | '!' | '?') {
+            let next = bytes.get(i + ch.len_utf8());
+            if next.is_none() || next.is_some_and(|b| b.is_ascii_whitespace()) {
+                sentences.push(&text[start..i + ch.len_utf8()]);
+                start = i + ch.len_utf8();
+            }
+        }
+    }
+    if start < text.len() {
+        sentences.push(&text[start..]);
+    }
+
+    /// Compare on lowercased words only, so spacing and trailing punctuation don't
+    /// stop two identical sentences from matching.
+    fn normalize(s: &str) -> String {
+        s.split_whitespace()
+            .map(|w| {
+                w.trim_matches(|c: char| !c.is_alphanumeric())
+                    .to_lowercase()
+            })
+            .filter(|w| !w.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    // Group consecutive sentences that normalize to the same thing.
+    let mut out: Vec<&str> = Vec::with_capacity(sentences.len());
+    let mut i = 0;
+    while i < sentences.len() {
+        let key = normalize(sentences[i]);
+        let mut run = 1;
+        while i + run < sentences.len() && normalize(sentences[i + run]) == key {
+            run += 1;
+        }
+
+        let words = key.split_whitespace().count();
+        // A substantial sentence repeating even twice is a loop; a short one needs a
+        // longer run before we assume the user didn't mean it.
+        let is_loop = run >= 2 && (words >= 4 || run >= 3);
+
+        if is_loop {
+            out.push(sentences[i]);
+            eprintln!(
+                "whisper: collapsed {} consecutive repeats of a {}-word sentence",
+                run, words
+            );
+        } else {
+            out.extend_from_slice(&sentences[i..i + run]);
+        }
+        i += run;
+    }
+
+    out.join("").split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// Strip Whisper's subtitle-style non-speech artifacts from a raw transcription.
 ///
 /// Removes bracketed tags — `[BLANK_AUDIO]`, `(Clapping)`, `(Upbeat music)`, `{music}` —
@@ -395,8 +496,7 @@ pub async fn transcribe_audio(
         // Suppress the subtitle-style non-speech output Whisper learned from its training
         // captions: blank/whitespace-only tokens and non-speech tags like "[MUSIC]" or
         // "(clicking)". This is the source-level fix; the post-filter below is a backstop.
-        params.set_suppress_blank(true);
-        params.set_suppress_nst(true);
+        apply_decoder_guards(&mut params);
 
         if !prompt.is_empty() {
             params.set_initial_prompt(&prompt);
@@ -417,9 +517,10 @@ pub async fn transcribe_audio(
             }
         }
 
-        // Backstop: strip any bracketed non-speech tag that slipped through and drop the
-        // result if nothing but punctuation/whitespace remains (a stray "." hallucination).
-        Ok::<String, String>(strip_non_speech(&transcription))
+        // Backstops: collapse any decoder repetition loop, then strip bracketed non-speech
+        // tags and drop the result if only punctuation/whitespace remains (a stray "."
+        // hallucination).
+        Ok::<String, String>(strip_non_speech(&collapse_repetitions(&transcription)))
     })
     .await
     .map_err(|e| format!("Thread panicked: {}", e))??;
@@ -486,4 +587,72 @@ pub fn delete_model(app: AppHandle, model_id: String) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::collapse_repetitions;
+
+    #[test]
+    fn collapses_a_decoder_loop() {
+        // The shape of a real 3-minute dictation that failed: a few good sentences, then
+        // one unbroken run of the same question for the rest of the recording.
+        let loop_sentence = " How are we going to get this in the market?";
+        let mut raw = String::from("Now we have to make a script for this.");
+        for _ in 0..47 {
+            raw.push_str(loop_sentence);
+        }
+        assert_eq!(
+            collapse_repetitions(&raw),
+            "Now we have to make a script for this. How are we going to get this in the market?"
+        );
+    }
+
+    #[test]
+    fn keeps_deliberate_short_repetition() {
+        // Two repeats of a short sentence is emphasis, not a decoder loop.
+        assert_eq!(collapse_repetitions("No. No."), "No. No.");
+        assert_eq!(collapse_repetitions("Wait! Wait!"), "Wait! Wait!");
+    }
+
+    #[test]
+    fn a_long_run_of_a_short_sentence_is_still_a_loop() {
+        assert_eq!(collapse_repetitions("No. No. No. No. No."), "No.");
+    }
+
+    #[test]
+    fn a_substantial_sentence_repeating_twice_is_a_loop() {
+        assert_eq!(
+            collapse_repetitions("Send the report to Jim. Send the report to Jim."),
+            "Send the report to Jim."
+        );
+    }
+
+    #[test]
+    fn non_consecutive_repeats_are_left_alone() {
+        // Coming back to the same point later is normal speech, not a loop.
+        let text = "Ship it Monday. The tests are green. Ship it Monday.";
+        assert_eq!(collapse_repetitions(text), text);
+    }
+
+    #[test]
+    fn matching_ignores_case_and_spacing() {
+        assert_eq!(
+            collapse_repetitions("We should ship it now.  we should ship it now."),
+            "We should ship it now."
+        );
+    }
+
+    #[test]
+    fn ordinary_text_is_untouched() {
+        let text = "First we buy water. Then we buy bread. It was raining.";
+        assert_eq!(collapse_repetitions(text), text);
+        assert_eq!(collapse_repetitions(""), "");
+    }
+
+    #[test]
+    fn does_not_split_decimals_or_domains() {
+        let text = "Visit example.com and pay 3.50 today.";
+        assert_eq!(collapse_repetitions(text), text);
+    }
 }

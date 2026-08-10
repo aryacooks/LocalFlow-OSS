@@ -552,7 +552,12 @@ pub async fn run_pipeline(
                 .ok();
             return;
         }
-        buf.drain(..).collect()
+        let samples = buf.drain(..).collect();
+        // `drain` empties the deque but keeps its capacity, which for a long recording is
+        // ~115 MB. Hand it back rather than holding it for the rest of the session — the
+        // next recording reserves what it needs again.
+        buf.shrink_to_fit();
+        samples
     };
 
     // Resample captured audio to 16 kHz mono for Whisper (mics often run at 44.1/48 kHz).
@@ -649,10 +654,8 @@ pub async fn run_pipeline(
         params.set_print_realtime(false);
         params.set_print_special(false);
         params.set_print_timestamps(false);
-        // Suppress the subtitle-style non-speech output Whisper learned from captions:
-        // blank tokens + tags like "[BLANK_AUDIO]", "(Clapping)", "(Upbeat music)".
-        params.set_suppress_blank(true);
-        params.set_suppress_nst(true);
+        // Non-speech suppression + the anti-repetition guards, shared with `transcribe`.
+        whisper::apply_decoder_guards(&mut params);
         if !prompt.is_empty() {
             params.set_initial_prompt(&prompt);
         }
@@ -666,7 +669,9 @@ pub async fn run_pipeline(
                 }
             }
         }
-        Ok::<String, String>(whisper::strip_non_speech(&text))
+        Ok::<String, String>(whisper::strip_non_speech(&whisper::collapse_repetitions(
+            &text,
+        )))
     })
     .await;
 
