@@ -6,8 +6,8 @@
 # It also runs on demand from the Actions tab (workflow_dispatch).
 #
 # ── macOS signing + notarization ────────────────────────────────────────────
-# Builds run UNSIGNED until you add the Apple secrets below; once present,
-# tauri-action signs + notarizes automatically (no other changes needed):
+# Builds run UNSIGNED until you add the Apple secrets below. Once APPLE_CERTIFICATE
+# exists, the signed build path switches on by itself:
 #   APPLE_CERTIFICATE            base64 of your "Developer ID Application" .p12
 #   APPLE_CERTIFICATE_PASSWORD   the password you set when exporting the .p12
 #   APPLE_SIGNING_IDENTITY       e.g. "Developer ID Application: Your Name (TEAMID)"
@@ -15,6 +15,12 @@
 #   APPLE_PASSWORD               an app-specific password (appleid.apple.com)
 #   APPLE_TEAM_ID                your 10-char Team ID
 # Add them under: GitHub repo → Settings → Secrets and variables → Actions.
+#
+# The Apple variables are passed ONLY on the signed path, never as empty strings.
+# GitHub substitutes "" for a secret that does not exist, and an empty-but-defined
+# APPLE_CERTIFICATE still looks like a certificate to the bundler — it then ran
+# `security import` on nothing and the v0.1.2 macOS build died at bundling with
+# "failed to import keychain certificate", after compiling successfully.
 
 name: Release
 
@@ -34,7 +40,11 @@ jobs:
           - platform: macos-latest
             args: "--target universal-apple-darwin --bundles dmg"
             rust_targets: "aarch64-apple-darwin,x86_64-apple-darwin"
-          - platform: windows-latest
+          # Pinned to windows-2022 (VS 2022). windows-latest moved to the VS 18 /
+          # 2026 image, where the CMake sub-build for whisper's Vulkan shader
+          # generator fails its compiler check with
+          # "C1083: Cannot open compiler generated file: ''".
+          - platform: windows-2022
             args: "--bundles nsis"
             rust_targets: ""
     runs-on: ${{ matrix.platform }}
@@ -67,7 +77,7 @@ jobs:
       # Vulkan SDK (shader compiler + headers) at build time. macOS uses `metal`,
       # which ships with the OS — no extra install there.
       - name: Install Vulkan SDK (Windows)
-        if: matrix.platform == 'windows-latest'
+        if: runner.os == 'Windows'
         uses: jakoch/install-vulkan-sdk-action@v1
         with:
           vulkan_version: 1.3.290.0
@@ -78,11 +88,38 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build and release
+      # Is there actually a certificate to sign with? Secrets cannot be used in an
+      # `if:` directly, so the answer becomes a step output.
+      - name: Detect Apple signing secrets
+        id: signing
+        shell: bash
+        run: |
+          if [ -n "${{ secrets.APPLE_CERTIFICATE }}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The two build steps below differ ONLY in their `env:` block — keep the
+      # `with:` inputs identical when changing either.
+      - name: Build and release (unsigned)
+        if: steps.signing.outputs.enabled != 'true'
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # macOS signing + notarization (no-ops while the secrets are unset)
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "LocalFlow ${{ github.ref_name }}"
+          releaseBody: "Download the installer for your platform below. macOS: open the .dmg and drag LocalFlow to Applications. Windows: run the .exe (if SmartScreen warns, click More info → Run anyway)."
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
+
+      - name: Build and release (signed + notarized)
+        if: steps.signing.outputs.enabled == 'true'
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
