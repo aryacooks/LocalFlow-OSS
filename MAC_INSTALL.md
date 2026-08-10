@@ -12,7 +12,12 @@ Do not keep running LocalFlow from the installer disk. macOS permissions and lau
 
 ## If macOS blocks the app
 
-For an unsigned development build, Control-click LocalFlow in Applications, choose **Open**, then choose **Open** again. For a public release, sign and notarize the app so users do not need this workaround.
+Builds that are not signed and notarized are blocked on first launch. How you allow one depends on your macOS version:
+
+- **macOS 15 Sequoia and later:** open **System Settings > Privacy & Security**, scroll to the message naming LocalFlow, and click **Open Anyway**. The Control-click shortcut no longer works on these versions.
+- **macOS 14 Sonoma and earlier:** Control-click LocalFlow in Applications, choose **Open**, then choose **Open** again.
+
+You only need this once per build. For a public release, sign and notarize the app so users never see this.
 
 ## Permissions LocalFlow needs
 
@@ -53,11 +58,16 @@ After changing a permission, return to LocalFlow. If macOS still shows the old s
 - **Mouse trigger does nothing:** Enable Input Monitoring, or use a keyboard shortcut instead.
 - **App was updated or moved:** macOS may treat it as a different app. Recheck Microphone, Accessibility, and Input Monitoring permissions.
 
-## Development command
+## Running from source
 
-From the actual project directory:
+This page covers installing the `.dmg`. To build and run LocalFlow yourself, follow
+**Option B — Build it yourself** in the [README](README.md); it lists the tools you need to
+install first. Once those are set up, from the folder you cloned into:
 
 ```bash
-cd /Users/aryabysani/Documents/localflow/flowlocal
+pnpm install
+```
+
+```bash
 pnpm tauri dev
 ```
