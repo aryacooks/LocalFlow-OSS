@@ -1,0 +1,67 @@
+# Checks every pull request and every push to main. This does NOT bundle installers —
+# that is release.yml, which runs on a version tag.
+#
+# The Rust job runs on macOS only, on purpose. whisper.cpp takes several minutes to
+# compile and the crate contains macOS-only modules (hook_macos, mac_permissions);
+# a second matrix leg would double CI time to re-check the same Rust logic. Windows
+# compilation is covered by the release build.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: Frontend (typecheck + build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # `pnpm build` is `tsc && vite build`, so this covers typechecking too.
+      - name: Typecheck and build
+        run: pnpm build
+
+  rust:
+    name: Rust (fmt + test)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      # Formatting first: it needs no build, so a misformatted PR fails in seconds
+      # instead of after ten minutes of compiling whisper.cpp.
+      - name: Check formatting
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+
+      - name: Run tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib

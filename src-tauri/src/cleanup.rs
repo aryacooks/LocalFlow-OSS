@@ -82,15 +82,7 @@ fn core_of(tok: &str) -> String {
 fn ends_with_break(tok: &str) -> bool {
     tok.trim_end_matches(|c: char| matches!(c, '"' | '\'' | ')' | ']' | '}'))
         .ends_with([
-            '.',
-            ',',
-            '!',
-            '?',
-            ';',
-            ':',
-            '\u{2014}',
-            '\u{2013}',
-            '\u{201d}',
+            '.', ',', '!', '?', ';', ':', '\u{2014}', '\u{2013}', '\u{201d}',
         ])
 }
 
@@ -130,9 +122,7 @@ fn filler_len(toks: &[&str], cores: &[String], kept: &[String], i: usize) -> Opt
         }
         let end = i + phrase.len();
         let set_off = ends_with_comma(toks[end - 1]);
-        let hugs_noise = cores
-            .get(end)
-            .is_some_and(|c| NOISE.contains(&c.as_str()));
+        let hugs_noise = cores.get(end).is_some_and(|c| NOISE.contains(&c.as_str()));
         let at_tail = end == toks.len() && TAIL.contains(phrase);
         if clause_start && (set_off || hugs_noise || at_tail) {
             return Some(phrase.len());
@@ -468,44 +458,45 @@ fn recapitalize(text: &str) -> String {
 // something appended a period before "question mark" became "?".
 static TERMINAL_DUP_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"([!?])\.+").unwrap());
 
-/// Characters that already close a sentence, so no full stop should be added.
-/// A dangling comma/colon is left alone too — the user clearly wasn't finished.
-fn already_terminated(text: &str) -> bool {
-    text.trim_end_matches(|c: char| {
-        matches!(c, '"' | '\'' | ')' | ']' | '}' | '\u{201d}' | '\u{2019}')
-    })
-    .ends_with([
-        '.',
-        '!',
-        '?',
-        ',',
-        ';',
-        ':',
-        '\u{2026}',
-        '-',
-        '\u{2014}',
-        '\u{2013}',
-    ])
+// Spoken words that place a full stop deliberately. When one of these ends the raw
+// dictation the final period is the user's own, so it is kept.
+static SPOKEN_PERIOD_TAIL_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)\b(?:full[\s-]*stop|period)\s*$").unwrap());
+
+/// Drop the sentence-ending full stop from the very end of a dictation.
+///
+/// Only the last character is considered, so periods that separate sentences
+/// inside the text stay put, as do ones inside a token ("example.com"). "?" and
+/// "!" are not full stops and are never removed, and an ellipsis is left whole —
+/// taking one dot off three just looks broken.
+fn strip_trailing_period(text: &str) -> String {
+    let text = text.trim_end();
+    if !text.ends_with('.') || text.ends_with("..") {
+        return text.to_string();
+    }
+    text[..text.len() - 1].trim_end().to_string()
 }
 
 /// Final post-processing applied to dictated text before injection: strip any LLM
-/// wrapping, resolve spoken commands, then punctuate the ending.
+/// wrapping, resolve spoken commands, then settle the ending.
 ///
 /// Order matters. Spoken "question mark"/"exclamation mark" become real `?`/`!`
-/// here, so the ending is only known once `apply_spoken_commands` has run — that
-/// is why the full stop is added at this point and nowhere earlier.
+/// here, so the ending is only known once `apply_spoken_commands` has run.
+///
+/// Dictation is not prose — it lands in chat boxes, search fields and commit
+/// messages where a trailing full stop reads as stiff, and it is far easier to
+/// type one than to delete one. So the ending period is removed rather than
+/// added, unless the user asked for it out loud.
 fn finalize_dictation(text: &str) -> String {
-    let text = apply_spoken_commands(&trim_surrounding_quotes(text));
+    let unwrapped = trim_surrounding_quotes(text);
+    let spoken_period_ending = SPOKEN_PERIOD_TAIL_RE.is_match(unwrapped.trim_end());
+    let text = apply_spoken_commands(&unwrapped);
     let text = TERMINAL_DUP_RE.replace_all(&text, "$1").into_owned();
     let text = text.trim_end();
-    // A lone token is not a sentence — `!important`, a filename, a single word
-    // dropped into a form field — so it is left exactly as dictated.
-    let is_single_token = !text.chars().any(char::is_whitespace);
-    if text.is_empty() || is_single_token || already_terminated(text) {
-        text.to_string()
-    } else {
-        format!("{}.", text)
+    if spoken_period_ending {
+        return text.to_string();
     }
+    strip_trailing_period(text)
 }
 
 /// Build the LLM cleanup prompt
@@ -537,29 +528,33 @@ Rules:
 - Treat "scratch that", "delete that", "cancel that", and "ignore that" as editing commands: remove the preceding clause and the command itself without leaving stray punctuation.
 - Fix capitalization and basic punctuation.
 - End each sentence with the punctuation that actually fits it. Questions end with "?" and exclamations with "!". Never append a full stop after a "?" or "!", and never turn a question into a statement.
+- Do NOT put a full stop at the very end of the output. Full stops BETWEEN sentences are required; the last sentence just ends. A final "?" or "!" is kept.
 - Output ONLY the final cleaned text. Do NOT include preambles, explanations, or quotes.
 
 Examples:
 Input: "so um, yesterday i went to the office no i mean i went to the park and like it was raining uh you know"
-Output: "Yesterday I went to the park and it was raining."
+Output: "Yesterday I went to the park and it was raining"
 
 Input: "first we need to buy milk wait no water and then bread"
-Output: "First we need to buy water and then bread."
+Output: "First we need to buy water and then bread"
 
 Input: "hey mahesh lets meet at 6pm no actually at 8pm"
-Output: "Hey Mahesh, let's meet at 8pm."
+Output: "Hey Mahesh, let's meet at 8pm"
 
 Input: "send it to bob sorry to jim"
-Output: "Send it to Jim."
+Output: "Send it to Jim"
 
 Input: "Let's not meet tomorrow. Cancel that. Let's meet today."
-Output: "Let's meet today."
+Output: "Let's meet today"
 
 Input: "um ok right now i'm heading out"
-Output: "OK, right now I'm heading out."
+Output: "OK, right now I'm heading out"
 
 Input: "so are you coming to the meeting question mark"
 Output: "Are you coming to the meeting?"
+
+Input: "the build is green i pushed it already lets ship in the morning"
+Output: "The build is green. I pushed it already. Let's ship in the morning"
 
 Input: "{raw_text}"
 Output: "#,
@@ -834,7 +829,7 @@ mod tests {
     #[test]
     fn fallback_cleanup_handles_cancel_that_end_to_end() {
         let cleaned = regex_cleanup("Let's not meet tomorrow. Cancel that. Let's meet today.");
-        assert_eq!(finalize_dictation(&cleaned), "Let's meet today.");
+        assert_eq!(finalize_dictation(&cleaned), "Let's meet today");
     }
 
     #[test]
@@ -868,7 +863,7 @@ mod tests {
     fn finalizer_removes_llm_leading_orphan_punctuation() {
         assert_eq!(
             finalize_dictation(". Let's meet today."),
-            "Let's meet today."
+            "Let's meet today"
         );
         assert_eq!(finalize_dictation("!important"), "!important");
     }
@@ -917,22 +912,40 @@ mod tests {
     fn keeps_words_that_are_doing_real_work() {
         // The reported bug: "ok right now" collapsed to "now".
         assert_eq!(strip_fillers("ok right now"), "ok right now");
-        assert_eq!(strip_fillers("turn right at the light"), "turn right at the light");
+        assert_eq!(
+            strip_fillers("turn right at the light"),
+            "turn right at the light"
+        );
         assert_eq!(strip_fillers("that's right"), "that's right");
         assert_eq!(strip_fillers("I like this song"), "I like this song");
-        assert_eq!(strip_fillers("size it so that it fits"), "size it so that it fits");
+        assert_eq!(
+            strip_fillers("size it so that it fits"),
+            "size it so that it fits"
+        );
         assert_eq!(strip_fillers("well done everyone"), "well done everyone");
-        assert_eq!(strip_fillers("what kind of person says that"), "what kind of person says that");
-        assert_eq!(strip_fillers("do you know the answer"), "do you know the answer");
+        assert_eq!(
+            strip_fillers("what kind of person says that"),
+            "what kind of person says that"
+        );
+        assert_eq!(
+            strip_fillers("do you know the answer"),
+            "do you know the answer"
+        );
     }
 
     #[test]
     fn drops_actual_fillers() {
         assert_eq!(strip_fillers("um yeah"), "yeah");
         assert_eq!(strip_fillers("So, we shipped it"), "we shipped it");
-        assert_eq!(strip_fillers("it was, honestly, terrible"), "it was, terrible");
+        assert_eq!(
+            strip_fillers("it was, honestly, terrible"),
+            "it was, terrible"
+        );
         assert_eq!(strip_fillers("it was kind of weird"), "it was weird");
-        assert_eq!(strip_fillers("it broke again, you know."), "it broke again.");
+        assert_eq!(
+            strip_fillers("it broke again, you know."),
+            "it broke again."
+        );
     }
 
     // ── Terminal punctuation ───────────────────────────────────────────────
@@ -940,7 +953,10 @@ mod tests {
     #[test]
     fn spoken_question_mark_does_not_get_a_full_stop() {
         let cleaned = regex_cleanup("um are you coming to the meeting question mark");
-        assert_eq!(finalize_dictation(&cleaned), "Are you coming to the meeting?");
+        assert_eq!(
+            finalize_dictation(&cleaned),
+            "Are you coming to the meeting?"
+        );
     }
 
     #[test]
@@ -950,17 +966,57 @@ mod tests {
     }
 
     #[test]
-    fn full_stop_still_added_to_a_plain_statement() {
+    fn plain_statement_gets_no_trailing_full_stop() {
         let cleaned = regex_cleanup("we ship on monday");
-        assert_eq!(finalize_dictation(&cleaned), "We ship on monday.");
+        assert_eq!(finalize_dictation(&cleaned), "We ship on monday");
     }
 
     #[test]
-    fn existing_terminator_is_never_doubled() {
+    fn trailing_full_stop_is_removed_from_a_finished_sentence() {
+        assert_eq!(
+            finalize_dictation("We ship on monday."),
+            "We ship on monday"
+        );
+    }
+
+    #[test]
+    fn periods_between_sentences_survive() {
+        assert_eq!(
+            finalize_dictation("The build is green. I pushed it already."),
+            "The build is green. I pushed it already"
+        );
+    }
+
+    #[test]
+    fn a_spoken_full_stop_at_the_end_is_honoured() {
+        assert_eq!(
+            finalize_dictation("we ship on monday period"),
+            "We ship on monday."
+        );
+        assert_eq!(
+            finalize_dictation("we ship on monday full stop"),
+            "We ship on monday."
+        );
+        // Only the ENDING one counts — a mid-sentence "period" leaves the tail bare.
+        assert_eq!(
+            finalize_dictation("we ship on monday period then we rest"),
+            "We ship on monday. Then we rest"
+        );
+    }
+
+    #[test]
+    fn stronger_terminators_and_tokens_are_left_alone() {
         assert_eq!(finalize_dictation("Are you sure?"), "Are you sure?");
         assert_eq!(finalize_dictation("Stop!"), "Stop!");
         assert_eq!(finalize_dictation("Are you sure?."), "Are you sure?");
         assert_eq!(finalize_dictation("He said \"hi!\""), "He said \"hi!\"");
+        // An ellipsis is deliberate; taking one dot off it would look broken.
+        assert_eq!(
+            finalize_dictation("well I guess so..."),
+            "Well I guess so..."
+        );
+        // A period inside the last token is not a sentence ending.
+        assert_eq!(finalize_dictation("go to example.com"), "Go to example.com");
     }
 
     #[test]

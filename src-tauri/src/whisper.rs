@@ -8,6 +8,56 @@ use serde::{Deserialize, Serialize};
 static NON_SPEECH_TAG: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"[\[\(\{][^\]\)\}]*[\]\)\}]").unwrap());
 
+/// The loaded Whisper model, kept alive between dictations.
+///
+/// Loading a model means reading the whole `.bin` off disk and building a context —
+/// roughly half a gigabyte for the turbo model. That was happening on *every*
+/// dictation, so each one paid the full load before a single word was transcribed.
+/// The model does not change between dictations, so it is loaded once and reused.
+///
+/// Keyed by path: selecting a different model in the UI changes the path and reloads
+/// naturally. `invalidate_model_cache` covers the cases a path can't catch, like
+/// deleting and re-downloading the file that is currently active.
+///
+/// Tradeoff: the model stays resident, so idle memory is higher by its size. That is
+/// the price of dictation starting instantly instead of after a disk read.
+static MODEL_CACHE: Lazy<std::sync::Mutex<Option<(String, Arc<WhisperContext>)>>> =
+    Lazy::new(|| std::sync::Mutex::new(None));
+
+/// Fetch the context for `model_path`, loading it only if it isn't already cached.
+pub fn context_for(model_path: &str) -> Result<Arc<WhisperContext>, String> {
+    let mut cache = MODEL_CACHE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+    if let Some((cached_path, ctx)) = cache.as_ref() {
+        if cached_path == model_path {
+            return Ok(ctx.clone());
+        }
+    }
+
+    // Drop the old model before loading the new one, so two never sit in memory at once.
+    *cache = None;
+
+    let ctx = WhisperContext::new_with_params(model_path, WhisperContextParameters::default())
+        .map_err(|e| format!("Failed to load Whisper model: {}", e))?;
+    let ctx = Arc::new(ctx);
+    *cache = Some((model_path.to_string(), ctx.clone()));
+    Ok(ctx)
+}
+
+/// Forget the cached model. Call after the active model file is deleted or replaced.
+pub fn invalidate_model_cache() {
+    *MODEL_CACHE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+}
+
+/// Whisper detects language from a single 30-second window, so only the opening of a
+/// recording is worth analysing. Feeding it the whole take made a 10-minute dictation
+/// compute 20× more mel spectrogram than the detector could ever look at.
+const LANG_DETECT_SAMPLES: usize = 30 * crate::audio::SAMPLE_RATE as usize;
+
 /// Decoder settings shared by every transcription path.
 ///
 /// Both `transcribe` and the hotkey pipeline in `lib.rs` build their own `FullParams`;
@@ -106,7 +156,10 @@ pub fn collapse_repetitions(text: &str) -> String {
         i += run;
     }
 
-    out.join("").split_whitespace().collect::<Vec<_>>().join(" ")
+    out.join("")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Strip Whisper's subtitle-style non-speech artifacts from a raw transcription.
@@ -161,7 +214,9 @@ pub fn resolve_language(
         return requested.to_string();
     }
 
-    if state.pcm_to_mel(audio, 1).is_ok() {
+    // Only the first 30 s can influence the result — see LANG_DETECT_SAMPLES.
+    let head = &audio[..audio.len().min(LANG_DETECT_SAMPLES)];
+    if state.pcm_to_mel(head, 1).is_ok() {
         if let Ok((_, probs)) = state.lang_detect(0, 1) {
             let prob_of = |code: &str| {
                 whisper_rs::get_lang_id(code)
@@ -477,9 +532,7 @@ pub async fn transcribe_audio(
     let result = tauri::async_runtime::spawn_blocking(move || {
         let model_path_str = model_path.to_str().unwrap().to_string();
 
-        let ctx =
-            WhisperContext::new_with_params(&model_path_str, WhisperContextParameters::default())
-                .map_err(|e| format!("Failed to load Whisper model: {}", e))?;
+        let ctx = context_for(&model_path_str)?;
 
         let mut state = ctx
             .create_state()
@@ -569,6 +622,9 @@ pub fn delete_model(app: AppHandle, model_id: String) -> Result<(), String> {
 
     if dest_path.exists() {
         fs::remove_file(&dest_path).map_err(|e| format!("Failed to delete model file: {}", e))?;
+        // The cache is keyed by path, which cannot tell a re-downloaded file from the
+        // one just deleted. Drop it so the next dictation loads from disk again.
+        invalidate_model_cache();
     }
 
     // Reset active model settings if the deleted model was active

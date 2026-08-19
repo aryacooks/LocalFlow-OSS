@@ -65,9 +65,11 @@ There are **two ways** to get LocalFlow. Never touched code before? **Option A**
      **Applications** folder.
    - **Windows:** double-click the `.exe` and follow the prompts.
 4. **Open it for the first time:**
-   - **macOS:** the app isn't code-signed yet, so **right-click** the LocalFlow app →
-     **Open** → **Open** (you only do this once). See
-     [MAC_INSTALL.md](./MAC_INSTALL.md) for a screenshot-level walkthrough.
+   - **macOS:** the app isn't code-signed yet, so macOS blocks it once. On
+     **macOS 15 Sequoia and later**, open **System Settings → Privacy & Security**,
+     scroll to the message naming LocalFlow, and click **Open Anyway**. On
+     **macOS 14 and earlier**, right-click the app → **Open** → **Open**. You only do
+     this once — see [MAC_INSTALL.md](./MAC_INSTALL.md) for the full walkthrough.
    - **Windows:** if a blue **"Windows protected your PC"** box appears, click
      **More info** → **Run anyway** (this happens because the app is new/unsigned).
 5. **Grant permissions** when the setup wizard asks (see [Permissions](#-permissions) below).
@@ -260,9 +262,17 @@ wizard links you straight to the right settings pane. Full walkthrough:
 
 ## 🤝 Contributing
 
-Contributions are welcome! Fork the repo, create a branch, and open a pull request.
-Please keep changes focused and describe what you tested. Bug reports and feature ideas via
-[Issues](https://github.com/aryabysani/LocalFlow-OSS/issues) are appreciated too.
+Contributions are welcome — especially bug reports with real reproduction steps.
+
+- **[CONTRIBUTING.md](./CONTRIBUTING.md)** — dev setup, project layout, how to run the checks
+- **[Report a bug](https://github.com/aryabysani/LocalFlow-OSS/issues/new?template=bug_report.yml)**
+  or **[request a feature](https://github.com/aryabysani/LocalFlow-OSS/issues/new?template=feature_request.yml)**
+- **[CHANGELOG.md](./CHANGELOG.md)** — what changed in each release
+- **[CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md)** — be decent to people
+- **[SECURITY.md](./SECURITY.md)** — report vulnerabilities privately, not as an issue
+
+One hard rule: LocalFlow runs **entirely on-device**. Any change that sends audio, text,
+or usage data over the network will be declined, however useful it is.
 
 ---
 

@@ -536,7 +536,7 @@ pub async fn run_pipeline(
     audio: &Arc<audio::AudioState>,
     pipeline: &Arc<PipelineState>,
 ) {
-    use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
+    use whisper_rs::{FullParams, SamplingStrategy};
 
     // Held for the whole function: clears `is_processing` on every exit path (return or
     // panic), so the flag can never get stuck and lock out the next dictation toggle.
@@ -641,8 +641,9 @@ pub async fn run_pipeline(
     let multilingual = whisper::is_multilingual_model(&model_str);
 
     let raw_text = tauri::async_runtime::spawn_blocking(move || {
-        let ctx = WhisperContext::new_with_params(&model_str, WhisperContextParameters::default())
-            .map_err(|e| format!("Whisper init: {}", e))?;
+        // Reuses the already-loaded model; only the first dictation after a launch or a
+        // model switch pays the disk read.
+        let ctx = whisper::context_for(&model_str)?;
         let mut state = ctx
             .create_state()
             .map_err(|e| format!("Whisper state: {}", e))?;

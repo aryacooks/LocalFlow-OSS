@@ -580,7 +580,10 @@ mod tests {
         })();
 
         assert!(result.is_err());
-        assert!(!path.exists(), "temp prompt file leaked after an early return");
+        assert!(
+            !path.exists(),
+            "temp prompt file leaked after an early return"
+        );
     }
 
     #[test]

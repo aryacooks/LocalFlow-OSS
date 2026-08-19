@@ -21,7 +21,9 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "./lib/store";
 import PlugConnectedIcon from "./components/ui/plug-connected-icon";
+import BugIcon from "./components/ui/bug-icon";
 import type { AnimatedIconHandle } from "./components/ui/types";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { listModels, listAudioDevices, getSetting, isLlamaCliInstalled, listLlmModels, getPermissionStatus } from "./lib/ipc";
 
 import ThemeTransitionOverlay from "./ThemeTransitionOverlay";
@@ -37,6 +39,8 @@ import ModelsPage from "./routes/Models";
 import SettingsPage from "./routes/Settings";
 import ShortcutsPage from "./routes/Shortcuts";
 import LLMSettingsPage from "./routes/LLMSettings";
+
+const BUG_REPORT_URL = "https://localflow.aryab.in/contact";
 
 // Sidebar nav. Items with `animated` use an itshover-style icon that loops while
 // its page is open (via LoopingIcon); Shortcuts has no animated icon, so it stays
@@ -105,6 +109,7 @@ export default function App() {
   const [title, subtitle] = titleForPath(location.pathname);
   const plugRef = useRef<AnimatedIconHandle>(null);
   const ghostRef = useRef<AnimatedIconHandle>(null);
+  const bugRef = useRef<AnimatedIconHandle>(null);
 
   // First-run onboarding wizard: shown until the user finishes/skips it once.
   const [showOnboarding, setShowOnboarding] = useState(false);
@@ -265,6 +270,20 @@ export default function App() {
         </nav>
 
         <div className="sidebar-footer">
+          {/* Opened through the opener plugin, not a plain link: a target="_blank"
+              here would navigate the settings webview itself and strand the user. */}
+          <button
+            type="button"
+            className="theme-toggle report-bug"
+            onClick={() => openUrl(BUG_REPORT_URL).catch(console.error)}
+            onMouseEnter={() => bugRef.current?.startAnimation()}
+            onMouseLeave={() => bugRef.current?.stopAnimation()}
+            title="Found a bug? Tell me about it"
+            aria-label="Report a bug"
+          >
+            <BugIcon ref={bugRef} size={15} />
+            <span>Report</span>
+          </button>
           <button
             type="button"
             className="theme-toggle"
@@ -345,7 +364,6 @@ export default function App() {
             >
               built by&nbsp;<span style={{ fontWeight: 600 }}>Arya</span>
             </a>
-            <span className="badge">Local only</span>
           </div>
         </header>
 

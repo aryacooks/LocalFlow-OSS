@@ -479,6 +479,36 @@ a {
   box-shadow: 1px 1px 0px var(--separator);
 }
 
+/* Report — same footer button, but the bug itself is green and the button is a
+   short pill rather than a full-width row, so it reads as a secondary action next
+   to Quit/Dark mode. Only the icon is tinted; the label keeps --label so the row
+   is a control, not a status. --success is the theme's green in light and dark. */
+.report-bug {
+  width: 50%;
+  justify-content: center;
+  gap: 6px;
+}
+
+.report-bug svg {
+  color: var(--success);
+}
+
+.report-bug:hover {
+  border-color: color-mix(in srgb, var(--success) 55%, var(--separator));
+}
+
+/* Collapsed sidebar: the label goes, so the pill returns to the icon-only width
+   the other footer buttons use. At 50% of 64px it would be unclickable. */
+@media (max-width: 820px) {
+  .report-bug {
+    width: 100%;
+  }
+
+  .report-bug span {
+    display: none;
+  }
+}
+
 .status-pill {
   display: flex;
   align-items: center;

@@ -1,0 +1,41 @@
+name: 💡 Feature request
+description: Suggest an idea for LocalFlow
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before writing: LocalFlow runs **entirely on-device**. Anything requiring a
+        cloud service, an account, or sending audio or text off the machine is out of
+        scope no matter how useful — that constraint is the point of the project.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: Describe the situation you hit, not the solution you have in mind.
+      placeholder: When I dictate into a terminal, ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: What would you like to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Anything you have tried or considered instead?
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Confirm
+      options:
+        - label: This works fully offline, with no cloud service or account.
+          required: true
+        - label: I searched existing issues and this has not been requested.
+          required: true
