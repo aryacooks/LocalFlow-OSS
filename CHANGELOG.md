@@ -94,8 +94,8 @@ Initial public release.
 - Light and dark themes, floating mic bubble, launch at login.
 - macOS (Apple Silicon) and Windows.
 
-[Unreleased]: https://github.com/aryabysani/LocalFlow-OSS/compare/v0.1.3...HEAD
-[0.1.3]: https://github.com/aryabysani/LocalFlow-OSS/compare/v0.1.2...v0.1.3
-[0.1.2]: https://github.com/aryabysani/LocalFlow-OSS/compare/v0.1.1...v0.1.2
-[0.1.1]: https://github.com/aryabysani/LocalFlow-OSS/compare/v0.1.0...v0.1.1
-[0.1.0]: https://github.com/aryabysani/LocalFlow-OSS/releases/tag/v0.1.0
+[Unreleased]: https://github.com/aryacooks/LocalFlow-OSS/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/aryacooks/LocalFlow-OSS/compare/v0.1.2...v0.1.3
+[0.1.2]: https://github.com/aryacooks/LocalFlow-OSS/compare/v0.1.1...v0.1.2
+[0.1.1]: https://github.com/aryacooks/LocalFlow-OSS/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/aryacooks/LocalFlow-OSS/releases/tag/v0.1.0

@@ -10,7 +10,7 @@ LocalFlow is pre-1.0. Only the **latest release** receives security fixes.
 
 Report it privately through either of these:
 
-- GitHub's [private vulnerability reporting](https://github.com/aryabysani/LocalFlow-OSS/security/advisories/new)
+- GitHub's [private vulnerability reporting](https://github.com/aryacooks/LocalFlow-OSS/security/advisories/new)
   (the **Security** tab → **Report a vulnerability**)
 - The contact form at <https://localflow.aryab.in/contact>
 

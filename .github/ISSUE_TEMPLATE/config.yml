@@ -1,11 +1,14 @@
+# Discussions are not enabled on this repo, so questions go to a blank issue rather
+# than a dead link. If Discussions are turned on later, add a contact_link for them
+# and consider setting blank_issues_enabled to false.
 blank_issues_enabled: true
 contact_links:
-  - name: 💬 Question or general help
-    url: https://github.com/aryabysani/LocalFlow-OSS/discussions
-    about: Ask here rather than opening an issue — installation help, "is this possible", and general questions.
   - name: 🍎 macOS install and permission problems
-    url: https://github.com/aryabysani/LocalFlow-OSS/blob/main/MAC_INSTALL.md
+    url: https://github.com/aryacooks/LocalFlow-OSS/blob/main/MAC_INSTALL.md
     about: Gatekeeper warnings, Microphone/Accessibility/Input Monitoring — most macOS issues are answered here.
+  - name: 🛠️ Building from source
+    url: https://github.com/aryacooks/LocalFlow-OSS/blob/main/CONTRIBUTING.md
+    about: Dev setup, project layout, and how to run the checks before a pull request.
   - name: 🔒 Security vulnerability
-    url: https://github.com/aryabysani/LocalFlow-OSS/blob/main/SECURITY.md
+    url: https://github.com/aryacooks/LocalFlow-OSS/blob/main/SECURITY.md
     about: Please report security problems privately, not as a public issue.

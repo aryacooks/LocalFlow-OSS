@@ -55,7 +55,7 @@ There are **two ways** to get LocalFlow. Never touched code before? **Option A**
 
 > **Never used GitHub before? No problem — just follow these clicks.**
 
-1. Go to the **[Releases page](https://github.com/aryabysani/LocalFlow-OSS/releases)**
+1. Go to the **[Releases page](https://github.com/aryacooks/LocalFlow-OSS/releases)**
    (also reachable from the **"Releases"** link on the right side of this page).
 2. Under the newest release, open **"Assets"** and download the file for your computer:
    - **macOS** → the file ending in **`.dmg`**
@@ -157,7 +157,7 @@ Then **close PowerShell and open it again** so the new tools are picked up.
 Paste these two lines:
 
 ```bash
-git clone https://github.com/aryabysani/LocalFlow-OSS.git
+git clone https://github.com/aryacooks/LocalFlow-OSS.git
 cd LocalFlow-OSS
 ```
 
@@ -265,8 +265,8 @@ wizard links you straight to the right settings pane. Full walkthrough:
 Contributions are welcome — especially bug reports with real reproduction steps.
 
 - **[CONTRIBUTING.md](./CONTRIBUTING.md)** — dev setup, project layout, how to run the checks
-- **[Report a bug](https://github.com/aryabysani/LocalFlow-OSS/issues/new?template=bug_report.yml)**
-  or **[request a feature](https://github.com/aryabysani/LocalFlow-OSS/issues/new?template=feature_request.yml)**
+- **[Report a bug](https://github.com/aryacooks/LocalFlow-OSS/issues/new?template=bug_report.yml)**
+  or **[request a feature](https://github.com/aryacooks/LocalFlow-OSS/issues/new?template=feature_request.yml)**
 - **[CHANGELOG.md](./CHANGELOG.md)** — what changed in each release
 - **[CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md)** — be decent to people
 - **[SECURITY.md](./SECURITY.md)** — report vulnerabilities privately, not as an issue
