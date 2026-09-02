@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { Globe, Keyboard, Mic, MonitorCheck, Shield, History, Circle, Eye, Volume2, Move, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, LocateFixed, Check, CircleAlert, ExternalLink, Accessibility, RotateCcw, Power } from "lucide-react";
-import { listAudioDevices, setAudioDevice, setSetting, getSetting, setScreenSize, setBubbleVisible, setEarconsEnabled, getBubblePosition, nudgeBubble, resetBubblePosition, getPermissionStatus, requestAccessibilityPermission, requestMicrophonePermission, openPrivacySettings, type PermissionStatus } from "../lib/ipc";
+import { Globe, Keyboard, Mic, MonitorCheck, Shield, History, Circle, Eye, Volume2, Move, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, LocateFixed, Check, CircleAlert, ExternalLink, Accessibility, RotateCcw, Power, Minus, Plus } from "lucide-react";
+import { listAudioDevices, setAudioDevice, setSetting, getSetting, setBubbleSize, BUBBLE_SCALE_MIN, BUBBLE_SCALE_MAX, BUBBLE_SCALE_STEP, setBubbleVisible, setEarconsEnabled, getBubblePosition, nudgeBubble, resetBubblePosition, getPermissionStatus, requestAccessibilityPermission, requestMicrophonePermission, openPrivacySettings, type PermissionStatus } from "../lib/ipc";
 import { enable as enableAutostart, disable as disableAutostart, isEnabled as isAutostartEnabled } from "@tauri-apps/plugin-autostart";
 import { shortcutLabel } from "../lib/utils";
 import { emit } from "@tauri-apps/api/event";
@@ -301,12 +301,84 @@ function DPad({
   );
 }
 
+// Stepper for the floating bubble's size. The stored value is either "auto" (let the
+// display geometry decide) or an explicit scale multiplier.
+//
+// Auto has no number of its own, so the first press has to start from somewhere: it
+// starts from AUTO_BASELINE, the scale a typical laptop resolves to. Stepping from
+// there feels continuous rather than jumping to 50% or 500%.
+const AUTO_BASELINE = 1.2;
+
+function BubbleSizeStepper({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const isAuto = value === "auto";
+  const parsed = Number.parseFloat(value);
+  const scale = isAuto || !Number.isFinite(parsed) ? AUTO_BASELINE : parsed;
+
+  // Float steps drift (1.1 + 0.1 = 1.2000000000000002), which would show as 120.00001%
+  // and never compare equal to the bounds. Round every step to one decimal.
+  const step = (delta: number) => {
+    const next = Math.round((scale + delta) * 10) / 10;
+    const clamped = Math.min(Math.max(next, BUBBLE_SCALE_MIN), BUBBLE_SCALE_MAX);
+    onChange(clamped.toFixed(2));
+  };
+
+  const atMin = !isAuto && scale <= BUBBLE_SCALE_MIN;
+  const atMax = !isAuto && scale >= BUBBLE_SCALE_MAX;
+
+  return (
+    <div className="bubble-size">
+      <div className="bubble-size-stepper">
+        <button
+          type="button"
+          onClick={() => step(-BUBBLE_SCALE_STEP)}
+          disabled={atMin}
+          aria-label="Make the bubble smaller"
+          title="Smaller"
+        >
+          <Minus size={14} />
+        </button>
+        <span
+          className="bubble-size-value"
+          aria-live="polite"
+          title={isAuto ? "Sized automatically from your display" : undefined}
+        >
+          {isAuto ? "Auto" : `${Math.round(scale * 100)}%`}
+        </span>
+        <button
+          type="button"
+          onClick={() => step(BUBBLE_SCALE_STEP)}
+          disabled={atMax}
+          aria-label="Make the bubble bigger"
+          title="Bigger"
+        >
+          <Plus size={14} />
+        </button>
+      </div>
+      <button
+        type="button"
+        className="bubble-size-auto"
+        onClick={() => onChange("auto")}
+        disabled={isAuto}
+      >
+        Auto
+      </button>
+    </div>
+  );
+}
+
 export default function SettingsPage() {
   const { privacyMode, togglePrivacy, language, setLanguage } = useAppStore();
   const [devices, setDevices] = useState<string[]>([]);
   const [selectedDevice, setSelectedDevice] = useState("");
   const [saveHistory, setSaveHistory] = useState(true);
-  const [screenSize, setScreenSizeState] = useState("auto");
+  // Bubble size: "auto" (geometry heuristic) or a scale multiplier as a string.
+  const [bubbleSize, setBubbleSizeState] = useState("auto");
   const [bubbleColor, setBubbleColorState] = useState("white");
   // Whether the floating bubble has been moved off its default bottom-right spot.
   const [bubbleCustom, setBubbleCustom] = useState(false);
@@ -347,8 +419,8 @@ export default function SettingsPage() {
       const saveHist = await getSetting("save_history");
       if (saveHist) setSaveHistory(saveHist === "true");
 
-      const ss = await getSetting("screen_size");
-      if (ss) setScreenSizeState(ss);
+      const bs = await getSetting("bubble_size");
+      if (bs) setBubbleSizeState(bs);
 
       const bc = await getSetting("bubble_color");
       if (bc === "white" || bc === "black") setBubbleColorState(bc);
@@ -590,26 +662,16 @@ export default function SettingsPage() {
       <Section title="Display" className="settings-display">
         <SettingRow
           icon={MonitorCheck}
-          label="Screen size"
-          description="Sizes the floating mic bubble. Pick your laptop size, or leave on Auto-detect."
+          label="Bubble size"
+          description="How big the floating mic bubble is. Step it up or down until it feels right, or leave it on Auto to match your display."
         >
-          <select
-            className="select"
-            style={{ width: 260 }}
-            value={screenSize}
-            onChange={(e) => {
-              const v = e.target.value;
-              setScreenSizeState(v);
-              setScreenSize(v).catch(console.error);
+          <BubbleSizeStepper
+            value={bubbleSize}
+            onChange={(v) => {
+              setBubbleSizeState(v);
+              setBubbleSize(v).catch(console.error);
             }}
-          >
-            <option value="auto">Auto-detect</option>
-            <option value="13">13-inch</option>
-            <option value="14">14-inch</option>
-            <option value="15">15-inch</option>
-            <option value="16">16-inch</option>
-            <option value="17">17-inch or larger</option>
-          </select>
+          />
         </SettingRow>
         <SettingRow
           icon={Circle}

@@ -1,23 +1,20 @@
 import { useEffect, useState, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { getSetting } from "../lib/ipc";
+import { getSetting, BUBBLE_SCALE_MIN, BUBBLE_SCALE_MAX } from "../lib/ipc";
 
 import logoIcon from "../assets/brand/logo_icon.png";
 import logoWhite from "../assets/brand/logo_white.png";
 
-// Manual screen-size override → bubble scale. MUST stay in sync with the Rust
-// `screen_size_to_scale` in lib.rs (window size there, content size here). Returns
-// null for "auto"/unknown so we fall back to the geometry-based heuristic.
-function screenSizeToScale(size: string | null): number | null {
-  switch (size) {
-    case "13": return 1.0;
-    case "14": return 1.1;
-    case "15": return 1.2;
-    case "16": return 1.3;
-    case "17": return 1.38;
-    default: return null;
-  }
+// Manual bubble-size override → content scale. MUST stay in sync with the Rust
+// `bubble_size_to_scale` in lib.rs (window size there, content size here), or the
+// logo ends up the wrong size for its window. Returns null for "auto" or anything
+// unparseable so we fall back to the geometry-based heuristic.
+function bubbleSizeToScale(size: string | null): number | null {
+  if (size == null) return null;
+  const raw = Number.parseFloat(size);
+  if (!Number.isFinite(raw)) return null;
+  return Math.min(Math.max(raw, BUBBLE_SCALE_MIN), BUBBLE_SCALE_MAX);
 }
 
 /**
@@ -86,12 +83,12 @@ export default function MicBubble() {
   useEffect(() => {
     // Derive the UI scale from the display size (mirrors the Rust `bubble_scale`),
     // not the window width — the window now resizes per state, so keying off
-    // innerWidth would make the logo jump sizes between states. A manual screen-size
+    // innerWidth would make the logo jump sizes between states. A manual bubble-size
     // override (Settings → Display) wins over the auto heuristic.
     const updateScale = async () => {
       let override: number | null = null;
       try {
-        override = screenSizeToScale(await getSetting("screen_size"));
+        override = bubbleSizeToScale(await getSetting("bubble_size"));
       } catch { /* ignore — fall back to auto */ }
       if (override != null) {
         setUiScale(override);
@@ -104,7 +101,7 @@ export default function MicBubble() {
     const onResize = () => { updateScale(); };
     window.addEventListener("resize", onResize);
     // Settings changes the override on the main window; re-read when it tells us to.
-    const unlisten = listen("screen-size-changed", () => { updateScale(); });
+    const unlisten = listen("bubble-size-changed", () => { updateScale(); });
     return () => {
       window.removeEventListener("resize", onResize);
       unlisten.then((f) => f());

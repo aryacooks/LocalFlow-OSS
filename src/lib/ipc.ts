@@ -119,10 +119,16 @@ export async function setEarconsEnabled(enabled: boolean) {
   return invoke<void>("set_earcons_enabled", { enabled });
 }
 
-// Manual screen-size override for the floating bubble scale.
-// "auto" | "13" | "14" | "15" | "16" | "17"
-export async function setScreenSize(size: string) {
-  return invoke<void>("set_screen_size", { size });
+// Bounds for the manual bubble-size multiplier. Mirrored in Rust
+// (`BUBBLE_SCALE_MIN`/`MAX` in lib.rs) — keep the three in sync.
+export const BUBBLE_SCALE_MIN = 0.5;
+export const BUBBLE_SCALE_MAX = 5.0;
+export const BUBBLE_SCALE_STEP = 0.1;
+
+// Manual size override for the floating bubble. Either "auto" or a scale
+// multiplier as a string, e.g. "1.40". Rust clamps and normalises whatever it gets.
+export async function setBubbleSize(size: string) {
+  return invoke<void>("set_bubble_size", { size });
 }
 
 // Floating-bubble position. Stored as a fraction (0..1) of the available screen span;

@@ -300,7 +300,7 @@ pub fn run() {
             quit_app,
             open_main_window,
             resize_bubble,
-            set_screen_size,
+            set_bubble_size,
             get_bubble_position,
             nudge_bubble,
             reset_bubble_position,
@@ -334,35 +334,41 @@ fn bubble_scale(monitor_size: tauri::PhysicalSize<u32>, scale_factor: f64) -> f6
     (shortest_edge / 900.0).clamp(1.0, 1.38)
 }
 
-/// Map a user-selected screen size (Settings → Display) to an explicit bubble-scale
-/// multiplier that overrides the auto-detected `bubble_scale`. Returns `None` for
-/// "auto" or any unrecognized value so callers fall back to the geometry heuristic.
+/// Bounds for the manual bubble-size multiplier. 0.5 is genuinely tiny — a barely
+/// visible dot — and 5.0 spans most of a laptop's width. The clamp exists so a
+/// corrupt or hand-edited settings row cannot produce a bubble that is invisible or
+/// larger than the screen; within the range the user is free to pick anything.
 ///
-/// NOTE: this table is mirrored in the frontend (`MicBubble.tsx` `screenSizeToScale`).
-/// Keep the two in sync — the window size (here) and content size (there) must match.
-fn screen_size_to_scale(size: &str) -> Option<f64> {
-    match size {
-        "13" => Some(1.0),
-        "14" => Some(1.1),
-        "15" => Some(1.2),
-        "16" => Some(1.3),
-        "17" => Some(1.38),
-        _ => None, // "auto" or unknown → use bubble_scale()
+/// NOTE: these bounds and the step are mirrored in the frontend — `MicBubble.tsx`
+/// (`bubbleSizeToScale`) and `Settings.tsx` (the stepper). Keep them in sync: the
+/// window size is computed here and the content size there, and a mismatch makes
+/// the logo the wrong size for its window.
+pub const BUBBLE_SCALE_MIN: f64 = 0.5;
+pub const BUBBLE_SCALE_MAX: f64 = 5.0;
+
+/// Parse the user's manual bubble-size setting into a scale multiplier that
+/// overrides the auto-detected `bubble_scale`. Returns `None` for "auto", an empty
+/// value, or anything unparseable, so callers fall back to the geometry heuristic.
+fn bubble_size_to_scale(size: &str) -> Option<f64> {
+    let raw: f64 = size.trim().parse().ok()?;
+    if !raw.is_finite() {
+        return None;
     }
+    Some(raw.clamp(BUBBLE_SCALE_MIN, BUBBLE_SCALE_MAX))
 }
 
-/// Read the user's manual screen-size override from settings, if any is set.
+/// Read the user's manual bubble-size override from settings, if any is set.
 fn user_scale_override(app: &tauri::AppHandle) -> Option<f64> {
     let db = app.try_state::<DbState>()?;
     let conn = db.0.lock().ok()?;
     let val: String = conn
         .query_row(
-            "SELECT value FROM settings WHERE key = 'screen_size'",
+            "SELECT value FROM settings WHERE key = 'bubble_size'",
             [],
             |row| row.get(0),
         )
         .ok()?;
-    screen_size_to_scale(&val)
+    bubble_size_to_scale(&val)
 }
 
 /// Read the user's custom bubble position, stored as `"fx,fy"` — a fraction (0..1) of
@@ -1402,23 +1408,30 @@ fn set_earcons_enabled(enabled: bool) {
     crate::earcon::set_sounds_enabled(enabled);
 }
 
-/// Persist the user's manual screen-size choice ("auto" | "13".."17") and immediately
-/// re-place the bubble so the new scale is visible without waiting for the next
-/// recording. Emits `screen-size-changed` so the bubble webview updates its content
-/// scale (`uiScale`) in lock-step with the window size.
+/// Persist the user's manual bubble size — either "auto" or a scale multiplier such
+/// as "1.4" — and immediately re-place the bubble so the change is visible without
+/// waiting for the next recording. Emits `bubble-size-changed` so the bubble webview
+/// updates its content scale (`uiScale`) in lock-step with the window size.
+///
+/// The stored value is normalised here rather than trusted from the frontend, so the
+/// clamp holds no matter who calls this.
 #[tauri::command]
-fn set_screen_size(app: tauri::AppHandle, size: String) -> Result<(), String> {
+fn set_bubble_size(app: tauri::AppHandle, size: String) -> Result<(), String> {
+    let normalised = match bubble_size_to_scale(&size) {
+        Some(scale) => format!("{:.2}", scale),
+        None => "auto".to_string(),
+    };
     if let Some(db_state) = app.try_state::<DbState>() {
         let conn = db_state.0.lock().map_err(|e| e.to_string())?;
         conn.execute(
-            "INSERT OR REPLACE INTO settings (key, value) VALUES ('screen_size', ?1)",
-            rusqlite::params![size],
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('bubble_size', ?1)",
+            rusqlite::params![normalised],
         )
         .map_err(|e| e.to_string())?;
     }
     // Re-place the (idle) bubble right away so the change is immediately visible.
     show_bubble_window(&app);
-    app.emit("screen-size-changed", size).ok();
+    app.emit("bubble-size-changed", normalised).ok();
     Ok(())
 }
 

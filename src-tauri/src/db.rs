@@ -135,7 +135,7 @@ pub fn init_db(conn: &Connection) -> SqlResult<()> {
         ("llm_active_model", "Llama-3.2-1B-Instruct-Q4_K_M.gguf"),
         ("llm_enabled", "false"),
         ("llm_system_prompt", ""),
-        ("screen_size", "auto"),
+        ("bubble_size", "auto"),
     ];
 
     for (key, val) in defaults {
@@ -151,6 +151,35 @@ pub fn init_db(conn: &Connection) -> SqlResult<()> {
                 [key, val],
             );
         }
+    }
+
+    // The bubble used to be sized by picking a laptop screen size ("13".."17"), which
+    // mapped to a fixed multiplier. It is now a free multiplier the user steps up and
+    // down. Carry a legacy choice over once so nobody's bubble silently resizes; the
+    // old key is then dropped so this cannot run twice.
+    let legacy_screen_size: Option<String> = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key = 'screen_size'",
+            [],
+            |r| r.get(0),
+        )
+        .ok();
+    if let Some(legacy) = legacy_screen_size {
+        let migrated = match legacy.as_str() {
+            "13" => Some("1.00"),
+            "14" => Some("1.10"),
+            "15" => Some("1.20"),
+            "16" => Some("1.30"),
+            "17" => Some("1.38"),
+            _ => None, // "auto" or unrecognised — leave bubble_size on its default
+        };
+        if let Some(value) = migrated {
+            let _ = conn.execute(
+                "UPDATE settings SET value = ?1 WHERE key = 'bubble_size' AND value = 'auto'",
+                [value],
+            );
+        }
+        let _ = conn.execute("DELETE FROM settings WHERE key = 'screen_size'", []);
     }
 
     // Migrate old settings to new defaults

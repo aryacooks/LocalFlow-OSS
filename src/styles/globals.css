@@ -2598,3 +2598,89 @@ html.dark .section-attn .section-label {
     border-color: #dca100;
   }
 }
+
+/* ── Bubble size stepper (Settings → Display) ─────────────────────────────── */
+/* Replaces the old screen-size dropdown. Width is fixed at 260px to line up with
+   the selects in the rows above and below it, so the column stays straight. */
+.bubble-size {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  width: 260px;
+}
+
+.bubble-size-stepper {
+  display: flex;
+  align-items: center;
+  border: 1.5px solid var(--separator);
+  border-radius: 6px;
+  background: var(--control);
+  box-shadow: 2px 2px 0px var(--separator);
+  overflow: hidden;
+}
+
+.bubble-size-stepper button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 30px;
+  border: 0;
+  background: transparent;
+  color: var(--label);
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.bubble-size-stepper button:hover:not(:disabled) {
+  background: var(--control-hover);
+}
+
+.bubble-size-stepper button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* Tabular figures and a fixed width so the row does not jump between "90%" and
+   "100%" — the buttons must stay under the cursor for repeated presses. */
+.bubble-size-value {
+  min-width: 56px;
+  text-align: center;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.2px;
+  color: var(--label);
+  border-left: 1.5px solid var(--separator);
+  border-right: 1.5px solid var(--separator);
+  padding: 0 4px;
+  line-height: 30px;
+}
+
+.bubble-size-auto {
+  padding: 0 10px;
+  height: 30px;
+  border: 1.5px solid var(--separator);
+  border-radius: 6px;
+  background: var(--control);
+  color: var(--label);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  cursor: pointer;
+  box-shadow: 2px 2px 0px var(--separator);
+  transition: background 0.15s ease, opacity 0.15s ease;
+}
+
+.bubble-size-auto:hover:not(:disabled) {
+  background: var(--control-hover);
+}
+
+/* Disabled means "already on Auto", which is a state readout, not a dead control. */
+.bubble-size-auto:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
