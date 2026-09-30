@@ -2,37 +2,99 @@ use futures_util::StreamExt;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use std::time::{Duration, Instant};
 
 /// Matches subtitle-style non-speech tags Whisper emits on noise/silence:
 /// `[BLANK_AUDIO]`, `(clicking)`, `(Upbeat music)`, `{music}`, `[ Applause ]`, etc.
 static NON_SPEECH_TAG: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"[\[\(\{][^\]\)\}]*[\]\)\}]").unwrap());
 
-/// The loaded Whisper model, kept alive between dictations.
+/// How long the loaded model stays resident after its last use before it is released.
+///
+/// This is a memory-vs-latency dial. The model is ~550 MB for large-v3-turbo, and it
+/// used to be held for the life of the process — an idle LocalFlow sat on ~780 MB RSS
+/// having done nothing since the last dictation. Dropping it the instant a dictation
+/// finishes would give that back, but then *every* dictation pays the full load again,
+/// which is the exact cost the cache exists to avoid.
+///
+/// So it is held for a window instead: dictate again within the window and the model is
+/// still warm; walk away and the memory comes back. 90 s comfortably covers a burst of
+/// back-to-back dictations while still releasing well before you'd notice.
+const MODEL_IDLE_TTL: Duration = Duration::from_secs(90);
+
+/// How often the reaper wakes to check. Coarse on purpose — this is a cleanup sweep,
+/// not a deadline, and a sleeping thread that wakes twice a minute costs nothing.
+const REAP_INTERVAL: Duration = Duration::from_secs(15);
+
+struct CachedModel {
+    path: String,
+    ctx: Arc<WhisperContext>,
+    /// Last time this model was handed out, or last seen in use by the reaper.
+    last_used: Instant,
+}
+
+/// The loaded Whisper model, kept alive between nearby dictations and released once
+/// `MODEL_IDLE_TTL` passes with no use.
 ///
 /// Loading a model means reading the whole `.bin` off disk and building a context —
-/// roughly half a gigabyte for the turbo model. That was happening on *every*
-/// dictation, so each one paid the full load before a single word was transcribed.
-/// The model does not change between dictations, so it is loaded once and reused.
+/// roughly half a gigabyte for the turbo model. That was happening on *every* dictation,
+/// so each one paid the full load before a single word was transcribed. Caching it makes
+/// a follow-up dictation start instantly; the idle TTL keeps that from costing half a
+/// gigabyte of resident memory for the rest of the session.
 ///
 /// Keyed by path: selecting a different model in the UI changes the path and reloads
 /// naturally. `invalidate_model_cache` covers the cases a path can't catch, like
 /// deleting and re-downloading the file that is currently active.
-///
-/// Tradeoff: the model stays resident, so idle memory is higher by its size. That is
-/// the price of dictation starting instantly instead of after a disk read.
-static MODEL_CACHE: Lazy<std::sync::Mutex<Option<(String, Arc<WhisperContext>)>>> =
+static MODEL_CACHE: Lazy<std::sync::Mutex<Option<CachedModel>>> =
     Lazy::new(|| std::sync::Mutex::new(None));
+
+/// Starts the reaper exactly once, on the first model load. Doing it lazily rather than
+/// at startup means a session that never dictates never spawns the thread.
+static REAPER: std::sync::Once = std::sync::Once::new();
+
+/// Release the model once it has gone `MODEL_IDLE_TTL` without being used.
+///
+/// A transcription in flight holds its own `Arc`, so a strong count above one means the
+/// model is busy: that is treated as *use*, refreshing `last_used`. Without that, a
+/// transcription longer than the TTL would end with an already-stale timestamp and the
+/// next sweep would evict a model the user is still dictating into.
+fn spawn_model_reaper() {
+    REAPER.call_once(|| {
+        std::thread::Builder::new()
+            .name("whisper-model-reaper".into())
+            .spawn(|| loop {
+                std::thread::sleep(REAP_INTERVAL);
+                let mut cache = MODEL_CACHE
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let Some(cached) = cache.as_mut() else {
+                    continue;
+                };
+                // Busy right now — keep it, and restart the idle clock from here.
+                if Arc::strong_count(&cached.ctx) > 1 {
+                    cached.last_used = Instant::now();
+                    continue;
+                }
+                if cached.last_used.elapsed() >= MODEL_IDLE_TTL {
+                    *cache = None;
+                }
+            })
+            .ok();
+    });
+}
 
 /// Fetch the context for `model_path`, loading it only if it isn't already cached.
 pub fn context_for(model_path: &str) -> Result<Arc<WhisperContext>, String> {
+    spawn_model_reaper();
+
     let mut cache = MODEL_CACHE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-    if let Some((cached_path, ctx)) = cache.as_ref() {
-        if cached_path == model_path {
-            return Ok(ctx.clone());
+    if let Some(cached) = cache.as_mut() {
+        if cached.path == model_path {
+            cached.last_used = Instant::now();
+            return Ok(cached.ctx.clone());
         }
     }
 
@@ -42,7 +104,11 @@ pub fn context_for(model_path: &str) -> Result<Arc<WhisperContext>, String> {
     let ctx = WhisperContext::new_with_params(model_path, WhisperContextParameters::default())
         .map_err(|e| format!("Failed to load Whisper model: {}", e))?;
     let ctx = Arc::new(ctx);
-    *cache = Some((model_path.to_string(), ctx.clone()));
+    *cache = Some(CachedModel {
+        path: model_path.to_string(),
+        ctx: ctx.clone(),
+        last_used: Instant::now(),
+    });
     Ok(ctx)
 }
 
@@ -497,7 +563,12 @@ pub async fn transcribe_audio(
         if buffer.is_empty() {
             return Err("Audio buffer is empty".into());
         }
-        buffer.drain(..).collect()
+        let samples = buffer.drain(..).collect();
+        // `drain` empties the deque but keeps its capacity, which for a long recording is
+        // ~115 MB. Hand it back rather than holding it for the rest of the session — the
+        // next recording reserves what it needs again. Mirrors `run_pipeline` in lib.rs.
+        buffer.shrink_to_fit();
+        samples
     };
 
     // Resample to 16 kHz mono — Whisper requires it and mics may capture at other rates.
@@ -648,6 +719,66 @@ pub fn delete_model(app: AppHandle, model_id: String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::collapse_repetitions;
+
+    /// Resident set size of this process, in MB. macOS `ps` reports RSS in KB.
+    #[cfg(unix)]
+    fn rss_mb() -> u64 {
+        let out = std::process::Command::new("ps")
+            .args(["-o", "rss=", "-p", &std::process::id().to_string()])
+            .output()
+            .expect("ps");
+        String::from_utf8_lossy(&out.stdout)
+            .trim()
+            .parse::<u64>()
+            .expect("rss")
+            / 1024
+    }
+
+    /// Proves the cached model's memory is actually returned to the OS once it goes
+    /// idle — not merely that the `Arc` was dropped. Half a gigabyte staying resident
+    /// after a dictation is the whole bug this guards against.
+    ///
+    /// Needs a real model, so it is opt-in: point `LOCALFLOW_TEST_MODEL` at a `.bin`
+    /// and run `cargo test -- --ignored --nocapture releases_model_memory_when_idle`.
+    /// It sleeps past `MODEL_IDLE_TTL`, so it takes about two minutes.
+    #[test]
+    #[ignore = "needs a local model file and sleeps past the idle TTL"]
+    #[cfg(unix)]
+    fn releases_model_memory_when_idle() {
+        let Ok(model) = std::env::var("LOCALFLOW_TEST_MODEL") else {
+            panic!("set LOCALFLOW_TEST_MODEL to a Whisper .bin path");
+        };
+
+        let baseline = rss_mb();
+        let ctx = super::context_for(&model).expect("load model");
+        let loaded = rss_mb();
+        // Dropping our handle leaves the cache holding the only reference — the state a
+        // finished dictation leaves behind.
+        drop(ctx);
+        assert!(
+            loaded > baseline + 100,
+            "model should cost >100 MB resident, went {baseline} -> {loaded} MB"
+        );
+
+        // Sweep interval plus TTL, plus slack for the sleep to land after the check.
+        std::thread::sleep(super::MODEL_IDLE_TTL + super::REAP_INTERVAL * 2);
+        let idle = rss_mb();
+
+        assert!(
+            super::MODEL_CACHE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_none(),
+            "cache should be empty after the idle TTL"
+        );
+        // Allow generous slack: the allocator may keep some arenas mapped.
+        assert!(
+            idle < baseline + 150,
+            "memory should be released: baseline {baseline} MB, loaded {loaded} MB, \
+             still {idle} MB after idle"
+        );
+        println!("RSS  baseline {baseline} MB -> loaded {loaded} MB -> idle {idle} MB");
+    }
 
     #[test]
     fn collapses_a_decoder_loop() {

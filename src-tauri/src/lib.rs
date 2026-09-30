@@ -308,13 +308,31 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while running LocalFlow")
         .run(|_app_handle, _event| {
-            // macOS: clicking the Dock icon while the window is hidden re-shows it.
-            #[cfg(target_os = "macos")]
-            if let tauri::RunEvent::Reopen { .. } = _event {
-                if let Some(win) = _app_handle.get_webview_window("main") {
-                    let _ = win.show();
-                    let _ = win.set_focus();
+            // Release the Whisper model before the process exits.
+            //
+            // ggml destroys its global Metal device from a C++ static destructor during
+            // `exit()`. If a WhisperContext is still alive then, it still holds Metal
+            // resource sets, and `ggml_metal_rsets_free` trips
+            // `GGML_ASSERT([rsets->data count] == 0)` and calls `abort()` — macOS then
+            // reports "LocalFlow quit unexpectedly" on a perfectly normal Quit.
+            //
+            // The cache is a Rust `static`, so its Drop never runs on its own; nothing
+            // frees the context unless we do it here, while it is still safe to.
+            // ExitRequested covers Quit/Cmd-Q, Exit covers the rest — both fire before
+            // the static destructors, and dropping twice is harmless.
+            match _event {
+                tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
+                    whisper::invalidate_model_cache();
                 }
+                // macOS: clicking the Dock icon while the window is hidden re-shows it.
+                #[cfg(target_os = "macos")]
+                tauri::RunEvent::Reopen { .. } => {
+                    if let Some(win) = _app_handle.get_webview_window("main") {
+                        let _ = win.show();
+                        let _ = win.set_focus();
+                    }
+                }
+                _ => {}
             }
         });
 }

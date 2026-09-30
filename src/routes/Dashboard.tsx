@@ -10,7 +10,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { Mic, Timer, TrendingUp, Cpu, Zap, Activity, Scissors, Hourglass } from "lucide-react";
+import { Mic, Timer, TrendingUp, Cpu, Zap, Activity, Scissors, Hourglass, MemoryStick } from "lucide-react";
 import InfoCircleIcon from "../components/ui/info-circle-icon";
 import { DashboardStats, getDashboardStats, getSystemStats, SystemStats, getSetting, setSetting, WordsPerDay } from "../lib/ipc";
 import { keyLabel } from "../lib/utils";
@@ -969,7 +969,8 @@ export default function Dashboard() {
 
         {/*
           Recording limits. The 10 minutes below mirrors MAX_RECORDING_SECS in
-          src-tauri/src/audio.rs — change both together.
+          src-tauri/src/audio.rs, and the 90 seconds mirrors MODEL_IDLE_TTL in
+          src-tauri/src/whisper.rs — change each pair together.
         */}
         <div className="dashboard-limits">
           <div className="dashboard-limit-note">
@@ -986,6 +987,15 @@ export default function Dashboard() {
               <strong>Longer recordings take longer to transcribe.</strong> The wait after you stop
               scales with how long you spoke, so a 10-minute take takes noticeably longer to come
               back than a short one.
+            </p>
+          </div>
+          <div className="dashboard-limit-note">
+            <MemoryStick size={12} color="var(--success)" />
+            <p>
+              <strong>Memory used drops about 90 seconds after you stop.</strong> The speech model is
+              nearly all of the figure above, and it stays loaded for a minute and a half so a
+              follow-up dictation starts instantly instead of reloading. Once you leave it alone past
+              that it's released and the number falls sharply — dictating again loads it back.
             </p>
           </div>
         </div>
