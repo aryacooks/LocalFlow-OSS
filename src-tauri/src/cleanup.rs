@@ -300,6 +300,9 @@ fn sentence_case(text: &str) -> String {
 // Lets users structure text by voice: "new line", "new paragraph", "comma",
 // "period"/"full stop", "question mark", "exclamation mark", "colon",
 // "semicolon", plus "scratch that" / "delete that" to drop the last clause.
+// Notation ("x equals 50", "open paren", "dollar sign") is handled separately,
+// just below — see the Spoken symbols and operators section for why it needs
+// different rules.
 // Applied to the FINAL cleaned text (both LLM and regex paths) in `cleanup_text`,
 // never in command mode. Tradeoff: literally dictating one of these words gets
 // converted — this is the standard dictation behavior.
@@ -317,7 +320,12 @@ static SPOKEN_SUBS: Lazy<Vec<(Regex, &'static str)>> = Lazy::new(|| {
         (p(r"(?i)\s*\bnew\s+paragraph\b\s*"), "\n\n"),
         (p(r"(?i)\s*\b(?:new|next)\s+line\b\s*"), "\n"),
         (p(r"(?i)\s*\bquestion\s+mark\b"), "?"),
-        (p(r"(?i)\s*\bexclamation\s+(?:mark|point)\b"), "!"),
+        // "explanation mark/point" is not a slip of the tongue — it is what Whisper
+        // reliably hears for "exclamation mark", so the spoken command silently failed.
+        (
+            p(r"(?i)\s*\b(?:exclamation|explanation)\s+(?:mark|point)\b"),
+            "!",
+        ),
         (p(r"(?i)\s*\b(?:full\s+stop|full-stop)\b"), "."),
         (p(r"(?i)\s*\bsemi[\s-]?colon\b"), ";"),
         (p(r"(?i)\s*\bcomma\b"), ","),
@@ -325,6 +333,193 @@ static SPOKEN_SUBS: Lazy<Vec<(Regex, &'static str)>> = Lazy::new(|| {
         (p(r"(?i)\s*\bcolon\b"), ":"),
     ]
 });
+
+
+// ── Spoken symbols and operators ───────────────────────────────────────────
+// Turns dictated notation into the characters people mean: "x equals 50" → "x = 50",
+// "open paren note close paren" → "(note)", "dollar sign 50" → "$50".
+//
+// Split into two classes, because the risk is not remotely uniform.
+//
+// NAMED symbols ("asterisk", "dollar sign", "open paren", "equals sign") are phrases
+// nobody says by accident, so they convert wherever they appear — same bargain the
+// punctuation words above already make.
+//
+// BARE operators ("equals", "plus", "times", "less than") are ordinary English. A count
+// over real dictation history found "less than" 11 times, "plus" 7 and "times" 4, nearly
+// all of it prose — "plus, we shipped it", "three times faster", "less than ideal".
+// Converting those on sight would wreck more text than it fixed, so they convert ONLY
+// between two operands (see `is_operand`). That is enough for "x equals 50" while
+// leaving English alone.
+//
+// Patterns use `[ \t]*` rather than `\s*` so a substitution can never swallow a newline
+// the speaker asked for with "new line".
+
+/// Is this token maths rather than prose?
+///
+/// A number, or a single letter standing in for a variable. "a", "A" and "I" are
+/// deliberately excluded: they are English words, and without that exclusion
+/// "5 times a day" becomes "5 * a day" — the single most likely false positive here.
+fn is_operand(tok: &str) -> bool {
+    if matches!(tok, "a" | "A" | "I") {
+        return false;
+    }
+    let mut chars = tok.chars();
+    if let (Some(c), None) = (chars.next(), chars.next()) {
+        if c.is_ascii_alphabetic() {
+            return true;
+        }
+    }
+    // A number, possibly decimal. Rejects bare "." and version-like "1.2.3".
+    tok.chars().any(|c| c.is_ascii_digit())
+        && tok.chars().all(|c| c.is_ascii_digit() || c == '.')
+        && tok.matches('.').count() <= 1
+        && !tok.ends_with('.')
+}
+
+// (pattern, symbol). The capture groups are the candidate operands either side; the
+// substitution only happens when `is_operand` accepts both. Longer phrases first, so
+// "greater than or equal to" is not half-matched by "greater than".
+static SPOKEN_OPERATORS: Lazy<Vec<(Regex, &'static str)>> = Lazy::new(|| {
+    let op = |spoken: &str, sym: &'static str| {
+        (
+            Regex::new(&format!(
+                // A decimal is part of the operand ("3.5"), but a sentence-ending period
+                // is not: capturing "80." in "x equals 80." made the operand check fail
+                // and the last clause of a sentence silently kept the spoken word.
+                r"(?i)([A-Za-z0-9]+(?:\.[0-9]+)?)[ \t]+(?:{})[ \t]+([A-Za-z0-9]+(?:\.[0-9]+)?)",
+                spoken
+            ))
+            .unwrap(),
+            sym,
+        )
+    };
+    vec![
+        op(r"greater\s+than\s+or\s+equal\s+to", ">="),
+        op(r"less\s+than\s+or\s+equal\s+to", "<="),
+        op(r"(?:is\s+)?equal\s+to", "="),
+        op(r"to\s+the\s+power\s+of", "^"),
+        op(r"multiplied\s+by", "*"),
+        op(r"divided\s+by", "/"),
+        op(r"greater\s+than", ">"),
+        op(r"less\s+than", "<"),
+        op(r"equals", "="),
+        op(r"plus", "+"),
+        op(r"minus", "-"),
+        op(r"times", "*"),
+        op(r"modulo", "%"),
+    ]
+});
+
+// "50 percent" → "50%". One-sided: a number immediately before "percent" is a strong
+// enough signal on its own, while "the percent of users" keeps its word.
+static SPOKEN_PERCENT_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)\b([0-9]+(?:\.[0-9]+)?)[ \t]+percent\b").unwrap());
+
+// Named symbols, always converted. Grouped by how they sit against neighbouring words:
+// spaced like an operator, hugging the token to their left, to their right, or both.
+// Order matters — longer phrases first.
+static SPOKEN_SYMBOLS: Lazy<Vec<(Regex, &'static str)>> = Lazy::new(|| {
+    let p = |re: &str| Regex::new(re).unwrap();
+    vec![
+        // — spaced —
+        (p(r"(?i)[ \t]*\bplus\s+or\s+minus\b[ \t]*"), " ± "),
+        (p(r"(?i)[ \t]*\bequals?\s+sign\b[ \t]*"), " = "),
+        (p(r"(?i)[ \t]*\bplus\s+sign\b[ \t]*"), " + "),
+        (p(r"(?i)[ \t]*\bminus\s+sign\b[ \t]*"), " - "),
+        (p(r"(?i)[ \t]*\b(?:times|multiplication)\s+sign\b[ \t]*"), " * "),
+        (p(r"(?i)[ \t]*\bdivision\s+sign\b[ \t]*"), " / "),
+        (p(r"(?i)[ \t]*\bampersand\b[ \t]*"), " & "),
+        (p(r"(?i)[ \t]*\basterisk\b[ \t]*"), " * "),
+        (p(r"(?i)[ \t]*\b(?:vertical\s+bar|pipe\s+symbol)\b[ \t]*"), " | "),
+        (p(r"(?i)[ \t]*\bem[\s-]?dash\b[ \t]*"), " — "),
+        (p(r"(?i)[ \t]*\ben[\s-]?dash\b[ \t]*"), " – "),
+        // — hug the token on the LEFT —
+        (p(r"(?i)[ \t]*\b(?:percent|percentage)\s+sign\b"), "%"),
+        (p(r"(?i)[ \t]*\bdegrees?\s+sign\b"), "°"),
+        (p(r"(?i)[ \t]*\b(?:ellipsis|dot\s+dot\s+dot)\b"), "…"),
+        (
+            p(r"(?i)[ \t]*\b(?:close|closing|right)\s+(?:paren|parenthesis|parentheses)\b"),
+            ")",
+        ),
+        (
+            p(r"(?i)[ \t]*\b(?:close|closing|right)\s+(?:square\s+)?bracket\b"),
+            "]",
+        ),
+        (
+            p(r"(?i)[ \t]*\b(?:close|closing|right)\s+(?:curly\s+)?(?:brace|bracket)\b"),
+            "}",
+        ),
+        (p(r"(?i)[ \t]*\b(?:close|closing)\s+quote\b"), "\""),
+        // — hug the token on the RIGHT —
+        (p(r"(?i)[ \t]*\bdollar\s+sign\b[ \t]*"), " $$"),
+        (
+            p(r"(?i)[ \t]*\b(?:hash\s*tag|hash\s+sign|pound\s+sign|number\s+sign)\b[ \t]*"),
+            " #",
+        ),
+        (
+            p(r"(?i)[ \t]*\b(?:open|left)\s+(?:paren|parenthesis|parentheses)\b[ \t]*"),
+            " (",
+        ),
+        (
+            p(r"(?i)[ \t]*\b(?:open|left)\s+(?:square\s+)?bracket\b[ \t]*"),
+            " [",
+        ),
+        (
+            p(r"(?i)[ \t]*\b(?:open|left)\s+(?:curly\s+)?(?:brace|bracket)\b[ \t]*"),
+            " {",
+        ),
+        (p(r"(?i)[ \t]*\bopen\s+quote\b[ \t]*"), " \""),
+        // — hug BOTH sides —
+        (p(r"(?i)[ \t]*\b(?:at\s+sign|at\s+symbol)\b[ \t]*"), "@"),
+        (p(r"(?i)[ \t]*\bunderscore\b[ \t]*"), "_"),
+        (p(r"(?i)[ \t]*\bback[\s-]?slash\b[ \t]*"), "\\"),
+        (p(r"(?i)[ \t]*\bforward\s+slash\b[ \t]*"), "/"),
+        (p(r"(?i)[ \t]*\bcaret\b[ \t]*"), "^"),
+        (p(r"(?i)[ \t]*\btilde\b[ \t]*"), "~"),
+        (p(r"(?i)[ \t]*\bback[\s-]?tick\b[ \t]*"), "`"),
+        (
+            p(r"(?i)[ \t]*\b(?:double\s+quote|quotation\s+mark)\b[ \t]*"),
+            "\"",
+        ),
+        (p(r"(?i)[ \t]*\b(?:single\s+quote|apostrophe)\b[ \t]*"), "'"),
+    ]
+});
+
+/// Convert dictated notation into symbols: named symbols anywhere, bare operators only
+/// between two operands.
+fn apply_spoken_symbols(input: &str) -> String {
+    let mut text = input.to_string();
+
+    for (re, rep) in SPOKEN_SYMBOLS.iter() {
+        text = re.replace_all(&text, *rep).to_string();
+    }
+
+    text = SPOKEN_PERCENT_RE.replace_all(&text, "${1}%").to_string();
+
+    for (re, sym) in SPOKEN_OPERATORS.iter() {
+        // A chain ("1 plus 2 plus 3") needs more than one pass: the first match consumes
+        // the operand its neighbour would need on the left, so the second operator is
+        // only reachable once that pass is done. Bounded so nothing can spin.
+        for _ in 0..8 {
+            let next = re
+                .replace_all(&text, |caps: &regex::Captures| {
+                    if is_operand(&caps[1]) && is_operand(&caps[2]) {
+                        format!("{} {} {}", &caps[1], sym, &caps[2])
+                    } else {
+                        caps[0].to_string()
+                    }
+                })
+                .to_string();
+            if next == text {
+                break;
+            }
+            text = next;
+        }
+    }
+
+    text
+}
 
 // Tidy passes run after substitution. Only pull punctuation left when it behaves like
 // punctuation (followed by whitespace/end); keep token prefixes such as `!important`
@@ -389,6 +584,9 @@ pub fn apply_spoken_commands(input: &str) -> String {
     for (re, rep) in SPOKEN_SUBS.iter() {
         text = re.replace_all(&text, *rep).to_string();
     }
+
+    // 2b. Notation: named symbols, then bare operators between operands.
+    text = apply_spoken_symbols(&text);
 
     // 3. Tidy spacing without clobbering intentional newlines.
     text = SPACE_BEFORE_PUNCT_RE.replace_all(&text, "$1$2").to_string();
@@ -889,6 +1087,105 @@ mod tests {
         assert_eq!(
             apply_spoken_commands("watch out exclamation point"),
             "Watch out!"
+        );
+    }
+
+    // ── Spoken notation: symbols and operators ────────────────────────────
+
+    #[test]
+    fn bare_operators_convert_between_operands() {
+        assert_eq!(apply_spoken_commands("set x equals 50"), "Set x = 50");
+        assert_eq!(apply_spoken_commands("2 plus 2 equals 4"), "2 + 2 = 4");
+        assert_eq!(apply_spoken_commands("n minus 1"), "N - 1");
+        assert_eq!(apply_spoken_commands("10 divided by 2"), "10 / 2");
+        assert_eq!(apply_spoken_commands("x greater than 5"), "X > 5");
+        assert_eq!(
+            apply_spoken_commands("n greater than or equal to 3"),
+            "N >= 3"
+        );
+        assert_eq!(apply_spoken_commands("2 to the power of 8"), "2 ^ 8");
+        // A sentence-ending period must not be captured as part of the operand.
+        assert_eq!(
+            apply_spoken_commands("x equals 50, y equals 40, z equals 80."),
+            "X = 50, y = 40, z = 80."
+        );
+    }
+
+    #[test]
+    fn a_chain_of_operators_resolves_fully() {
+        // Each match consumes its right operand, so this only works if the pass repeats.
+        assert_eq!(apply_spoken_commands("1 plus 2 plus 3 plus 4"), "1 + 2 + 3 + 4");
+    }
+
+    #[test]
+    fn bare_operators_leave_ordinary_english_alone() {
+        // These are the words real dictation actually contains — converting them on
+        // sight would break far more text than it fixed.
+        for prose in [
+            "This equals a win",
+            "Three times faster than before",
+            "It was less than ideal",
+            "Plus, we shipped it on time",
+            "The percent of users who stayed",
+        ] {
+            assert_eq!(apply_spoken_commands(prose), prose, "mangled: {prose}");
+        }
+    }
+
+    #[test]
+    fn a_and_i_are_never_operands() {
+        // The worst false positive available: "a" is a letter, but "5 times a day" is
+        // English, not multiplication.
+        assert_eq!(apply_spoken_commands("5 times a day"), "5 times a day");
+        assert_eq!(apply_spoken_commands("2 plus a bit"), "2 plus a bit");
+    }
+
+    #[test]
+    fn named_symbols_convert_anywhere() {
+        assert_eq!(apply_spoken_commands("use asterisk here"), "Use * here");
+        assert_eq!(apply_spoken_commands("Tom ampersand Jerry"), "Tom & Jerry");
+        assert_eq!(apply_spoken_commands("it costs dollar sign 50"), "It costs $50");
+        assert_eq!(apply_spoken_commands("margin is 20 percent sign"), "Margin is 20%");
+        assert_eq!(apply_spoken_commands("x equals sign 50"), "X = 50");
+        assert_eq!(apply_spoken_commands("5 plus or minus 2"), "5 ± 2");
+    }
+
+    #[test]
+    fn number_before_percent_becomes_a_sign() {
+        assert_eq!(apply_spoken_commands("up 50 percent today"), "Up 50% today");
+    }
+
+    #[test]
+    fn brackets_and_quotes_hug_their_contents() {
+        assert_eq!(apply_spoken_commands("done open paren mostly close paren"), "Done (mostly)");
+        assert_eq!(
+            apply_spoken_commands("arr open square bracket 0 close square bracket"),
+            "Arr [0]"
+        );
+        assert_eq!(apply_spoken_commands("open quote hi close quote"), "\"Hi\"");
+    }
+
+    #[test]
+    fn identifier_symbols_hug_both_sides() {
+        assert_eq!(apply_spoken_commands("my underscore var"), "My_var");
+        assert_eq!(
+            apply_spoken_commands("email john at sign example.com"),
+            "Email john@example.com"
+        );
+    }
+
+    #[test]
+    fn whisper_mishearing_of_exclamation_still_works() {
+        // Whisper reliably returns "explanation mark" for "exclamation mark".
+        assert_eq!(apply_spoken_commands("watch out explanation mark"), "Watch out!");
+        assert_eq!(apply_spoken_commands("watch out exclamation mark"), "Watch out!");
+    }
+
+    #[test]
+    fn notation_does_not_swallow_a_spoken_new_line() {
+        assert_eq!(
+            apply_spoken_commands("x equals 50 new line y equals 60"),
+            "X = 50\nY = 60"
         );
     }
 
