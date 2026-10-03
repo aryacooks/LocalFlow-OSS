@@ -38,7 +38,7 @@ regex = "1"
 # (earcon.rs plays sound natively per-OS to avoid a second cpal version.)
 arboard = "3"
 enigo = "0.2"
-sysinfo = "0.32"
+sysinfo = "0.39"
 
 # Whisper GPU acceleration: Vulkan on Windows, Metal on macOS.
 [target.'cfg(windows)'.dependencies.whisper-rs]
