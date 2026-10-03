@@ -311,3 +311,33 @@ export async function downloadLlmModel(modelId: string) {
 export async function deleteLlmModel(modelId: string) {
   return invoke<void>("delete_llm_model", { modelId });
 }
+
+// ── Transcription engine: Local or API (OpenRouter) ─────────────────────────
+// The OpenRouter key is write-only from here: the backend never returns it, only
+// whether one is set and a masked form for display.
+
+export interface SttStatus {
+  mode: "local" | "api";
+  key_set: boolean;
+  key_masked: string | null;
+  /** Sum of what OpenRouter actually billed (its `usage.cost`), in USD. */
+  total_cost_usd: number;
+  total_seconds: number;
+  api_dictations: number;
+  model: string;
+}
+
+export const getSttStatus = () => invoke<SttStatus>("get_stt_status");
+export const setSttMode = (mode: "local" | "api") => invoke<SttStatus>("set_stt_mode", { mode });
+export const setOpenRouterKey = (key: string) => invoke<SttStatus>("set_openrouter_key", { key });
+export const clearOpenRouterKey = () => invoke<SttStatus>("clear_openrouter_key");
+export const resetApiUsage = () => invoke<SttStatus>("reset_api_usage");
+
+/** Format a USD amount. Per-dictation costs are fractions of a cent, so small totals keep
+ *  enough decimals to be non-zero; a plain `toFixed(2)` would read "$0.00" for weeks. */
+export function formatUsd(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return "$0.00";
+  if (n >= 1) return `$${n.toFixed(2)}`;
+  if (n >= 0.01) return `$${n.toFixed(3)}`;
+  return `$${n.toFixed(5)}`;
+}

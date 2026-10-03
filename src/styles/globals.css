@@ -2702,3 +2702,38 @@ html.dark .section-attn .section-label {
   opacity: 0.4;
   cursor: default;
 }
+
+/* ── Transcription engine switch (Dashboard header) ───────────────────────── */
+/* Sits beside "Test dictation" / "Stop". Wraps under narrow widths so the button never
+   gets pushed off the header. */
+.dashboard-engine-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.dashboard-engine-error {
+  flex-basis: 100%;
+  max-width: 280px;
+  margin-left: auto;
+  text-align: right;
+  font-size: 11px;
+  line-height: 14px;
+  color: var(--danger);
+}
+
+/* API spend in the WPM card header — quiet, tabular, reads as metadata. */
+.dashboard-api-cost {
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--secondary);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.dashboard-api-cost strong {
+  font-weight: 700;
+  color: var(--warning);
+}

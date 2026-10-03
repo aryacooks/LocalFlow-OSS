@@ -686,6 +686,11 @@ pub fn get_dictionary_prompt(db: State<'_, DbState>) -> String {
 
 #[tauri::command]
 pub fn get_setting(db: State<'_, DbState>, key: String) -> Option<String> {
+    // The OpenRouter key is write-only from the UI's side; `get_stt_status` reports
+    // whether one is set and a masked form.
+    if key == crate::OPENROUTER_KEY_SETTING {
+        return None;
+    }
     let conn = db.0.lock().unwrap();
     conn.query_row(
         "SELECT value FROM settings WHERE key = ?1",
@@ -719,6 +724,7 @@ pub fn get_all_settings(db: State<'_, DbState>) -> Result<serde_json::Value, Str
     })
     .map_err(|e| e.to_string())?
     .filter_map(|r| r.ok())
+    .filter(|(k, _)| k != crate::OPENROUTER_KEY_SETTING)
     .for_each(|(k, v)| {
         map.insert(k, serde_json::Value::String(v));
     });

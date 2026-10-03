@@ -12,7 +12,8 @@ import {
 } from "recharts";
 import { Mic, Timer, TrendingUp, Cpu, Zap, Activity, Scissors, Hourglass, MemoryStick } from "lucide-react";
 import InfoCircleIcon from "../components/ui/info-circle-icon";
-import { DashboardStats, getDashboardStats, getSystemStats, SystemStats, getSetting, setSetting, WordsPerDay } from "../lib/ipc";
+import { DashboardStats, getDashboardStats, getSystemStats, SystemStats, getSetting, setSetting, WordsPerDay, setSttMode, formatUsd } from "../lib/ipc";
+import { useSttStatus } from "../lib/useSttStatus";
 import { keyLabel } from "../lib/utils";
 import { useAppStore } from "../lib/store";
 
@@ -205,7 +206,7 @@ function SegmentedControl<T extends string>({
 
 // "Local only" status, with no pill chrome — just a status dot and text that types
 // itself out word-by-word, holds, clears, and loops smoothly (typewriter effect).
-function LocalOnlyTyping() {
+function LocalOnlyTyping({ api = false }: { api?: boolean }) {
   const FULL = "Local only";
   const [count, setCount] = useState(0);
   const [phase, setPhase] = useState<"typing" | "holding" | "clearing">("typing");
@@ -229,6 +230,17 @@ function LocalOnlyTyping() {
     }
     return () => clearTimeout(t);
   }, [count, phase]);
+
+  // In API mode audio leaves the machine, so "Local only" would be a false claim. Shown
+  // static and in the warning colour rather than typed out like the local badge.
+  if (api) {
+    return (
+      <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, fontWeight: 600, color: "var(--warning)" }}>
+        <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--warning)", flexShrink: 0 }} />
+        API · OpenRouter
+      </span>
+    );
+  }
 
   return (
     <span
@@ -262,7 +274,7 @@ function LocalOnlyTyping() {
   );
 }
 
-function WpmGauge({ wpm }: { wpm: number }) {
+function WpmGauge({ wpm, apiCost }: { wpm: number; apiCost?: { usd: number; dictations: number } }) {
   let pct = 50;
   let text = "Average WPM";
   let badge = "Top 50%";
@@ -319,8 +331,16 @@ function WpmGauge({ wpm }: { wpm: number }) {
 
   return (
     <div className="glass-panel dashboard-wpm-panel" style={{ minHeight: 185 }}>
-      <div className="dashboard-wpm-header">
+      <div className="dashboard-wpm-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
         <span className="stat-label">Words Per Minute</span>
+        {apiCost && (
+          <span
+            className="dashboard-api-cost"
+            title={`${apiCost.dictations} API dictations, as billed by OpenRouter`}
+          >
+            API spend <strong>{formatUsd(apiCost.usd)}</strong>
+          </span>
+        )}
       </div>
       <span className="stat-value dashboard-wpm-value">
         {wpm > 0 ? Math.round(wpm) : "--"}
@@ -482,6 +502,17 @@ export default function Dashboard() {
   const [period, setPeriod] = useState<Period>("today");
   const [grain, setGrain] = useState<Grain>("daily");
   const { isRecording, isProcessing, lastTranscript, startRecording, stopRecording } = useAppStore();
+  const [stt, setStt] = useSttStatus();
+  const [sttError, setSttError] = useState<string | null>(null);
+  const apiMode = stt?.mode === "api";
+  const switchEngine = async (mode: "local" | "api") => {
+    setSttError(null);
+    try {
+      setStt(await setSttMode(mode));
+    } catch (e) {
+      setSttError(String(e));
+    }
+  };
 
   useEffect(() => {
     // Load app tracking preference and trigger keybind settings
@@ -643,18 +674,43 @@ export default function Dashboard() {
                 </span>
               </span>
             ))}
-            <LocalOnlyTyping />
+            <LocalOnlyTyping api={apiMode} />
           </div>
         </div>
-        <button
-          className={`button ${isRecording ? "danger" : "primary"}`}
-          onClick={isRecording ? stopRecording : startRecording}
-          disabled={isProcessing}
-          style={{ transition: "all 0.2s" }}
-        >
-          <Mic size={14} />
-          {isProcessing ? "Processing..." : isRecording ? "Stop" : "Test dictation"}
-        </button>
+        <div className="dashboard-engine-controls">
+          {/* Local / API engine switch. Locked while a dictation is in flight so the
+              recording in progress can't change engines halfway through. */}
+          <div
+            className="segmented"
+            role="tablist"
+            aria-label="Transcription engine"
+            title={stt && !stt.key_set ? "Add an OpenRouter key in Settings to use API mode" : undefined}
+          >
+            {(["local", "api"] as const).map((m) => (
+              <button
+                key={m}
+                type="button"
+                role="tab"
+                aria-selected={(stt?.mode ?? "local") === m}
+                className={`segmented-option ${(stt?.mode ?? "local") === m ? "is-active" : ""}`}
+                disabled={isRecording || isProcessing}
+                onClick={() => (stt?.mode ?? "local") !== m && switchEngine(m)}
+              >
+                {m === "local" ? "Local" : "API"}
+              </button>
+            ))}
+          </div>
+          <button
+            className={`button ${isRecording ? "danger" : "primary"}`}
+            onClick={isRecording ? stopRecording : startRecording}
+            disabled={isProcessing}
+            style={{ transition: "all 0.2s" }}
+          >
+            <Mic size={14} />
+            {isProcessing ? "Processing..." : isRecording ? "Stop" : "Test dictation"}
+          </button>
+          {sttError && <span className="dashboard-engine-error">{sttError}</span>}
+        </div>
       </div>
 
       {displayTranscript && (
@@ -689,7 +745,10 @@ export default function Dashboard() {
       {/* Bento Grid */}
       <div className="grid cols-3 dashboard-primary-grid" style={{ marginBottom: 12, gap: 12 }}>
         {/* WPM percentiles */}
-        <WpmGauge wpm={displayStats?.avg_wpm_7d ?? 0} />
+        <WpmGauge
+          wpm={displayStats?.avg_wpm_7d ?? 0}
+          apiCost={apiMode && stt ? { usd: stt.total_cost_usd, dictations: stt.api_dictations } : undefined}
+        />
 
         {/* Streak calendar */}
         <StreakCalendar
@@ -962,7 +1021,7 @@ export default function Dashboard() {
               <span style={{ fontSize: 14, fontWeight: 700, color: "var(--success)" }}>All good</span>
             </div>
             <div style={{ fontSize: 9, color: "var(--tertiary)" }}>
-              Everything runs on your computer
+              {apiMode ? "Speech is transcribed by OpenRouter" : "Everything runs on your computer"}
             </div>
           </div>
         </div>
