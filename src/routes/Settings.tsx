@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { Globe, Keyboard, Mic, MonitorCheck, Shield, History, Circle, Eye, Volume2, Move, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, LocateFixed, Check, CircleAlert, ExternalLink, Accessibility, RotateCcw, Power, Minus, Plus, Cloud, KeyRound, Receipt } from "lucide-react";
-import { listAudioDevices, setAudioDevice, setSetting, getSetting, setBubbleSize, BUBBLE_SCALE_MIN, BUBBLE_SCALE_MAX, BUBBLE_SCALE_STEP, setBubbleVisible, setEarconsEnabled, getBubblePosition, nudgeBubble, resetBubblePosition, getPermissionStatus, requestAccessibilityPermission, requestMicrophonePermission, openPrivacySettings, type PermissionStatus, setSttMode, setOpenRouterKey, clearOpenRouterKey, resetApiUsage, formatUsd } from "../lib/ipc";
-import { useSttStatus } from "../lib/useSttStatus";
+import { Globe, Keyboard, Mic, MonitorCheck, Shield, History, Circle, Eye, Volume2, Move, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, LocateFixed, Check, CircleAlert, ExternalLink, Accessibility, RotateCcw, Power, Minus, Plus } from "lucide-react";
+import { listAudioDevices, setAudioDevice, setSetting, getSetting, setBubbleSize, BUBBLE_SCALE_MIN, BUBBLE_SCALE_MAX, BUBBLE_SCALE_STEP, setBubbleVisible, setEarconsEnabled, getBubblePosition, nudgeBubble, resetBubblePosition, getPermissionStatus, requestAccessibilityPermission, requestMicrophonePermission, openPrivacySettings, type PermissionStatus } from "../lib/ipc";
 import { enable as enableAutostart, disable as disableAutostart, isEnabled as isAutostartEnabled } from "@tauri-apps/plugin-autostart";
 import { shortcutLabel } from "../lib/utils";
-import { emit } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import { useAppStore } from "../lib/store";
 import { Link } from "react-router-dom";
+import { reloadGlobalShortcut, requestInputMonitoringPermission } from "../lib/ipc";
 
 // LocalFlow transcribes English and Hindi only. "Auto-detect" picks between the two
 // per clip (multilingual model required); the backend never emits a third language.
@@ -373,128 +373,6 @@ function BubbleSizeStepper({
   );
 }
 
-// Where speech is turned into text. Local (default) never sends audio anywhere; API
-// sends it to OpenRouter's hosted Whisper and bills the user's own key. The key is
-// write-only: once saved, the UI only ever sees a masked form.
-function TranscriptionSection() {
-  const [status, setStatus] = useSttStatus();
-  const [keyDraft, setKeyDraft] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const run = async (fn: () => Promise<typeof status>) => {
-    setBusy(true);
-    setError(null);
-    try {
-      const next = await fn();
-      if (next) setStatus(next);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const mode = status?.mode ?? "local";
-  const keySet = status?.key_set ?? false;
-
-  return (
-    <Section title="Transcription" className="settings-transcription">
-      <SettingRow
-        icon={Cloud}
-        label="Transcription engine"
-        description={
-          mode === "api"
-            ? "API: your recordings are sent to OpenRouter (Whisper Large V3 Turbo) and billed to your key."
-            : "Local: speech is transcribed on this computer. Nothing leaves your machine."
-        }
-      >
-        <div className="segmented" role="tablist" aria-label="Transcription engine">
-          {(["local", "api"] as const).map((m) => (
-            <button
-              key={m}
-              type="button"
-              role="tab"
-              aria-selected={mode === m}
-              className={`segmented-option ${mode === m ? "is-active" : ""}`}
-              disabled={busy || (m === "api" && !keySet)}
-              title={m === "api" && !keySet ? "Save an OpenRouter key below first" : undefined}
-              onClick={() => mode !== m && run(() => setSttMode(m))}
-            >
-              {m === "local" ? "Local" : "API"}
-            </button>
-          ))}
-        </div>
-      </SettingRow>
-
-      <SettingRow
-        icon={KeyRound}
-        label="OpenRouter API key"
-        description={
-          keySet ? (
-            <>Saved as <code>{status?.key_masked}</code>. Stored only on this computer.</>
-          ) : (
-            <>Create one at openrouter.ai/keys. It starts with <code>sk-or-</code>.</>
-          )
-        }
-      >
-        {keySet ? (
-          <button className="button" disabled={busy} onClick={() => run(clearOpenRouterKey)}>
-            Remove key
-          </button>
-        ) : (
-          <form
-            style={{ display: "flex", gap: 6, width: 260 }}
-            onSubmit={(e) => {
-              e.preventDefault();
-              const key = keyDraft;
-              run(async () => {
-                const next = await setOpenRouterKey(key);
-                setKeyDraft("");
-                return next;
-              });
-            }}
-          >
-            <input
-              className="field"
-              type="password"
-              autoComplete="off"
-              spellCheck={false}
-              placeholder="sk-or-…"
-              value={keyDraft}
-              onChange={(e) => setKeyDraft(e.target.value)}
-              style={{ flex: 1, minWidth: 0 }}
-            />
-            <button className="button primary" type="submit" disabled={busy || !keyDraft.trim()}>
-              Save
-            </button>
-          </form>
-        )}
-      </SettingRow>
-
-      {(keySet || (status?.api_dictations ?? 0) > 0) && (
-        <SettingRow
-          icon={Receipt}
-          label="API spend"
-          description={`${formatUsd(status?.total_cost_usd ?? 0)} across ${status?.api_dictations ?? 0} dictations (${Math.round(
-            (status?.total_seconds ?? 0) / 60
-          )} min of audio), as billed by OpenRouter.`}
-        >
-          <button className="button" disabled={busy} onClick={() => run(resetApiUsage)}>
-            Reset counter
-          </button>
-        </SettingRow>
-      )}
-
-      {error && (
-        <div className="setting-row" style={{ color: "var(--danger)", fontSize: 12 }}>
-          {error}
-        </div>
-      )}
-    </Section>
-  );
-}
-
 export default function SettingsPage() {
   const { privacyMode, togglePrivacy, language, setLanguage } = useAppStore();
   const [devices, setDevices] = useState<string[]>([]);
@@ -505,13 +383,11 @@ export default function SettingsPage() {
   const [bubbleColor, setBubbleColorState] = useState("white");
   // Whether the floating bubble has been moved off its default bottom-right spot.
   const [bubbleCustom, setBubbleCustom] = useState(false);
-  // Display feature switches (all on by default). Disabling one requires the
-  // "exile" confirmation below.
   const [showBubble, setShowBubble] = useState(true);
   const [playSounds, setPlaySounds] = useState(true);
   const [autostart, setAutostart] = useState(false);
-  const [pendingDisable, setPendingDisable] = useState<null | "bubble" | "sounds">(null);
-  const [exileText, setExileText] = useState("");
+  const [fnEnabled, setFnEnabled] = useState(false);
+  const [isMac, setIsMac] = useState(false);
   const showBanner = true;
   
   // Custom Dynamic Shortcuts Settings State
@@ -553,6 +429,8 @@ export default function SettingsPage() {
 
       setShowBubble((await getSetting("show_bubble")) !== "false");
       setPlaySounds((await getSetting("play_sounds")) !== "false");
+      setFnEnabled((await getSetting("fn_quick_toggle")) === "true");
+      setIsMac((await getPermissionStatus()).is_macos);
       setAutostart(await isAutostartEnabled().catch(() => false));
 
       const kbName = await getSetting("keybind_keyboard_name");
@@ -606,6 +484,14 @@ export default function SettingsPage() {
     loadSettings().catch(console.error);
   }, []);
 
+  useEffect(() => {
+    const un = listen<{ bubble?: boolean; sounds?: boolean }>("display-settings-changed", ({ payload }) => {
+      if (payload.bubble !== undefined) setShowBubble(payload.bubble);
+      if (payload.sounds !== undefined) setPlaySounds(payload.sounds);
+    });
+    return () => { un.then((f) => f()); };
+  }, []);
+
   const save = async (key: string, value: string) => setSetting(key, value).catch(console.error);
 
   // Bubble-position D-pad handlers.
@@ -622,9 +508,6 @@ export default function SettingsPage() {
 
   type DisplayFeature = "bubble" | "sounds";
 
-  const featureLabel = (k: DisplayFeature) =>
-    k === "bubble" ? "the floating bubble" : "sounds";
-
   // Apply (persist + push the live side effect for) a display feature on/off.
   const applyFeature = (k: DisplayFeature, on: boolean) => {
     if (k === "bubble") {
@@ -638,27 +521,8 @@ export default function SettingsPage() {
     }
   };
 
-  // Turning a feature OFF asks for the "exile" confirmation; turning it back ON is
-  // immediate.
   const toggleFeature = (k: DisplayFeature, currentlyOn: boolean) => {
-    if (currentlyOn) {
-      setExileText("");
-      setPendingDisable(k);
-    } else {
-      applyFeature(k, true);
-    }
-  };
-
-  const exileOk = exileText.trim().toLowerCase() === "exile";
-  const confirmExile = () => {
-    if (!exileOk || !pendingDisable) return;
-    applyFeature(pendingDisable, false);
-    setPendingDisable(null);
-    setExileText("");
-  };
-  const cancelExile = () => {
-    setPendingDisable(null);
-    setExileText("");
+    applyFeature(k, !currentlyOn);
   };
 
   const keyboardModeLabel = {
@@ -669,59 +533,6 @@ export default function SettingsPage() {
 
   return (
     <div className="page settings-page" style={{ position: "relative" }}>
-      {pendingDisable && (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(10, 10, 12, 0.65)",
-            backdropFilter: "blur(12px)",
-            WebkitBackdropFilter: "blur(12px)",
-            display: "grid",
-            placeItems: "center",
-            zIndex: 9999,
-          }}
-          onClick={cancelExile}
-        >
-          <div
-            className="glass-panel"
-            style={{ width: 390, padding: 26, display: "flex", flexDirection: "column", gap: 16, border: "1px solid var(--separator-soft)" }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>
-              Turn off {featureLabel(pendingDisable)}?
-            </h3>
-            <p style={{ margin: 0, fontSize: 13, color: "var(--secondary)", lineHeight: "19px" }}>
-              This switches off a core part of LocalFlow. To confirm, type{" "}
-              <strong style={{ color: "var(--label)" }}>exile</strong> below.
-            </p>
-            <input
-              className="field"
-              autoFocus
-              placeholder="Type exile to confirm"
-              value={exileText}
-              onChange={(e) => setExileText(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") confirmExile();
-                if (e.key === "Escape") cancelExile();
-              }}
-            />
-            <div style={{ display: "flex", gap: 8 }}>
-              <button className="button" style={{ flex: 1, justifyContent: "center" }} onClick={cancelExile}>
-                Cancel
-              </button>
-              <button
-                className="button danger"
-                style={{ flex: 1, justifyContent: "center" }}
-                disabled={!exileOk}
-                onClick={confirmExile}
-              >
-                Confirm
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
       {showBanner && (
         <div className="banner-card settings-banner" style={{ backgroundImage: "url('/redish.png')" }}>
           <div className="banner-content">
@@ -782,7 +593,6 @@ export default function SettingsPage() {
         </SettingRow>
       </Section>
 
-      <TranscriptionSection />
 
       <Section title="Display" className="settings-display">
         <SettingRow
@@ -877,6 +687,19 @@ export default function SettingsPage() {
       </Section>
 
       <Section title="Triggers" className="settings-triggers">
+        {isMac && (
+          <SettingRow icon={Keyboard} label="Fn quick toggle" description="Hold Fn to talk. Double-tap to keep recording; press Fn again to finish.">
+            <Switch checked={fnEnabled} onChange={async () => {
+              const next = !fnEnabled;
+              try {
+                await setSetting("fn_quick_toggle", String(next));
+                await reloadGlobalShortcut();
+                setFnEnabled(next);
+                if (next) await requestInputMonitoringPermission();
+              } catch (error) { console.error(error); }
+            }} />
+          </SettingRow>
+        )}
         <SettingRow icon={MonitorCheck} label="Toggle dictation" description="Press once to start, press again to stop.">
           <span className="keycap">{shortcutLabel(shortcutToggle)}</span>
         </SettingRow>

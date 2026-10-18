@@ -1,9 +1,10 @@
 mod audio;
 mod cleanup;
-mod cloud_stt;
 mod db;
 mod download;
 mod earcon;
+#[cfg(any(target_os = "macos", test))]
+mod fn_gesture;
 #[cfg(windows)]
 #[path = "hook_windows.rs"]
 mod hook;
@@ -302,11 +303,6 @@ pub fn run() {
             open_main_window,
             resize_bubble,
             set_bubble_size,
-            get_stt_status,
-            set_stt_mode,
-            set_openrouter_key,
-            clear_openrouter_key,
-            reset_api_usage,
             get_bubble_position,
             nudge_bubble,
             reset_bubble_position,
@@ -637,102 +633,78 @@ pub async fn run_pipeline(
     let language = pipeline.current_language.lock().unwrap().clone();
     let romanize = *pipeline.romanize.lock().unwrap();
 
-    // Where the words come from: the local Whisper model (default), or OpenRouter when
-    // the user has switched Settings → Transcription to API. Everything after this —
-    // romanization, cleanup, injection, history — is identical for both.
-    let use_api = stt_mode(app) == SttMode::Api;
-
-    let raw_text: Result<String, String> = if use_api {
-        // The local language setting maps straight onto Whisper's ISO-639-1 codes;
-        // "auto" leaves detection to the model, as it does locally.
-        let api_lang = match language.as_str() {
-            "en" | "hi" => Some(language.as_str()),
-            _ => None,
-        };
-        let key = read_setting(app, OPENROUTER_KEY_SETTING).unwrap_or_default();
-        match cloud_stt::transcribe(&key, &audio_data, api_lang).await {
-            Ok(result) => {
-                // Billing is recorded even in incognito / with history off: it is what
-                // OpenRouter charged, not a record of what was said.
-                record_api_usage(app, result.cost_usd, result.seconds.unwrap_or(duration_secs));
-                Ok(whisper::strip_non_speech(&whisper::collapse_repetitions(&result.text)))
-            }
-            Err(e) => Err(e),
-        }
-    } else {
-        let model_path = match whisper::get_active_model_path(app) {
-            Ok(p) => p,
-            Err(e) => {
-                app.emit("processing-done", serde_json::json!({"error": e}))
-                    .ok();
-                return;
-            }
-        };
-
-        if !model_path.exists() {
-            app.emit(
-                "processing-done",
-                serde_json::json!({"error": "Model not downloaded. Go to Models page."}),
-            )
-            .ok();
+    let model_path = match whisper::get_active_model_path(app) {
+        Ok(p) => p,
+        Err(e) => {
+            app.emit("processing-done", serde_json::json!({"error": e}))
+                .ok();
             return;
         }
+    };
 
-        // Guard against corrupt/partial model files (e.g. a saved 404 error body).
-        if std::fs::metadata(&model_path).map(|m| m.len()).unwrap_or(0) < 1_000_000 {
-            app.emit(
-                "processing-done",
-                serde_json::json!({"error": "Model file is corrupt or incomplete. Delete and re-download it on the Models page."}),
-            )
-            .ok();
-            return;
+    if !model_path.exists() {
+        app.emit(
+            "processing-done",
+            serde_json::json!({"error": "Model not downloaded. Go to Models page."}),
+        )
+        .ok();
+        return;
+    }
+
+    // Guard against corrupt/partial model files (e.g. a saved 404 error body).
+    if std::fs::metadata(&model_path).map(|m| m.len()).unwrap_or(0) < 1_000_000 {
+        app.emit(
+            "processing-done",
+            serde_json::json!({"error": "Model file is corrupt or incomplete. Delete and re-download it on the Models page."}),
+        )
+        .ok();
+        return;
+    }
+
+    let model_str = model_path.to_str().unwrap_or("").to_string();
+    let lang = language.clone();
+    let prompt = dict_prompt.clone();
+    let multilingual = whisper::is_multilingual_model(&model_str);
+
+    let local = tauri::async_runtime::spawn_blocking(move || {
+        // Reuses the already-loaded model; only the first dictation after a launch or a
+        // model switch pays the disk read.
+        let ctx = whisper::context_for(&model_str)?;
+        let mut state = ctx
+            .create_state()
+            .map_err(|e| format!("Whisper state: {}", e))?;
+        // Constrain to English/Hindi only (auto picks the higher-scoring of the two).
+        let chosen_lang = whisper::resolve_language(&mut state, &audio_data, &lang, multilingual);
+        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+        params.set_language(Some(&chosen_lang));
+        params.set_print_progress(false);
+        params.set_print_realtime(false);
+        params.set_print_special(false);
+        params.set_print_timestamps(false);
+        // Non-speech suppression + the anti-repetition guards, shared with `transcribe`.
+        whisper::apply_decoder_guards(&mut params);
+        if !prompt.is_empty() {
+            params.set_initial_prompt(&prompt);
         }
-
-        let model_str = model_path.to_str().unwrap_or("").to_string();
-        let lang = language.clone();
-        let prompt = dict_prompt.clone();
-        let multilingual = whisper::is_multilingual_model(&model_str);
-
-        let local = tauri::async_runtime::spawn_blocking(move || {
-            // Reuses the already-loaded model; only the first dictation after a launch or a
-            // model switch pays the disk read.
-            let ctx = whisper::context_for(&model_str)?;
-            let mut state = ctx
-                .create_state()
-                .map_err(|e| format!("Whisper state: {}", e))?;
-            // Constrain to English/Hindi only (auto picks the higher-scoring of the two).
-            let chosen_lang = whisper::resolve_language(&mut state, &audio_data, &lang, multilingual);
-            let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-            params.set_language(Some(&chosen_lang));
-            params.set_print_progress(false);
-            params.set_print_realtime(false);
-            params.set_print_special(false);
-            params.set_print_timestamps(false);
-            // Non-speech suppression + the anti-repetition guards, shared with `transcribe`.
-            whisper::apply_decoder_guards(&mut params);
-            if !prompt.is_empty() {
-                params.set_initial_prompt(&prompt);
-            }
-            state.full(params, &audio_data).map_err(|e| e.to_string())?;
-            let n = state.full_n_segments();
-            let mut text = String::new();
-            for i in 0..n {
-                if let Some(segment) = state.get_segment(i) {
-                    if let Ok(seg) = segment.to_str() {
-                        text.push_str(seg);
-                    }
+        state.full(params, &audio_data).map_err(|e| e.to_string())?;
+        let n = state.full_n_segments();
+        let mut text = String::new();
+        for i in 0..n {
+            if let Some(segment) = state.get_segment(i) {
+                if let Ok(seg) = segment.to_str() {
+                    text.push_str(seg);
                 }
             }
-            Ok::<String, String>(whisper::strip_non_speech(&whisper::collapse_repetitions(
-                &text,
-            )))
-        })
-        .await;
-        match local {
-            Ok(Ok(t)) => Ok(t),
-            Ok(Err(e)) => Err(format!("Transcription error: {}", e)),
-            Err(e) => Err(format!("Task join error: {}", e)),
         }
+        Ok::<String, String>(whisper::strip_non_speech(&whisper::collapse_repetitions(
+            &text,
+        )))
+    })
+    .await;
+    let raw_text = match local {
+        Ok(Ok(text)) => Ok(text),
+        Ok(Err(error)) => Err(format!("Transcription error: {}", error)),
+        Err(error) => Err(format!("Task join error: {}", error)),
     };
 
     let raw = match raw_text {
@@ -1434,7 +1406,8 @@ fn resize_bubble(app: tauri::AppHandle, width: f64, height: f64) {
 
 /// Show or hide the floating bubble window (Settings → Display toggle).
 #[tauri::command]
-fn set_bubble_visible(app: tauri::AppHandle, visible: bool) {
+fn set_bubble_visible(app: tauri::AppHandle, visible: bool) -> Result<(), String> {
+    write_setting(&app, "show_bubble", if visible { "true" } else { "false" })?;
     if let Some(b) = app.get_webview_window("bubble") {
         if visible {
             let _ = b.set_focusable(false); // never steal focus from the dictation target
@@ -1445,38 +1418,17 @@ fn set_bubble_visible(app: tauri::AppHandle, visible: bool) {
             let _ = b.hide();
         }
     }
+    let _ = app.emit("display-settings-changed", serde_json::json!({ "bubble": visible }));
+    Ok(())
 }
 
 /// Enable or disable the UI beeps (Settings → Display toggle).
 #[tauri::command]
-fn set_earcons_enabled(enabled: bool) {
+fn set_earcons_enabled(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    write_setting(&app, "play_sounds", if enabled { "true" } else { "false" })?;
     crate::earcon::set_sounds_enabled(enabled);
-}
-
-// ── Transcription engine: Local or API (OpenRouter) ────────────────────────
-//
-// Local is the default and the whole point of LocalFlow; API is opt-in and only
-// available once the user has saved their own OpenRouter key. The key never goes back
-// to the webview — the UI only ever sees a masked form (see `cloud_stt::mask_key`), and
-// `get_setting` / `get_all_settings` redact it.
-
-pub(crate) const OPENROUTER_KEY_SETTING: &str = "openrouter_api_key";
-const STT_MODE_SETTING: &str = "stt_mode";
-const API_COST_SETTING: &str = "api_cost_total_usd";
-const API_SECONDS_SETTING: &str = "api_seconds_total";
-const API_COUNT_SETTING: &str = "api_dictations_total";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SttMode {
-    Local,
-    Api,
-}
-
-fn read_setting(app: &tauri::AppHandle, key: &str) -> Option<String> {
-    let db = app.try_state::<DbState>()?;
-    let conn = db.0.lock().ok()?;
-    conn.query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| r.get(0))
-        .ok()
+    let _ = app.emit("display-settings-changed", serde_json::json!({ "sounds": enabled }));
+    Ok(())
 }
 
 fn write_setting(app: &tauri::AppHandle, key: &str, value: &str) -> Result<(), String> {
@@ -1490,135 +1442,6 @@ fn write_setting(app: &tauri::AppHandle, key: &str, value: &str) -> Result<(), S
     )
     .map_err(|e| e.to_string())?;
     Ok(())
-}
-
-fn has_openrouter_key(app: &tauri::AppHandle) -> bool {
-    read_setting(app, OPENROUTER_KEY_SETTING).is_some_and(|k| !k.trim().is_empty())
-}
-
-/// The effective mode. API without a key falls back to Local rather than failing every
-/// dictation — the key can be cleared while API mode is still selected.
-fn stt_mode(app: &tauri::AppHandle) -> SttMode {
-    match read_setting(app, STT_MODE_SETTING).as_deref() {
-        Some("api") if has_openrouter_key(app) => SttMode::Api,
-        _ => SttMode::Local,
-    }
-}
-
-fn read_f64(app: &tauri::AppHandle, key: &str) -> f64 {
-    read_setting(app, key)
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0.0)
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct SttStatus {
-    /// "local" or "api" — the mode dictation will actually use.
-    pub mode: String,
-    pub key_set: bool,
-    pub key_masked: Option<String>,
-    /// Sum of `usage.cost` OpenRouter reported, in USD.
-    pub total_cost_usd: f64,
-    pub total_seconds: f64,
-    pub api_dictations: i64,
-    pub model: String,
-}
-
-fn stt_status(app: &tauri::AppHandle) -> SttStatus {
-    let key = read_setting(app, OPENROUTER_KEY_SETTING).filter(|k| !k.trim().is_empty());
-    SttStatus {
-        mode: match stt_mode(app) {
-            SttMode::Api => "api",
-            SttMode::Local => "local",
-        }
-        .to_string(),
-        key_set: key.is_some(),
-        key_masked: key.as_deref().map(cloud_stt::mask_key),
-        total_cost_usd: read_f64(app, API_COST_SETTING),
-        total_seconds: read_f64(app, API_SECONDS_SETTING),
-        api_dictations: read_f64(app, API_COUNT_SETTING) as i64,
-        model: cloud_stt::MODEL.to_string(),
-    }
-}
-
-/// Every view that shows the mode or the cost listens for this, so the dashboard switch,
-/// the Settings page and the running total stay in step without polling.
-fn emit_stt_status(app: &tauri::AppHandle) -> SttStatus {
-    let status = stt_status(app);
-    app.emit("stt-status-changed", status.clone()).ok();
-    status
-}
-
-/// Add one API dictation's billing to the running totals.
-fn record_api_usage(app: &tauri::AppHandle, cost_usd: Option<f64>, seconds: f64) {
-    match cost_usd {
-        Some(cost) => {
-            let total = read_f64(app, API_COST_SETTING) + cost;
-            let _ = write_setting(app, API_COST_SETTING, &format!("{:.8}", total));
-        }
-        // Left out rather than estimated: the total is meant to match the OpenRouter
-        // bill, and a guess would quietly drift from it.
-        None => eprintln!("OpenRouter response had no usage.cost; total not updated"),
-    }
-    let secs = read_f64(app, API_SECONDS_SETTING) + seconds.max(0.0);
-    let _ = write_setting(app, API_SECONDS_SETTING, &format!("{:.3}", secs));
-    let count = read_f64(app, API_COUNT_SETTING) as i64 + 1;
-    let _ = write_setting(app, API_COUNT_SETTING, &count.to_string());
-    emit_stt_status(app);
-}
-
-#[tauri::command]
-fn get_stt_status(app: tauri::AppHandle) -> SttStatus {
-    stt_status(&app)
-}
-
-/// Switch between "local" and "api". API is refused until a key is saved, so the switch
-/// can never be left pointing at a mode that fails every dictation.
-#[tauri::command]
-fn set_stt_mode(app: tauri::AppHandle, mode: String) -> Result<SttStatus, String> {
-    let mode = match mode.as_str() {
-        "local" => "local",
-        "api" => {
-            if !has_openrouter_key(&app) {
-                return Err("Add your OpenRouter API key in Settings → Transcription first.".into());
-            }
-            "api"
-        }
-        other => return Err(format!("Unknown transcription mode: {}", other)),
-    };
-    write_setting(&app, STT_MODE_SETTING, mode)?;
-    Ok(emit_stt_status(&app))
-}
-
-#[tauri::command]
-fn set_openrouter_key(app: tauri::AppHandle, key: String) -> Result<SttStatus, String> {
-    let key = key.trim();
-    if key.is_empty() {
-        return Err("Paste a key first.".into());
-    }
-    // Every OpenRouter key starts this way; catching a mis-paste here beats a 401 on the
-    // next dictation.
-    if !key.starts_with("sk-or-") {
-        return Err("That doesn't look like an OpenRouter key — they start with \"sk-or-\".".into());
-    }
-    write_setting(&app, OPENROUTER_KEY_SETTING, key)?;
-    Ok(emit_stt_status(&app))
-}
-
-/// Forget the key and drop back to Local, so nothing is sent off-device afterwards.
-#[tauri::command]
-fn clear_openrouter_key(app: tauri::AppHandle) -> Result<SttStatus, String> {
-    write_setting(&app, OPENROUTER_KEY_SETTING, "")?;
-    write_setting(&app, STT_MODE_SETTING, "local")?;
-    Ok(emit_stt_status(&app))
-}
-
-#[tauri::command]
-fn reset_api_usage(app: tauri::AppHandle) -> Result<SttStatus, String> {
-    write_setting(&app, API_COST_SETTING, "0")?;
-    write_setting(&app, API_SECONDS_SETTING, "0")?;
-    write_setting(&app, API_COUNT_SETTING, "0")?;
-    Ok(emit_stt_status(&app))
 }
 
 /// Persist the user's manual bubble size — either "auto" or a scale multiplier such

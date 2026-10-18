@@ -36,6 +36,7 @@ import {
   type ModelInfo,
 } from "../lib/ipc";
 import logoWhite from "../assets/brand/logo_white.png";
+import { MODEL_MEMORY_NOTE, recommendedTranscriptionModelId } from "../lib/modelGuidance";
 
 /** First-run setup wizard. Walks a new (esp. macOS) user through the two TCC
  *  permissions the app silently needs — Microphone + Accessibility — then a model
@@ -118,15 +119,7 @@ export default function OnboardingWizard({ onClose }: { onClose: () => void }) {
     setActiveModel(fallback.filename).catch((error) => setActionError(errorText(error)));
   }, [models, activeModelReady]);
 
-  // Recommend the largest model whose RAM footprint fits in ~half of physical RAM
-  // (leaving headroom for the OS + the app), falling back to the lightest model.
-  const recommended = useMemo(() => {
-    if (!models.length) return null;
-    const budget = ramMb > 0 ? ramMb * 0.5 : Infinity;
-    const fits = models.filter((m) => m.ram_mb <= budget);
-    const pool = fits.length ? fits : models;
-    return pool.reduce((best, m) => (m.ram_mb > best.ram_mb ? m : best), pool[0]);
-  }, [models, ramMb]);
+  const recommended = models.find((model) => model.id === recommendedTranscriptionModelId(ramMb));
 
   // Steps — permission steps only matter on macOS.
   const steps = useMemo(() => {
@@ -343,10 +336,12 @@ export default function OnboardingWizard({ onClose }: { onClose: () => void }) {
               title="Download a speech model"
               desc={
                 ramGb
-                  ? `Your ${deviceWord} has about ${ramGb} GB of RAM — here's a model that runs comfortably on it.`
-                  : "Pick a model to turn your speech into text. It runs entirely on your machine."
+                  ? `Your ${deviceWord} has about ${ramGb} GB of RAM. ${ramMb < 24 * 1024 ? "We recommend Small English for computers with less than 24 GB." : "We recommend Large V3 Turbo for computers with 24 GB or more."}`
+                  : "Start with Small English for everyday English dictation. It runs entirely on your machine."
               }
             >
+              <p className="onb-tip">{MODEL_MEMORY_NOTE}</p>
+              <p className="onb-tip">For Hindi or mixed Hindi-English speech, choose Large V3 Turbo.</p>
               <div className="onb-models">
                 {models.map((m) => {
                   const isRec = recommended?.id === m.id;
@@ -360,7 +355,7 @@ export default function OnboardingWizard({ onClose }: { onClose: () => void }) {
                           {isRec && <span className="onb-rec-badge">Recommended</span>}
                         </div>
                         <div className="onb-model-meta">
-                          {Math.round(m.size_mb)} MB download · ~{(m.ram_mb / 1024).toFixed(1)} GB RAM
+                          {Math.round(m.size_mb)} MB download · ~{m.ram_mb >= 1024 ? `${(m.ram_mb / 1024).toFixed(1)} GB` : `${m.ram_mb} MB`} RAM while processing
                         </div>
                         {busy && (
                           <div className="onb-model-bar" aria-hidden="true">

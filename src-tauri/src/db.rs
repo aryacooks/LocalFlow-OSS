@@ -122,6 +122,15 @@ pub fn init_db(conn: &Connection) -> SqlResult<()> {
         );
     ",
     )?;
+    // Remove credentials and preferences left by the retired cloud transcription feature.
+    conn.execute(
+        "DELETE FROM settings WHERE key IN (
+            'openrouter_api_key', 'stt_mode', 'api_cost_total_usd',
+            'api_seconds_total', 'api_dictations_total'
+        )",
+        [],
+    )?;
+
     // Populating defaults
     let defaults = [
         ("shortcut_toggle", "Alt+F"),
@@ -686,11 +695,6 @@ pub fn get_dictionary_prompt(db: State<'_, DbState>) -> String {
 
 #[tauri::command]
 pub fn get_setting(db: State<'_, DbState>, key: String) -> Option<String> {
-    // The OpenRouter key is write-only from the UI's side; `get_stt_status` reports
-    // whether one is set and a masked form.
-    if key == crate::OPENROUTER_KEY_SETTING {
-        return None;
-    }
     let conn = db.0.lock().unwrap();
     conn.query_row(
         "SELECT value FROM settings WHERE key = ?1",
@@ -724,7 +728,6 @@ pub fn get_all_settings(db: State<'_, DbState>) -> Result<serde_json::Value, Str
     })
     .map_err(|e| e.to_string())?
     .filter_map(|r| r.ok())
-    .filter(|(k, _)| k != crate::OPENROUTER_KEY_SETTING)
     .for_each(|(k, v)| {
         map.insert(k, serde_json::Value::String(v));
     });
@@ -793,4 +796,58 @@ pub fn delete_note(db: State<'_, DbState>, id: String) -> Result<(), String> {
     conn.execute("DELETE FROM notes WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_only_upgrade_removes_cloud_settings_and_preserves_history() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+        for key in [
+            "openrouter_api_key",
+            "stt_mode",
+            "api_cost_total_usd",
+            "api_seconds_total",
+            "api_dictations_total",
+        ] {
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES (?1, 'retired-test-value')",
+                [key],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO dictation_history (raw_text, cleaned_text) VALUES ('test', 'Test')",
+            [],
+        )
+        .unwrap();
+        init_db(&conn).unwrap();
+        init_db(&conn).unwrap();
+        let retired_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM settings WHERE key = 'openrouter_api_key'
+                 OR key = 'stt_mode' OR key LIKE 'api_%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(retired_count, 0);
+        let history_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM dictation_history", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(history_count, 1);
+        let shortcut: String = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'shortcut_toggle'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(shortcut, "Alt+F");
+    }
 }

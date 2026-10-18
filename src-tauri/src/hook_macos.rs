@@ -6,7 +6,7 @@
 /// triggers (middle / right / button 4 / button 5), mirroring the Windows WH_MOUSE_LL
 /// hook.
 ///
-/// We deliberately do NOT install a background *keyboard* listener: the `rdev` crate's
+/// Fn uses raw modifier flags only, without resolving keyboard names. The `rdev` crate's
 /// macOS keyboard listener resolves keystroke names via HIToolbox Text Input Source
 /// APIs off the main thread, which modern macOS aborts (dispatch_assert_queue →
 /// SIGTRAP). A mouse event tap doesn't touch those APIs, so it runs safely on its own
@@ -17,6 +17,7 @@
 /// Input Monitoring / Accessibility permission; without it the tap fails to create
 /// and we degrade gracefully (keyboard shortcuts keep working).
 use once_cell::sync::Lazy;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Manager};
 
@@ -28,6 +29,7 @@ use tauri::{AppHandle, Manager};
 /// background. Refreshed at startup and whenever the shortcuts reload.
 static MOUSE_BINDS: Lazy<Mutex<(String, String)>> =
     Lazy::new(|| Mutex::new(("none".to_string(), "none".to_string())));
+static FN_ENABLED: AtomicBool = AtomicBool::new(false);
 
 /// Reload the cached mouse binds from the settings DB. Cheap and safe to call anytime;
 /// call it at startup and after the user changes a mouse trigger. Falls back to "none".
@@ -46,6 +48,15 @@ pub fn refresh_mouse_binds(app: &AppHandle) {
     };
     let instant = read("keybind_mouse_instant");
     let toggle = read("keybind_mouse_toggle");
+    let fn_enabled = read("fn_quick_toggle") == "true";
+    let was_enabled = FN_ENABLED.swap(fn_enabled, Ordering::Relaxed);
+    #[cfg(target_os = "macos")]
+    if was_enabled && !fn_enabled {
+        let a = app.clone();
+        let _ = app.run_on_main_thread(move || macos_mouse::disable_fn(&a));
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = was_enabled;
     if let Ok(mut b) = MOUSE_BINDS.lock() {
         *b = (instant, toggle);
     }
@@ -58,7 +69,7 @@ fn has_mouse_bind() -> bool {
     let binds = MOUSE_BINDS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    binds.0 != "none" || binds.1 != "none"
+    binds.0 != "none" || binds.1 != "none" || FN_ENABLED.load(Ordering::Relaxed)
 }
 
 pub fn init_hook(
@@ -92,16 +103,21 @@ pub fn init_hook(
 
 #[cfg(target_os = "macos")]
 mod macos_mouse {
+    use crate::fn_gesture::{Action, FnGesture, DOUBLE_TAP_MS};
+    use once_cell::sync::Lazy;
     use std::cell::RefCell;
     use std::rc::Rc;
     use std::sync::{Arc, Mutex};
-    use std::time::Duration;
-    use tauri::AppHandle;
+    use std::time::{Duration, Instant};
+    use tauri::{AppHandle, Manager};
+
+    static FN_GESTURE: Lazy<Mutex<FnGesture>> = Lazy::new(|| Mutex::new(FnGesture::default()));
+    static FN_CLOCK: Lazy<Instant> = Lazy::new(Instant::now);
 
     use core_foundation::runloop::{kCFRunLoopCommonModes, CFRunLoop};
     use core_graphics::event::{
-        CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement, CGEventType,
-        EventField,
+        CGEventFlags, CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement,
+        CGEventType, EventField,
     };
 
     /// Hold an `NSProcessInfo` activity for the whole process lifetime to keep App Nap
@@ -205,6 +221,7 @@ mod macos_mouse {
                         CGEventType::OtherMouseUp,
                         CGEventType::RightMouseDown,
                         CGEventType::RightMouseUp,
+                        CGEventType::FlagsChanged,
                     ],
                     move |_proxy, etype, event| {
                         // macOS disabled the tap (timeout or during user input) — re-arm
@@ -228,6 +245,19 @@ mod macos_mouse {
                         // mutex left by an unrelated panic elsewhere) can never take the tap
                         // down; handle_mouse also recovers poisoned locks so it won't panic.
                         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            if matches!(etype, CGEventType::FlagsChanged) {
+                                if event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE)
+                                    == 63
+                                    && super::FN_ENABLED.load(super::Ordering::Relaxed)
+                                {
+                                    let down = event
+                                        .get_flags()
+                                        .contains(CGEventFlags::CGEventFlagSecondaryFn);
+                                    let a = cb_app.clone();
+                                    let _ = cb_app.run_on_main_thread(move || handle_fn(&a, down));
+                                }
+                                return;
+                            }
                             handle_mouse(&cb_app, &cb_audio, &cb_pipeline, &cb_held, etype, button);
                         }));
                         // ListenOnly tap — never modify/consume; let the click pass through.
@@ -270,6 +300,86 @@ mod macos_mouse {
                 CFRunLoop::run_current(); // blocks this thread for the tap's lifetime
             }
         });
+    }
+
+    pub(super) fn disable_fn(app: &AppHandle) {
+        let owned = {
+            let mut g = FN_GESTURE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let owned = g.owns_recording();
+            g.reset();
+            owned
+        };
+        if owned {
+            apply_fn_action(app, Action::Stop);
+        }
+    }
+
+    fn handle_fn(app: &AppHandle, down: bool) {
+        if !super::FN_ENABLED.load(super::Ordering::Relaxed) {
+            return;
+        }
+        let audio = app.state::<Arc<crate::audio::AudioState>>();
+        let pipeline = app.state::<Arc<crate::pipeline::PipelineState>>();
+        let recording = *audio
+            .is_recording
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let processing = *pipeline
+            .is_processing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let now = FN_CLOCK.elapsed().as_millis() as u64;
+        let action = {
+            let mut g = FN_GESTURE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if down {
+                g.press(now, recording, processing)
+            } else {
+                g.release(now)
+            }
+        };
+        apply_fn_action(app, action);
+    }
+
+    fn apply_fn_action(app: &AppHandle, action: Action) {
+        let audio = app.state::<Arc<crate::audio::AudioState>>();
+        let pipeline = app.state::<Arc<crate::pipeline::PipelineState>>();
+        match action {
+            Action::Start => {
+                crate::hook_start_recording(app, &audio);
+                if !*audio
+                    .is_recording
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                {
+                    FN_GESTURE
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .reset();
+                }
+            }
+            Action::Stop => crate::hook_stop_and_transcribe(app, &audio, &pipeline),
+            Action::Wait(token) => {
+                let a = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(DOUBLE_TAP_MS)).await;
+                    let b = a.clone();
+                    let _ = a.run_on_main_thread(move || {
+                        let action = FN_GESTURE
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .expire(token);
+                        if super::FN_ENABLED.load(super::Ordering::Relaxed) {
+                            apply_fn_action(&b, action);
+                        }
+                    });
+                });
+            }
+            Action::None => {}
+        }
     }
 
     fn handle_mouse(

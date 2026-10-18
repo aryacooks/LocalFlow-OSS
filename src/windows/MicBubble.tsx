@@ -1,7 +1,8 @@
 import { useEffect, useState, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { getSetting, BUBBLE_SCALE_MIN, BUBBLE_SCALE_MAX } from "../lib/ipc";
+import { getSetting, setBubbleVisible, setEarconsEnabled, BUBBLE_SCALE_MIN, BUBBLE_SCALE_MAX } from "../lib/ipc";
+import { EyeOff, Volume2, VolumeX } from "lucide-react";
 
 import logoIcon from "../assets/brand/logo_icon.png";
 import logoWhite from "../assets/brand/logo_white.png";
@@ -39,6 +40,7 @@ export default function MicBubble() {
   // "black": the reverse — black idle logo, white logo + white wave when active.
   const [bubbleColor, setBubbleColor] = useState<"black" | "white">("white");
   const [privacy, setPrivacy] = useState(false);
+  const [sounds, setSounds] = useState(true);
   const ampRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const logoRef = useRef<HTMLDivElement | null>(null);
@@ -74,6 +76,14 @@ export default function MicBubble() {
   }, []);
 
   // Mirror incognito (privacy) mode, kept in sync with the sidebar/tray.
+  useEffect(() => {
+    getSetting("play_sounds").then((v) => setSounds(v !== "false")).catch(console.error);
+    const un = listen<{ sounds?: boolean }>("display-settings-changed", ({ payload }) => {
+      if (payload.sounds !== undefined) setSounds(payload.sounds);
+    });
+    return () => { un.then((f) => f()); };
+  }, []);
+
   useEffect(() => {
     invoke<boolean>("get_privacy_mode").then(setPrivacy).catch(() => {});
     const un = listen<boolean>("privacy-changed", (e) => setPrivacy(e.payload));
@@ -115,7 +125,7 @@ export default function MicBubble() {
     let width: number;
     let height: number;
     if (menuOpen) {
-      width = 180; height = 188;
+      width = 200; height = 264;
     } else if (status === "recording" || status === "processing" || status === "command") {
       width = 180; height = 60;
     } else if (status === "done") {
@@ -363,6 +373,19 @@ export default function MicBubble() {
             <span style={{ flex: 1 }}>Incognito</span>
             <span style={{ fontSize: s(10), opacity: 0.85 }}>{privacy ? "On" : "Off"}</span>
           </button>
+          <button className="bubble-menu-action" onClick={async () => {
+            try { await setEarconsEnabled(!sounds); } catch (error) { console.error(error); }
+          }}>
+            {sounds ? <Volume2 size={14 * uiScale} /> : <VolumeX size={14 * uiScale} />}
+            <span style={{ flex: 1 }}>Sounds</span>
+            <span style={{ fontSize: s(10), opacity: 0.85 }}>{sounds ? "On" : "Muted"}</span>
+          </button>
+          <button className="bubble-menu-action" onClick={async () => {
+            try { await setBubbleVisible(false); setMenuOpen(false); } catch (error) { console.error(error); }
+          }}>
+            <EyeOff size={14 * uiScale} />
+            Hide bubble
+          </button>
           <div style={{ height: "1px", background: "rgba(255,255,255,0.06)", margin: `${s(2)} ${s(6)}` }} />
           <button
             onClick={async () => {
@@ -563,6 +586,15 @@ export default function MicBubble() {
 
       {/* Dynamic Keyframes */}
       <style>{`
+        .bubble-menu-action {
+          display: flex; align-items: center; gap: ${s(8)}; width: 100%;
+          padding: ${s(7)} ${s(10)}; background: transparent; border: none;
+          border-radius: ${s(5)}; color: #e4e4e7; font-size: ${s(12)};
+          font-weight: 500; font-family: inherit; cursor: pointer; text-align: left;
+        }
+        .bubble-menu-action:hover, .bubble-menu-action:focus-visible {
+          background: rgba(255,255,255,0.08);
+        }
         @keyframes fadeInUp {
           from { opacity: 0; transform: translateY(6px); }
           to { opacity: 1; transform: translateY(0); }

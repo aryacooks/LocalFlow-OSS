@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { CheckCircle, Download, Languages, Trash2, X } from "lucide-react";
-import { listModels, ModelInfo, setActiveModel, deleteModel, getSetting, setSetting, setRomanize, cancelDownload } from "../lib/ipc";
+import { listModels, ModelInfo, setActiveModel, deleteModel, getSetting, setSetting, setRomanize, cancelDownload, getTotalRamMb } from "../lib/ipc";
 import { useAppStore } from "../lib/store";
+import { MODEL_MEMORY_NOTE, recommendedTranscriptionModelId } from "../lib/modelGuidance";
 
 // Lightweight on/off switch matching the one used on the Settings page.
 function Switch({ checked, onChange }: { checked: boolean; onChange: () => void }) {
@@ -54,6 +55,8 @@ const ROMANIZE_CAPABLE = ["large-v3-turbo"];
 
 export default function ModelsPage() {
   const [models, setModels] = useState<ModelInfo[]>([]);
+  const [ramMb, setRamMb] = useState(0);
+  const recommendedId = recommendedTranscriptionModelId(ramMb);
   const [activeModel, setActiveModelState] = useState("ggml-small.en-q5_1.bin");
   const [downloadStatus, setDownloadStatus] = useState<Record<string, string>>({});
   // Download progress lives in the global store so it persists across navigation.
@@ -75,6 +78,7 @@ export default function ModelsPage() {
 
   useEffect(() => {
     load().catch(console.error);
+    getTotalRamMb().then(setRamMb).catch(console.error);
 
     // Restore the saved auto-romanize preference (defaults ON) and push it live.
     getSetting("auto_romanize")
@@ -166,7 +170,13 @@ export default function ModelsPage() {
 
       <section className="glass-panel" style={{ marginBottom: 14 }}>
         <p className="row-desc" style={{ margin: 0 }}>
-          New here? Bigger models are noticeably more accurate, so aim as high as your computer can comfortably handle. Download a few, try them out, and keep the largest one that still runs smoothly on your machine. If you speak Hindi or mix Hindi and English, go straight for "Large V3 Turbo".
+          {recommendedId === "small.en"
+            ? "Start with Small English, our recommended English model for computers with less than 24 GB of RAM. It balances speed, accuracy, and memory use."
+            : "With 24 GB of RAM or more, we recommend Large V3 Turbo for higher accuracy and multilingual speech."}
+          {" "}For Hindi or mixed Hindi-English speech, choose Large V3 Turbo regardless of the English recommendation.
+        </p>
+        <p className="row-desc" style={{ margin: "8px 0 0" }}>
+          {MODEL_MEMORY_NOTE}
         </p>
       </section>
 
@@ -186,9 +196,10 @@ export default function ModelsPage() {
               </div>
 
               <div>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
+                <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, marginBottom: 3 }}>
                   <span className="row-title">{model.name}</span>
                   {isActive && <span className="badge">Active</span>}
+                  {model.id === recommendedId && <span className="badge">Recommended</span>}
                 </div>
                 <p className="row-desc" style={{ margin: 0 }}>{model.description}</p>
                 
@@ -202,7 +213,7 @@ export default function ModelsPage() {
                     <span className="spec-value">{formatSize(model.size_mb)}</span>
                   </div>
                   <div className="spec-item">
-                    <span className="spec-label">Peak RAM Used</span>
+                    <span className="spec-label">Processing RAM (est.)</span>
                     <span className="spec-value">{MODEL_COMPARISONS[model.id]?.avgRam || `~${formatSize(model.ram_mb)}`}</span>
                   </div>
                   <div className="spec-item">
