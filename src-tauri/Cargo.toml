@@ -52,8 +52,8 @@ features = ["metal"]
 # macOS mouse-button triggers via a CGEventTap (hook_macos.rs). Keyboard still goes
 # through tauri-plugin-global-shortcut; mouse buttons aren't covered by that plugin.
 [target.'cfg(target_os = "macos")'.dependencies]
-core-graphics = "0.23"
-core-foundation = "0.9"
+core-graphics = "0.25"
+core-foundation = "0.10"
 # Objective-C runtime: read the AVCaptureDevice microphone authorization status
 # for the first-run permissions wizard (mac_permissions.rs).
 objc = "0.2"

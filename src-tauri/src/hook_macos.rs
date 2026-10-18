@@ -12,8 +12,9 @@
 /// SIGTRAP). A mouse event tap doesn't touch those APIs, so it runs safely on its own
 /// thread.
 ///
-/// Note: the event tap observes (ListenOnly) — the configured mouse button still
-/// performs its normal action in other apps. It also requires the user to grant
+/// The event tap passes mouse events through, but consumes Fn modifier events when
+/// Fn dictation is enabled so macOS does not also open emoji or dictation. It requires
+/// the user to grant
 /// Input Monitoring / Accessibility permission; without it the tap fails to create
 /// and we degrade gracefully (keyboard shortcuts keep working).
 use once_cell::sync::Lazy;
@@ -117,7 +118,7 @@ mod macos_mouse {
     use core_foundation::runloop::{kCFRunLoopCommonModes, CFRunLoop};
     use core_graphics::event::{
         CGEventFlags, CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement,
-        CGEventType, EventField,
+        CGEventType, CallbackResult, EventField,
     };
 
     /// Hold an `NSProcessInfo` activity for the whole process lifetime to keep App Nap
@@ -212,58 +213,78 @@ mod macos_mouse {
                 let cb_held = held.clone();
                 let cb_cell = tap_cell.clone();
 
-                let tap = CGEventTap::new(
-                    CGEventTapLocation::Session,
-                    CGEventTapPlacement::HeadInsertEventTap,
-                    CGEventTapOptions::ListenOnly,
-                    vec![
-                        CGEventType::OtherMouseDown,
-                        CGEventType::OtherMouseUp,
-                        CGEventType::RightMouseDown,
-                        CGEventType::RightMouseUp,
-                        CGEventType::FlagsChanged,
-                    ],
-                    move |_proxy, etype, event| {
-                        // macOS disabled the tap (timeout or during user input) — re-arm
-                        // it immediately so mouse triggers keep working.
-                        if matches!(
-                            etype,
-                            CGEventType::TapDisabledByTimeout | CGEventType::TapDisabledByUserInput
-                        ) {
-                            if let Some(t) = cb_cell.borrow().as_ref() {
-                                t.enable();
-                            }
-                            return None;
-                        }
-                        let button =
-                            event.get_integer_value_field(EventField::MOUSE_EVENT_BUTTON_NUMBER);
-                        // This closure is invoked from CoreGraphics C code. A Rust panic
-                        // unwinding across that FFI boundary is undefined behavior and, in
-                        // practice, tears down this run-loop thread — permanently killing
-                        // mouse triggers while keyboard shortcuts (a separate OS mechanism)
-                        // keep working. Catch any panic so a one-off failure (e.g. a poisoned
-                        // mutex left by an unrelated panic elsewhere) can never take the tap
-                        // down; handle_mouse also recovers poisoned locks so it won't panic.
-                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            if matches!(etype, CGEventType::FlagsChanged) {
-                                if event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE)
-                                    == 63
-                                    && super::FN_ENABLED.load(super::Ordering::Relaxed)
-                                {
-                                    let down = event
-                                        .get_flags()
-                                        .contains(CGEventFlags::CGEventFlagSecondaryFn);
-                                    let a = cb_app.clone();
-                                    let _ = cb_app.run_on_main_thread(move || handle_fn(&a, down));
+                // The tap and callback stay on this thread's run loop for their entire
+                // lifetime; the Rc used to re-arm it never crosses threads.
+                let tap = unsafe {
+                    CGEventTap::new_unchecked(
+                        CGEventTapLocation::HID,
+                        CGEventTapPlacement::HeadInsertEventTap,
+                        CGEventTapOptions::Default,
+                        vec![
+                            CGEventType::OtherMouseDown,
+                            CGEventType::OtherMouseUp,
+                            CGEventType::RightMouseDown,
+                            CGEventType::RightMouseUp,
+                            CGEventType::FlagsChanged,
+                        ],
+                        move |_proxy, etype, event| {
+                            // macOS disabled the tap (timeout or during user input) — re-arm
+                            // it immediately so mouse triggers keep working.
+                            if matches!(
+                                etype,
+                                CGEventType::TapDisabledByTimeout
+                                    | CGEventType::TapDisabledByUserInput
+                            ) {
+                                if let Some(t) = cb_cell.borrow().as_ref() {
+                                    t.enable();
                                 }
-                                return;
+                                return CallbackResult::Keep;
                             }
-                            handle_mouse(&cb_app, &cb_audio, &cb_pipeline, &cb_held, etype, button);
-                        }));
-                        // ListenOnly tap — never modify/consume; let the click pass through.
-                        None
-                    },
-                );
+                            let button = event
+                                .get_integer_value_field(EventField::MOUSE_EVENT_BUTTON_NUMBER);
+                            // This closure is invoked from CoreGraphics C code. A Rust panic
+                            // unwinding across that FFI boundary is undefined behavior and, in
+                            // practice, tears down this run-loop thread — permanently killing
+                            // mouse triggers while keyboard shortcuts (a separate OS mechanism)
+                            // keep working. Catch any panic so a one-off failure (e.g. a poisoned
+                            // mutex left by an unrelated panic elsewhere) can never take the tap
+                            // down; handle_mouse also recovers poisoned locks so it won't panic.
+                            let handled =
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    if matches!(etype, CGEventType::FlagsChanged) {
+                                        if event.get_integer_value_field(
+                                            EventField::KEYBOARD_EVENT_KEYCODE,
+                                        ) == 63
+                                            && super::FN_ENABLED.load(super::Ordering::Relaxed)
+                                        {
+                                            let down = event
+                                                .get_flags()
+                                                .contains(CGEventFlags::CGEventFlagSecondaryFn);
+                                            let a = cb_app.clone();
+                                            return cb_app
+                                                .run_on_main_thread(move || handle_fn(&a, down))
+                                                .is_ok();
+                                        }
+                                        return false;
+                                    }
+                                    handle_mouse(
+                                        &cb_app,
+                                        &cb_audio,
+                                        &cb_pipeline,
+                                        &cb_held,
+                                        etype,
+                                        button,
+                                    );
+                                    false
+                                }));
+                            if handled.unwrap_or(false) {
+                                CallbackResult::Drop
+                            } else {
+                                CallbackResult::Keep
+                            }
+                        },
+                    )
+                };
 
                 match tap {
                     Ok(t) => {
@@ -286,7 +307,7 @@ mod macos_mouse {
             unsafe {
                 let cell = tap_cell.borrow();
                 let tap = cell.as_ref().unwrap();
-                let loop_source = match tap.mach_port.create_runloop_source(0) {
+                let loop_source = match tap.mach_port().create_runloop_source(0) {
                     Ok(s) => s,
                     Err(_) => {
                         eprintln!("macOS: failed to create run-loop source for mouse tap.");
