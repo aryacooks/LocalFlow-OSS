@@ -336,12 +336,12 @@ export default function OnboardingWizard({ onClose }: { onClose: () => void }) {
               title="Download a speech model"
               desc={
                 ramGb
-                  ? `Your ${deviceWord} has about ${ramGb} GB of RAM. ${ramMb < 24 * 1024 ? "We recommend Small English for computers with less than 24 GB." : "We recommend Large V3 Turbo for computers with 24 GB or more."}`
+                  ? `Your ${deviceWord} has about ${ramGb} GB of RAM. ${ramMb < 24 * 1024 ? "We recommend Small English for computers with less than 24 GB." : "We recommend Multilingual flow for computers with 24 GB or more."}`
                   : "Start with Small English for everyday English dictation. It runs entirely on your machine."
               }
             >
               <p className="onb-tip">{MODEL_MEMORY_NOTE}</p>
-              <p className="onb-tip">For Hindi or mixed Hindi-English speech, choose Large V3 Turbo.</p>
+              <p className="onb-tip">For Hindi or mixed Hindi-English speech, choose Multilingual flow.</p>
               <div className="onb-models">
                 {models.map((m) => {
                   const isRec = recommended?.id === m.id;

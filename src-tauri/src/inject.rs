@@ -311,3 +311,98 @@ fn exe_to_friendly_name(exe: &str) -> String {
     }
     .to_string()
 }
+
+/// Copy text to the clipboard (and leave it there) — the "Copy" button on the
+/// nothing-was-pasted card.
+#[tauri::command]
+pub fn copy_to_clipboard(text: String) -> Result<(), String> {
+    set_clipboard_text(&text)
+}
+
+/// Whether the focused UI element can take typed text, so we can tell the user when
+/// a dictation had nowhere to go. `Some(false)` only when we're fairly sure (nothing
+/// focused, or a focused element that isn't a text input); `None` when we can't tell.
+#[cfg(target_os = "macos")]
+pub fn focused_accepts_text() -> Option<bool> {
+    use core_foundation::base::{CFType, CFTypeRef, TCFType};
+    use core_foundation::boolean::CFBoolean;
+    use core_foundation::string::{CFString, CFStringRef};
+    use std::ffi::c_void;
+
+    type AXUIElementRef = *const c_void;
+    const AX_OK: i32 = 0;
+    const AX_NO_VALUE: i32 = -25212;
+
+    #[link(name = "ApplicationServices", kind = "framework")]
+    extern "C" {
+        fn AXIsProcessTrusted() -> bool;
+        fn AXUIElementCreateSystemWide() -> AXUIElementRef;
+        fn AXUIElementCopyAttributeValue(el: AXUIElementRef, attr: CFStringRef, value: *mut CFTypeRef) -> i32;
+        fn AXUIElementSetAttributeValue(el: AXUIElementRef, attr: CFStringRef, value: CFTypeRef) -> i32;
+        fn AXUIElementSetMessagingTimeout(el: AXUIElementRef, seconds: f32) -> i32;
+    }
+
+    unsafe {
+        if !AXIsProcessTrusted() {
+            return None;
+        }
+        let sys = AXUIElementCreateSystemWide();
+        if sys.is_null() {
+            return None;
+        }
+        let sys = CFType::wrap_under_create_rule(sys as CFTypeRef);
+        let sys_ref = sys.as_CFTypeRef() as AXUIElementRef;
+        AXUIElementSetMessagingTimeout(sys_ref, 0.25);
+
+        let copy = |el: AXUIElementRef, attr: &str| -> (i32, Option<CFType>) {
+            let mut v: CFTypeRef = std::ptr::null();
+            let key = CFString::new(attr);
+            let err = AXUIElementCopyAttributeValue(el, key.as_concrete_TypeRef(), &mut v);
+            let val = (err == AX_OK && !v.is_null()).then(|| CFType::wrap_under_create_rule(v));
+            (err, val)
+        };
+
+        // Electron apps only expose their accessibility tree when asked; harmless elsewhere.
+        if let (AX_OK, Some(app)) = copy(sys_ref, "AXFocusedApplication") {
+            let key = CFString::new("AXManualAccessibility");
+            AXUIElementSetAttributeValue(
+                app.as_CFTypeRef() as AXUIElementRef,
+                key.as_concrete_TypeRef(),
+                CFBoolean::true_value().as_CFTypeRef(),
+            );
+        }
+
+        let (err, focused) = copy(sys_ref, "AXFocusedUIElement");
+        let focused = match (err, focused) {
+            (AX_OK, Some(f)) => f,
+            (AX_NO_VALUE, _) => return Some(false), // nothing focused at all
+            _ => return None,
+        };
+        let el = focused.as_CFTypeRef() as AXUIElementRef;
+
+        if let (AX_OK, Some(role)) = copy(el, "AXRole") {
+            if let Some(role) = role.downcast::<CFString>() {
+                let role = role.to_string();
+                if matches!(role.as_str(), "AXTextField" | "AXTextArea" | "AXComboBox" | "AXSearchField") {
+                    return Some(true);
+                }
+            }
+        }
+        // Rich editors (web contenteditable, code editors) report other roles but
+        // still have a text cursor.
+        if copy(el, "AXSelectedTextRange").0 == AX_OK {
+            return Some(true);
+        }
+        if let (AX_OK, Some(v)) = copy(el, "AXEditable") {
+            if v.downcast::<CFBoolean>().map(bool::from).unwrap_or(false) {
+                return Some(true);
+            }
+        }
+        Some(false)
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn focused_accepts_text() -> Option<bool> {
+    None
+}

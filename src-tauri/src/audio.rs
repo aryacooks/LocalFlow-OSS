@@ -30,7 +30,66 @@ const BUFFER_CAPACITY: usize = 480_000;
 #[derive(Default, Serialize, Clone)]
 pub struct AudioAmplitude {
     pub rms: f32,
+    /// 8 time slices of the last callback, auto-gained (always looks busy).
     pub bars: Vec<f32>,
+    /// Loudness 0..1 on a dB scale: ~0 in a quiet room, ~1 for loud speech.
+    pub level: f32,
+    /// 8 voice-frequency bands (low → high, ~120 Hz–4 kHz), 0..1 on a dB scale.
+    /// Unlike `bars`, these stay low when you're quiet, so a wave built on them
+    /// actually follows the voice.
+    pub bands: Vec<f32>,
+}
+
+/// Map a linear amplitude to 0..1 between `floor_db` and `ceil_db`.
+fn db_unit(amp: f32, floor_db: f32, ceil_db: f32) -> f32 {
+    let db = 20.0 * amp.max(1e-7).log10();
+    ((db - floor_db) / (ceil_db - floor_db)).clamp(0.0, 1.0)
+}
+
+/// Energy in 8 log-spaced bands from 120 Hz to 4 kHz, via a few Goertzel probes per
+/// band on a Hann-windowed block (cheap enough for the audio callback; no FFT crate).
+fn voice_bands(samples: &[f32], rate: f32) -> Vec<f32> {
+    const LO: f32 = 120.0;
+    const HI: f32 = 4000.0;
+    const PROBES: usize = 3;
+    let n = samples.len();
+    if n < 32 || rate <= 0.0 {
+        return vec![0.0; 8];
+    }
+    let windowed: Vec<f32> = samples
+        .iter()
+        .enumerate()
+        .map(|(i, &x)| {
+            let w = 0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / (n - 1) as f32).cos();
+            x * w
+        })
+        .collect();
+    let ratio = (HI / LO).powf(1.0 / 8.0);
+    (0..8)
+        .map(|b| {
+            let f0 = LO * ratio.powi(b as i32);
+            let mut best = 0.0f32;
+            for p in 0..PROBES {
+                let f = f0 * ratio.powf((p as f32 + 0.5) / PROBES as f32);
+                if f >= rate / 2.0 {
+                    break;
+                }
+                let coeff = 2.0 * (std::f32::consts::TAU * f / rate).cos();
+                let (mut s1, mut s2) = (0.0f32, 0.0f32);
+                for &x in &windowed {
+                    let s0 = x + coeff * s1 - s2;
+                    s2 = s1;
+                    s1 = s0;
+                }
+                let power = (s1 * s1 + s2 * s2 - coeff * s1 * s2).max(0.0);
+                // ≈ sine amplitude at f (Hann gain is 0.5).
+                best = best.max(power.sqrt() * 4.0 / n as f32);
+            }
+            // Voice energy falls off with frequency; tilt so highs still move.
+            let tilt = 10f32.powf(2.5 * b as f32 / 20.0);
+            db_unit(best * tilt, -62.0, -24.0)
+        })
+        .collect()
 }
 
 pub struct AudioState {
@@ -225,9 +284,15 @@ fn process_input(data: &[f32], channels: usize, state: &Arc<AudioState>, max_sam
     let rms =
         (mono_samples.iter().map(|s| s * s).sum::<f32>() / mono_samples.len().max(1) as f32).sqrt();
 
+    let rate = state.sample_rate.try_lock().map(|r| *r).unwrap_or(SAMPLE_RATE) as f32;
+    let bands = voice_bands(&mono_samples, rate);
+    let level = db_unit(rms, -55.0, -16.0);
+
     if let Ok(mut amp) = state.amplitude.try_lock() {
         amp.rms = rms;
         amp.bars = bars;
+        amp.level = level;
+        amp.bands = bands;
     }
 
     let mut buffer = state.buffer.lock().unwrap();

@@ -519,6 +519,10 @@ pub fn run_inference(app: &AppHandle, prompt: &str) -> Result<String, String> {
         "0.1".to_string(),
         "-n".to_string(),
         "512".to_string(),
+        // llama-cli's default context is 512 tokens, smaller than the cleanup prompt
+        // alone, which made every run fail with "prompt is too long" and fall back to regex.
+        "-c".to_string(),
+        "2048".to_string(),
         "--repeat-penalty".to_string(),
         "1.15".to_string(),
         "--no-display-prompt".to_string(),

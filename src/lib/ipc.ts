@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 // Type-safe Tauri invoke wrappers
 
 export async function getAmplitude() {
-  return invoke<{ rms: number; bars: number[] }>("get_amplitude");
+  return invoke<{ rms: number; bars: number[]; level: number; bands: number[] }>("get_amplitude");
 }
 
 export async function startRecording(deviceName?: string) {
@@ -119,6 +119,30 @@ export async function setEarconsEnabled(enabled: boolean) {
   return invoke<void>("set_earcons_enabled", { enabled });
 }
 
+/** Choose the start/stop sound set; the backend plays its start cue as a preview. */
+export type BubbleMode = "screen" | "notch" | "off";
+
+/** The Animation switch: floating orb, notch island (macOS), or nothing. */
+export async function setBubbleMode(mode: BubbleMode) {
+  return invoke<void>("set_bubble_mode", { mode });
+}
+
+export interface NotchGeometry {
+  width: number;
+  height: number;
+  has_notch: boolean;
+  screen_w: number;
+  screen_h: number;
+}
+
+export async function getNotchGeometry() {
+  return invoke<NotchGeometry>("get_notch_geometry");
+}
+
+export async function setSoundSet(id: string) {
+  return invoke<void>("set_sound_set", { id });
+}
+
 // Bounds for the manual bubble-size multiplier. Mirrored in Rust
 // (`BUBBLE_SCALE_MIN`/`MAX` in lib.rs) — keep the three in sync.
 export const BUBBLE_SCALE_MIN = 0.5;
@@ -131,19 +155,13 @@ export async function setBubbleSize(size: string) {
   return invoke<void>("set_bubble_size", { size });
 }
 
-// Floating-bubble position. Stored as a fraction (0..1) of the available screen span;
-// null means it's at the default bottom-right spot.
-export async function getBubblePosition() {
-  return invoke<[number, number] | null>("get_bubble_position");
+/** The orb's spot (tl, tc, tr, ml, mr, bl, bc, br) and its left/right, up/down shift in points. */
+export async function getBubblePlacement() {
+  return invoke<[string, number, number]>("get_bubble_placement");
 }
 
-// Move the bubble by a fractional step (D-pad). Returns the new [fx, fy].
-export async function nudgeBubble(dx: number, dy: number) {
-  return invoke<[number, number] | null>("nudge_bubble", { dx, dy });
-}
-
-export async function resetBubblePosition() {
-  return invoke<void>("reset_bubble_position");
+export async function setBubblePlacement(spot: string, nudge: number, nudgeY: number) {
+  return invoke<void>("set_bubble_placement", { spot, nudge, nudgeY });
 }
 
 // ── macOS permissions (first-run onboarding) ──

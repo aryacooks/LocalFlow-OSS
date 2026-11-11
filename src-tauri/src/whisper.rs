@@ -313,15 +313,6 @@ pub struct ModelInfo {
 pub fn available_models() -> Vec<ModelInfo> {
     vec![
         ModelInfo {
-            id: "tiny.en".into(),
-            name: "Tiny English".into(),
-            filename: "ggml-tiny.en-q5_1.bin".into(),
-            url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en-q5_1.bin".into(),
-            size_mb: 32,
-            ram_mb: 130,
-            description: "Quickest, but makes the most mistakes. Fine for short notes.".into(),
-        },
-        ModelInfo {
             id: "base.en".into(),
             name: "Base English".into(),
             filename: "ggml-base.en-q5_1.bin".into(),
@@ -349,17 +340,8 @@ pub fn available_models() -> Vec<ModelInfo> {
             description: "More accurate but slower. Good for longer or important writing.".into(),
         },
         ModelInfo {
-            id: "distil-large-v3".into(),
-            name: "Distil-Whisper Large V3".into(),
-            filename: "ggml-distil-large-v3.bin".into(),
-            url: "https://huggingface.co/distil-whisper/distil-large-v3-ggml/resolve/main/ggml-distil-large-v3.bin".into(),
-            size_mb: 756,
-            ram_mb: 900,
-            description: "Very accurate English, and faster than the biggest model.".into(),
-        },
-        ModelInfo {
             id: "large-v3-turbo".into(),
-            name: "Large V3 Turbo (Multilingual)".into(),
+            name: "Multilingual flow".into(),
             filename: "ggml-large-v3-turbo-q5_0.bin".into(),
             url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin".into(),
             size_mb: 874,

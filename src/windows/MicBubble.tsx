@@ -1,11 +1,12 @@
 import { useEffect, useState, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { getSetting, setBubbleVisible, setEarconsEnabled, BUBBLE_SCALE_MIN, BUBBLE_SCALE_MAX } from "../lib/ipc";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getSetting, setBubbleVisible, setEarconsEnabled, getNotchGeometry, BUBBLE_SCALE_MIN, BUBBLE_SCALE_MAX } from "../lib/ipc";
+import NotchIsland from "./NotchIsland";
+import OrbBubble, { ORB_BOX, type OrbVariant, type OrbSignal } from "./OrbBubble";
 import { EyeOff, Volume2, VolumeX } from "lucide-react";
 
-import logoIcon from "../assets/brand/logo_icon.png";
-import logoWhite from "../assets/brand/logo_white.png";
 
 // Manual bubble-size override → content scale. MUST stay in sync with the Rust
 // `bubble_size_to_scale` in lib.rs (window size there, content size here), or the
@@ -35,12 +36,22 @@ export default function MicBubble() {
   const [isError, setIsError] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [logoHovered, setLogoHovered] = useState(false);
+  // Which of the 8 screen spots the orb is in ("br" = bottom-right). The window grows
+  // away from the screen edge, so the orb is laid out at the matching window corner.
+  const [spot, setSpot] = useState("br");
+  const drag = useRef<{ sx: number; sy: number; wx: number; wy: number; moved: boolean; raf: number } | null>(null);
+  const suppressClick = useRef(false);
   const [uiScale, setUiScale] = useState(1);
-  // "white" (default): white idle logo, black logo + black wave when active.
-  // "black": the reverse — black idle logo, white logo + white wave when active.
-  const [bubbleColor, setBubbleColor] = useState<"black" | "white">("white");
+  // The orb's colour follows what's behind it: Rust samples the screen under the
+  // bubble and sends `bubble-tint` ("light" background → black orb, "dark" → white).
+  const [tint, setTint] = useState<"light" | "dark">("light");
+  const [variant, setVariant] = useState<OrbVariant>("blob");
+  const signal = useRef<OrbSignal>({ level: 0, bands: Array(8).fill(0) });
   const [privacy, setPrivacy] = useState(false);
   const [sounds, setSounds] = useState(true);
+  // "classic" floating mic, or the "notch" island (macOS; window placed by Rust).
+  const [mode, setMode] = useState<"classic" | "notch">("classic");
+  const [notch, setNotch] = useState({ width: 186, height: 32 });
   const ampRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const logoRef = useRef<HTMLDivElement | null>(null);
@@ -65,14 +76,25 @@ export default function MicBubble() {
   // Load the saved bubble color and keep it in sync with the Settings page (which
   // broadcasts "bubble-style-changed" when the user flips it).
   useEffect(() => {
-    invoke<string | null>("get_setting", { key: "bubble_color" })
-      .then((v) => { if (v === "white" || v === "black") setBubbleColor(v); })
-      .catch(() => {});
-    const un = listen<string>("bubble-style-changed", (e) => {
-      const v = e.payload;
-      if (v === "white" || v === "black") setBubbleColor(v);
+    const isVariant = (v: unknown): v is OrbVariant =>
+      v === "sunburst" || v === "blob" || v === "orbit" || v === "liquid" || v === "pebble" || v === "minibars";
+    getSetting("bubble_orb").then((v) => { if (isVariant(v)) setVariant(v); }).catch(() => {});
+    const un2 = listen<string>("bubble-orb-changed", (e) => { if (isVariant(e.payload)) setVariant(e.payload); });
+    const un3 = listen<string>("bubble-tint", (e) => setTint(e.payload === "dark" ? "dark" : "light"));
+    return () => { un2.then((f) => f()); un3.then((f) => f()); };
+  }, []);
+
+  // Bubble style + the notch's real size, kept in sync with Settings.
+  useEffect(() => {
+    getSetting("bubble_style").then((v) => setMode(v === "notch" ? "notch" : "classic")).catch(() => {});
+    getNotchGeometry().then((g) => setNotch({ width: g.width, height: g.height })).catch(() => {});
+    invoke<[string, number]>("get_bubble_placement").then(([sp]) => setSpot(sp)).catch(() => {});
+    const unPlace = listen<{ spot: string }>("bubble-placement-changed", (e) => setSpot(e.payload.spot));
+    const un = listen<string>("bubble-mode-changed", (e) => {
+      setMode(e.payload === "notch" ? "notch" : "classic");
+      setMenuOpen(false);
     });
-    return () => { un.then((f) => f()); };
+    return () => { un.then((f) => f()); unPlace.then((f) => f()); };
   }, []);
 
   // Mirror incognito (privacy) mode, kept in sync with the sidebar/tray.
@@ -126,15 +148,15 @@ export default function MicBubble() {
     let height: number;
     if (menuOpen) {
       width = 200; height = 264;
-    } else if (status === "recording" || status === "processing" || status === "command") {
-      width = 180; height = 60;
-    } else if (status === "done") {
-      width = 240; height = isError ? 110 : 60;
+    } else if (status === "done" && isError) {
+      width = 240; height = 120; // room for the error message above the orb
     } else {
-      width = 44; height = 44; // idle: hug the logo tightly so clicks pass through nearby
+      width = ORB_BOX; height = ORB_BOX; // same box idle and active, so the orb never jumps
     }
+    // In notch mode Rust keeps the window at the notch and ignores the size.
+    if (mode === "notch") return;
     invoke("resize_bubble", { width, height }).catch(() => {});
-  }, [status, menuOpen, isError, uiScale]);
+  }, [status, menuOpen, isError, uiScale, mode]);
 
   // Done auto-collapse sequence
   useEffect(() => {
@@ -143,25 +165,32 @@ export default function MicBubble() {
         setStatus("idle");
         setTranscribedText("");
         setIsError(false);
-      }, 2500);
+      }, mode === "notch" ? (isError ? 2200 : 1100) : 2500);
       return () => clearTimeout(id);
     }
-  }, [status]);
+  }, [status, mode, isError]);
 
-  // Audio level polling & state listeners
+  // Audio levels, polled only while listening (~30 Hz). The orb reads `signal` every
+  // frame; the notch island renders `bars` (the same bands).
+  const listening = status === "recording" || status === "command";
   useEffect(() => {
+    if (!listening) {
+      signal.current = { level: 0, bands: Array(8).fill(0) };
+      return;
+    }
     ampRef.current = setInterval(async () => {
       try {
-        const a = await invoke<{ rms: number; bars: number[] }>("get_amplitude");
-        if (a?.bars?.length) {
-          setBars(a.bars.slice(0, 8));
-        } else {
-          setBars(Array(8).fill(0).map(() => 0.05 + Math.random() * 0.1));
-        }
-      } catch {
-        setBars(Array(8).fill(0).map(() => 0.05 + Math.random() * 0.1));
-      }
-    }, 100);
+        const a = await invoke<{ level?: number; bands?: number[] }>("get_amplitude");
+        const bands = a?.bands?.length ? a.bands.slice(0, 8) : Array(8).fill(0);
+        signal.current = { level: a?.level ?? 0, bands };
+        setBars(bands);
+      } catch { /* keep the last values */ }
+    }, 33);
+    return () => { if (ampRef.current) clearInterval(ampRef.current); };
+  }, [listening]);
+
+  // State listeners
+  useEffect(() => {
 
     const u1 = listen("recording-started", () => {
       setTranscribedText("");
@@ -190,7 +219,6 @@ export default function MicBubble() {
     });
 
     return () => {
-      if (ampRef.current) clearInterval(ampRef.current);
       u1.then(f => f());
       u2.then(f => f());
       u3.then(f => f());
@@ -199,12 +227,50 @@ export default function MicBubble() {
   }, []);
 
   /* ── Actions ────────────────────────────────────────────────── */
+  // Drag the orb anywhere; on release it snaps to the nearest of the 8 spots (Rust).
+  // macOS keeps sending moves to this window while the button is held, even when the
+  // pointer is outside it, so plain pointer events are enough.
+  const onPointerDown = (e: React.PointerEvent) => {
+    if (e.button !== 0 || menuOpen) return;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const d = { sx: e.screenX, sy: e.screenY, wx: window.screenX, wy: window.screenY, moved: false, raf: 0 };
+    drag.current = d;
+    // Exact window origin in points (window.screenX can be off by the title-less frame).
+    const w = getCurrentWindow();
+    Promise.all([w.outerPosition(), w.scaleFactor()])
+      .then(([p, sf]) => { if (drag.current === d) { d.wx = p.x / sf; d.wy = p.y / sf; } })
+      .catch(() => {});
+  };
+  const onPointerMove = (e: React.PointerEvent) => {
+    const d = drag.current;
+    if (!d) return;
+    const dx = e.screenX - d.sx, dy = e.screenY - d.sy;
+    if (!d.moved && Math.hypot(dx, dy) < 4) return;
+    d.moved = true;
+    cancelAnimationFrame(d.raf);
+    d.raf = requestAnimationFrame(() => {
+      invoke("drag_bubble", { x: d.wx + dx, y: d.wy + dy }).catch(() => {});
+    });
+  };
+  const onPointerUp = () => {
+    const d = drag.current;
+    drag.current = null;
+    if (!d?.moved) return;
+    cancelAnimationFrame(d.raf);
+    suppressClick.current = true; // the click that ends a drag isn't a tap
+    invoke<string | null>("drop_bubble").then((sp) => { if (sp) setSpot(sp); }).catch(() => {});
+  };
+
   const handleClick = async () => {
-    if (menuOpen) return; // Don't trigger recording when menu is open
-    if (status === "idle") {
-      await invoke("start_recording_cmd").catch(console.error);
-    } else if (status === "recording" || status === "command") {
+    if (suppressClick.current) { suppressClick.current = false; return; }
+    if (menuOpen) return;
+    if (status === "recording" || status === "command") {
+      // Mid-dictation a click still finishes it.
       await invoke("stop_and_transcribe_cmd").catch(console.error);
+    } else if (status === "idle" || status === "done") {
+      // Otherwise a click opens placement mode (dictation is started with the
+      // shortcut): pick a spot, or Esc / click the orb again to cancel.
+      await invoke("toggle_placing").catch(console.error);
     }
   };
 
@@ -246,26 +312,23 @@ export default function MicBubble() {
     };
   }, [menuOpen]);
 
-  const isActive = status !== "idle";
-
-  // Compute absolute positioning right offsets
-  const logoRight =
-    status === "done" ? 208
-    : (status === "recording" || status === "processing" || status === "command") ? 128
-    : 8; // idle centered position inside 40px bounding box
 
   const s = (value: number) => `${value * uiScale}px`;
 
-  // The active accent (wave + active logo + status text) is the OPPOSITE of the
-  // chosen idle bubble color, so the two states always contrast.
-  const baseIsBlack = bubbleColor !== "white";
-  const idleLogo = baseIsBlack ? logoIcon : logoWhite;
-  const activeLogo = baseIsBlack ? logoWhite : logoIcon;
-  const waveGradient = baseIsBlack
-    ? "linear-gradient(180deg,#ffffff,#d4d4d8)"
-    : "linear-gradient(180deg,#18181b,#3f3f46)";
-  const doneTextColor = baseIsBlack ? "#e4e4e7" : "#27272a";
-  const processingTextColor = baseIsBlack ? "rgba(255, 255, 255, 0.85)" : "rgba(0, 0, 0, 0.82)";
+  // Black orb on light backgrounds, white orb on dark ones.
+  const darkOrb = tint === "light";
+
+  // Lay the orb out at the window corner that faces the screen edge (mirrors
+  // placement::window_origin in Rust).
+  const col = spot[1] ?? "r", row = spot[0] ?? "b";
+  const hAnchor = (inset: number): React.CSSProperties =>
+    col === "l" ? { left: s(inset) } : col === "r" ? { right: s(inset) } : { left: "50%", transform: "translateX(-50%)" };
+  const vAnchor = (inset: number): React.CSSProperties =>
+    row === "t" ? { top: s(inset) } : { bottom: s(inset) };
+
+  if (mode === "notch") {
+    return <NotchIsland status={status} bars={bars} isError={isError} text={transcribedText} notch={notch} />;
+  }
 
   return (
     <div
@@ -279,53 +342,52 @@ export default function MicBubble() {
         pointerEvents: "none",
       }}
     >
-      {/* ─── Floating Logo ─── */}
+      {/* ─── Orb ─── */}
+      <div style={{ position: "absolute", ...hAnchor(0), ...vAnchor(0), pointerEvents: "none" }}>
+        <OrbBubble
+          variant={variant}
+          status={status}
+          dark={darkOrb}
+          isError={isError}
+          cancelled={status === "done" && transcribedText === "Cancelled"}
+          hovered={logoHovered || menuOpen}
+          uiScale={uiScale}
+          signal={signal}
+        />
+      </div>
+      {/* Hit target: the orb's middle. Click = start/stop, drag = move, right-click = menu. */}
       <div
         ref={logoRef}
         onClick={handleClick}
         onContextMenu={handleRightClick}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
         onMouseEnter={() => setLogoHovered(true)}
         onMouseLeave={() => setLogoHovered(false)}
         style={{
           position: "absolute",
-          right: s(logoRight),
-          bottom: s(8),
-          width: s(24),
-          height: s(24),
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          transition: "right 0.35s cubic-bezier(0.16, 1, 0.3, 1), transform 0.25s cubic-bezier(0.16, 1, 0.3, 1)",
-          // Hover grows the logo by 100% (2×); menu-open keeps the subtler 1.2× cue.
-          transform: logoHovered ? "scale(1.4)" : menuOpen ? "scale(1.2)" : "scale(1)",
-          // Grow toward the empty space (left) so the enlarged logo isn't clipped
-          // against the small bubble window's right edge.
-          transformOrigin: "right center",
-          filter: "drop-shadow(0px 2px 4px rgba(0, 0, 0, 0.55))",
+          ...hAnchor((ORB_BOX - 40) / 2),
+          ...vAnchor((ORB_BOX - 40) / 2),
+          width: s(40),
+          height: s(40),
+          borderRadius: "50%",
           pointerEvents: "auto",
-          cursor: "pointer",
+          cursor: drag.current?.moved ? "grabbing" : "pointer",
+          touchAction: "none",
         }}
-      >
-        <img
-          src={isActive ? activeLogo : idleLogo}
-          alt="LocalFlow"
-          style={{
-            height: s(20),
-            width: s(20),
-            objectFit: "contain",
-          }}
-        />
-      </div>
+      />
 
       {/* ─── Right-Click Context Menu ─── */}
-      {/* Rendered at the TOP of the window (top:0), only visible when window is expanded */}
+      {/* Sits on the side of the orb that faces the middle of the screen. */}
       {menuOpen && (
         <div
           ref={menuRef}
           style={{
             position: "absolute",
-            right: s(8),
-            top: s(8),
+            ...hAnchor(8),
+            ...(row === "t" ? { top: s(ORB_BOX) } : { top: s(8) }),
             minWidth: s(136),
             background: "rgba(24, 24, 27, 0.97)",
             border: "1px solid rgba(255, 255, 255, 0.1)",
@@ -452,106 +514,6 @@ export default function MicBubble() {
         </div>
       )}
 
-      {/* ─── Voice Frequency Meter (Speech Waveform) ─── */}
-      <div
-        onClick={handleClick}
-        style={{
-          position: "absolute",
-          right: s(8),
-          bottom: s(10),
-          width: s(112),
-          height: s(20),
-          display: "flex",
-          alignItems: "center",
-          gap: s(2.5),
-          opacity: (status === "recording" || status === "command") ? 1 : 0,
-          pointerEvents: (status === "recording" || status === "command") ? "auto" : "none",
-          transition: "opacity 0.25s ease-in-out",
-          filter: "drop-shadow(0px 2px 4px rgba(0, 0, 0, 0.55))",
-          cursor: "pointer",
-        }}
-      >
-        {bars.map((amp, i) => {
-          const h = Math.max(3, amp * 18) * uiScale;
-          return (
-            <div
-              key={i}
-              style={{
-                flex: 1,
-                height: `${h}px`,
-                borderRadius: s(1),
-                background: status === "command"
-                  ? "linear-gradient(180deg,#c084fc,#a78bfa)"
-                  : waveGradient,
-                transition: "height 80ms ease-out",
-              }}
-            />
-          );
-        })}
-      </div>
-
-      {/* ─── Processing Text ─── */}
-      <div
-        onClick={handleClick}
-        style={{
-          position: "absolute",
-          right: s(8),
-          bottom: s(10),
-          width: s(112),
-          height: s(20),
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "flex-start",
-          opacity: status === "processing" ? 1 : 0,
-          pointerEvents: status === "processing" ? "auto" : "none",
-          transition: "opacity 0.25s ease-in-out",
-          filter: "drop-shadow(0px 2px 4px rgba(0, 0, 0, 0.55))",
-          cursor: "pointer",
-        }}
-      >
-        <span style={{
-          color: processingTextColor,
-          fontSize: s(11),
-          fontWeight: 600,
-          animation: "shimmer 1.2s infinite alternate",
-          whiteSpace: "nowrap",
-        }}>
-          Processing...
-        </span>
-      </div>
-
-      {/* ─── Transcription Text (Done State - Success Only) ─── */}
-      <div
-        onClick={handleClick}
-        style={{
-          position: "absolute",
-          right: s(8),
-          bottom: s(10),
-          width: s(192),
-          height: s(20),
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "flex-start",
-          opacity: (status === "done" && !isError) ? 1 : 0,
-          pointerEvents: (status === "done" && !isError) ? "auto" : "none",
-          transition: "opacity 0.25s ease-in-out",
-          filter: "drop-shadow(0px 2px 4px rgba(0, 0, 0, 0.55))",
-          cursor: "pointer",
-        }}
-      >
-        <span style={{
-          color: doneTextColor,
-          fontSize: s(11),
-          fontWeight: 500,
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
-          width: "100%",
-        }}>
-          {`"${transcribedText}"`}
-        </span>
-      </div>
-
       {/* ─── Full Error Message Callout (Displayed on Top) ─── */}
       {status === "done" && isError && (
         <div
@@ -559,7 +521,7 @@ export default function MicBubble() {
             position: "absolute",
             right: s(8),
             left: s(8),
-            bottom: s(42),
+            ...(row === "t" ? { top: s(ORB_BOX - 4) } : { bottom: s(ORB_BOX - 4) }),
             background: "rgba(22, 12, 12, 0.92)",
             border: "1px solid rgba(239, 68, 68, 0.45)",
             borderRadius: s(6),
@@ -598,10 +560,6 @@ export default function MicBubble() {
         @keyframes fadeInUp {
           from { opacity: 0; transform: translateY(6px); }
           to { opacity: 1; transform: translateY(0); }
-        }
-        @keyframes shimmer {
-          0% { opacity: 0.5; }
-          100% { opacity: 1; }
         }
         @keyframes menuFadeIn {
           from { opacity: 0; transform: translateY(4px) scale(0.95); }

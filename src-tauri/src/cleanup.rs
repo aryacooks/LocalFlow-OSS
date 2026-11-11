@@ -588,6 +588,9 @@ pub fn apply_spoken_commands(input: &str) -> String {
     // 2b. Notation: named symbols, then bare operators between operands.
     text = apply_spoken_symbols(&text);
 
+    // 2c. "laughing emoji" → 😂. Only phrases ending in the word "emoji" are touched.
+    text = crate::emoji::apply_spoken_emoji(&text);
+
     // 3. Tidy spacing without clobbering intentional newlines.
     text = SPACE_BEFORE_PUNCT_RE.replace_all(&text, "$1$2").to_string();
     text = MULTISPACE_RE.replace_all(&text, " ").to_string();
@@ -727,6 +730,7 @@ Rules:
 - Fix capitalization and basic punctuation.
 - End each sentence with the punctuation that actually fits it. Questions end with "?" and exclamations with "!". Never append a full stop after a "?" or "!", and never turn a question into a statement.
 - Do NOT put a full stop at the very end of the output. Full stops BETWEEN sentences are required; the last sentence just ends. A final "?" or "!" is kept.
+- Keep any "<name> emoji" phrase exactly as spoken (e.g. "laughing emoji", "thumbs up emoji"); it is turned into the emoji afterwards. Never write the emoji yourself and never drop the phrase.
 - Output ONLY the final cleaned text. Do NOT include preambles, explanations, or quotes.
 
 Examples:
@@ -747,6 +751,9 @@ Output: "Let's meet today"
 
 Input: "um ok right now i'm heading out"
 Output: "OK, right now I'm heading out"
+
+Input: "thats hilarious laughing emoji see you tomorrow"
+Output: "That's hilarious laughing emoji. See you tomorrow"
 
 Input: "so are you coming to the meeting question mark"
 Output: "Are you coming to the meeting?"
@@ -1088,6 +1095,12 @@ mod tests {
             apply_spoken_commands("watch out exclamation point"),
             "Watch out!"
         );
+    }
+
+    #[test]
+    fn spoken_emoji_end_to_end() {
+        assert_eq!(finalize_dictation("That's hilarious, laughing emoji."), "That's hilarious, 😂");
+        assert_eq!(finalize_dictation("nice work thumbs up emoji see you tomorrow"), "Nice work 👍 see you tomorrow");
     }
 
     // ── Spoken notation: symbols and operators ────────────────────────────

@@ -20,6 +20,15 @@ function getWindowsVkCode(code: string, keyCode: number): number {
   }
 }
 
+// Lightweight on/off switch matching the one used on the Settings page.
+function Switch({ checked, onChange }: { checked: boolean; onChange: () => void }) {
+  return (
+    <button className={`switch ${checked ? "on" : ""}`} onClick={onChange} aria-pressed={checked}>
+      <span />
+    </button>
+  );
+}
+
 const mouseNameMap: Record<string, string> = {
   none: "Disabled",
   middle: "Middle Click (Button 3)",
@@ -33,6 +42,7 @@ export default function ShortcutsPage() {
   const [keybindKeyboardName, setKeybindKeyboardName] = useState("Alt+C");
   const [mouseToggle, setMouseToggle] = useState("none");
   const [mouseInstant, setMouseInstant] = useState("none");
+  const [fnEnabled, setFnEnabled] = useState(false);
   const [permissions, setPermissions] = useState<PermissionStatus | null>(null);
   const [saveError, setSaveError] = useState("");
 
@@ -56,6 +66,21 @@ export default function ShortcutsPage() {
 
     const mInstant = await getSetting("keybind_mouse_instant");
     if (mInstant) setMouseInstant(mInstant);
+
+    setFnEnabled((await getSetting("fn_quick_toggle")) === "true");
+  };
+
+  // Fn is an extra trigger on macOS; the other shortcuts keep working alongside it.
+  const toggleFn = async () => {
+    const next = !fnEnabled;
+    try {
+      await setSetting("fn_quick_toggle", String(next));
+      await reloadGlobalShortcut();
+      setFnEnabled(next);
+      if (next) await requestInputMonitoringPermission();
+    } catch (error) {
+      console.error(error);
+    }
   };
 
   useEffect(() => {
@@ -490,6 +515,20 @@ export default function ShortcutsPage() {
       <section className="section-label" style={{ marginBottom: 6 }}>1. Keyboard hotkeys</section>
       <section className="glass-panel" style={{ marginBottom: 18, display: "flex", flexDirection: "column", gap: 12 }}>
         
+        {/* Fn quick toggle (macOS only) */}
+        {permissions?.is_macos && (
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid var(--separator-soft)", paddingBottom: 12 }}>
+            <div>
+              <div className="setting-title">Fn Quick Toggle</div>
+              <div className="setting-desc" style={{ marginTop: 2 }}>Hold Fn to talk. Double-tap to keep recording; press Fn again to finish.</div>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              {renderKeycaps("Fn")}
+              <Switch checked={fnEnabled} onChange={toggleFn} />
+            </div>
+          </div>
+        )}
+
         {/* Toggle Dictation */}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div>

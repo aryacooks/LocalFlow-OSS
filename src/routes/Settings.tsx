@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from "react";
-import { Globe, Keyboard, Mic, MonitorCheck, Shield, History, Circle, Eye, Volume2, Move, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, LocateFixed, Check, CircleAlert, ExternalLink, Accessibility, RotateCcw, Power, Minus, Plus } from "lucide-react";
-import { listAudioDevices, setAudioDevice, setSetting, getSetting, setBubbleSize, BUBBLE_SCALE_MIN, BUBBLE_SCALE_MAX, BUBBLE_SCALE_STEP, setBubbleVisible, setEarconsEnabled, getBubblePosition, nudgeBubble, resetBubblePosition, getPermissionStatus, requestAccessibilityPermission, requestMicrophonePermission, openPrivacySettings, type PermissionStatus } from "../lib/ipc";
+import { useEffect, useState } from "react";
+import { Globe, Keyboard, Mic, MonitorCheck, Shield, History, Circle, Volume2, Music, Move, Check, CircleAlert, ExternalLink, Accessibility, RotateCcw, Power, Minus, Plus, PanelTop } from "lucide-react";
+import { listAudioDevices, setAudioDevice, setSetting, getSetting, setBubbleSize, BUBBLE_SCALE_MIN, BUBBLE_SCALE_MAX, BUBBLE_SCALE_STEP, setBubbleVisible, setEarconsEnabled, setSoundSet, setBubbleMode, getBubblePlacement, setBubblePlacement, getPermissionStatus, requestAccessibilityPermission, requestMicrophonePermission, openPrivacySettings, type PermissionStatus } from "../lib/ipc";
 import { enable as enableAutostart, disable as disableAutostart, isEnabled as isAutostartEnabled } from "@tauri-apps/plugin-autostart";
 import { shortcutLabel } from "../lib/utils";
 import { emit, listen } from "@tauri-apps/api/event";
 import { useAppStore } from "../lib/store";
+import { ORB_VARIANTS, type OrbVariant } from "../windows/OrbBubble";
 import { Link } from "react-router-dom";
 import { reloadGlobalShortcut, requestInputMonitoringPermission } from "../lib/ipc";
 
@@ -196,108 +197,102 @@ function PermissionsSection() {
   );
 }
 
-// A little game-controller D-pad for nudging the floating bubble around the screen.
-// Arrows move it a step at a time (hold to glide); the center snaps back to default.
-function DPad({
-  onNudge,
-  onReset,
-  custom,
+// Pick one of 8 spots on a mini screen, then shift left/right with the slider.
+// (Dragging the orb itself on screen does the same and snaps to the nearest spot.)
+const ORB_SPOTS: { id: string; x: number; y: number; label: string }[] = [
+  { id: "tl", x: 0, y: 0, label: "Top left" },
+  { id: "tc", x: 0.5, y: 0, label: "Top centre (by the notch)" },
+  { id: "tr", x: 1, y: 0, label: "Top right" },
+  { id: "ml", x: 0, y: 0.5, label: "Left edge" },
+  { id: "mr", x: 1, y: 0.5, label: "Right edge" },
+  { id: "bl", x: 0, y: 1, label: "Bottom left" },
+  { id: "bc", x: 0.5, y: 1, label: "Bottom centre" },
+  { id: "br", x: 1, y: 1, label: "Bottom right" },
+];
+const NUDGE_RANGE = 300;
+
+function OrbPlacer({
+  spot,
+  nudge,
+  nudgeY,
+  onChange,
 }: {
-  onNudge: (dx: number, dy: number) => void;
-  onReset: () => void;
-  custom: boolean;
+  spot: string;
+  nudge: number;
+  nudgeY: number;
+  onChange: (spot: string, nudge: number, nudgeY: number) => void;
 }) {
-  const STEP = 0.04; // 4% of the screen per tick
-  const holdActive = useRef(false);
-
-  // Stop any in-flight hold loop if the page unmounts mid-press.
-  useEffect(() => () => { holdActive.current = false; }, []);
-
-  const startHold = (dx: number, dy: number) => {
-    if (holdActive.current) return;
-    holdActive.current = true;
-    const run = async () => {
-      while (holdActive.current) {
-        onNudge(dx, dy);
-        await new Promise((r) => setTimeout(r, 80));
-      }
-    };
-    run();
-  };
-  const stopHold = () => {
-    holdActive.current = false;
-  };
-
-  const padStyle: React.CSSProperties = {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    border: "1.5px solid var(--separator)",
-    borderRadius: 8,
-    background: "var(--separator-soft)",
-    color: "var(--label)",
-    cursor: "pointer",
-    userSelect: "none",
-  };
-
-  const arrow = (dx: number, dy: number, Icon: React.ElementType, label: string, area: string) => (
-    <button
-      type="button"
-      aria-label={label}
-      title={label}
-      onPointerDown={(e) => {
-        e.preventDefault();
-        startHold(dx, dy);
-      }}
-      onPointerUp={stopHold}
-      onPointerLeave={stopHold}
-      onPointerCancel={stopHold}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          onNudge(dx, dy);
-        }
-      }}
-      style={{ ...padStyle, gridArea: area }}
-    >
-      <Icon size={15} />
-    </button>
-  );
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 5 }}>
-      <div
+  const W = 176, H = 110, PAD = 11;
+  const slider = (
+    label: [string, string],
+    value: number,
+    set: (v: number) => void,
+    title: string,
+  ) => (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, width: W + 64 }}>
+      <span style={{ width: 30, fontSize: 10, fontWeight: 600, color: "var(--tertiary)", textAlign: "right" }}>{label[0]}</span>
+      <input
+        type="range"
+        min={-NUDGE_RANGE}
+        max={NUDGE_RANGE}
+        step={2}
+        value={value}
+        onChange={(e) => set(Number(e.target.value))}
+        title={title}
+        style={{ flex: 1, accentColor: "var(--label)" }}
+      />
+      <span style={{ width: 30, fontSize: 10, fontWeight: 600, color: "var(--tertiary)" }}>{label[1]}</span>
+      <button
+        type="button"
+        onClick={() => set(0)}
+        disabled={value === 0}
+        title="Back to the centre of the spot"
         style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(3, 30px)",
-          gridTemplateRows: "repeat(3, 30px)",
-          gridTemplateAreas: `". up ." "left home right" ". down ."`,
-          gap: 4,
+          fontSize: 10, fontWeight: 700, padding: "3px 8px", borderRadius: 999,
+          border: "1.5px solid var(--separator)", background: "transparent",
+          color: value === 0 ? "var(--tertiary)" : "var(--label)",
+          cursor: value === 0 ? "default" : "pointer", opacity: value === 0 ? 0.6 : 1,
         }}
       >
-        {arrow(0, -STEP, ArrowUp, "Move bubble up", "up")}
-        {arrow(-STEP, 0, ArrowLeft, "Move bubble left", "left")}
-        <button
-          type="button"
-          aria-label="Reset bubble to default position"
-          title={custom ? "Reset to default position" : "Already at default position"}
-          onClick={onReset}
-          style={{
-            ...padStyle,
-            gridArea: "home",
-            background: custom ? "var(--accent)" : "transparent",
-            color: custom ? "var(--accent-text)" : "var(--tertiary)",
-            borderColor: custom ? "var(--accent)" : "var(--separator)",
-          }}
-        >
-          <LocateFixed size={14} />
-        </button>
-        {arrow(STEP, 0, ArrowRight, "Move bubble right", "right")}
-        {arrow(0, STEP, ArrowDown, "Move bubble down", "down")}
+        Center
+      </button>
+    </div>
+  );
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
+      <div
+        style={{
+          position: "relative", width: W, height: H, borderRadius: 10,
+          border: "1.5px solid var(--separator)", background: "var(--separator-soft)",
+        }}
+      >
+        {ORB_SPOTS.map((p) => {
+          const on = p.id === spot;
+          const cx = PAD + p.x * (W - 2 * PAD) + (on ? (nudge / NUDGE_RANGE) * 22 : 0);
+          const cy = PAD + p.y * (H - 2 * PAD) + (on ? (nudgeY / NUDGE_RANGE) * 16 : 0);
+          return (
+            <button
+              key={p.id}
+              type="button"
+              title={p.label}
+              aria-label={p.label}
+              aria-pressed={on}
+              onClick={() => onChange(p.id, 0, 0)}
+              style={{
+                position: "absolute",
+                left: Math.min(Math.max(cx, 9), W - 9) - 9, top: Math.min(Math.max(cy, 9), H - 9) - 9,
+                width: 18, height: 18, borderRadius: "50%", padding: 0, cursor: "pointer",
+                border: on ? "none" : "1.5px dashed var(--tertiary)",
+                background: on ? "var(--label)" : "transparent",
+                boxShadow: on ? "0 1px 4px rgba(0,0,0,.25)" : "none",
+                transition: "left 120ms ease, top 120ms ease",
+              }}
+            />
+          );
+        })}
       </div>
-      <span style={{ fontSize: 10, fontWeight: 600, color: custom ? "var(--accent)" : "var(--tertiary)" }}>
-        {custom ? "Custom spot" : "Default spot"}
-      </span>
+      {slider(["Left", "Right"], nudge, (v) => onChange(spot, v, nudgeY), "Shift left or right")}
+      {slider(["Up", "Down"], nudgeY, (v) => onChange(spot, nudge, v), "Shift up or down")}
     </div>
   );
 }
@@ -380,11 +375,13 @@ export default function SettingsPage() {
   const [saveHistory, setSaveHistory] = useState(true);
   // Bubble size: "auto" (geometry heuristic) or a scale multiplier as a string.
   const [bubbleSize, setBubbleSizeState] = useState("auto");
-  const [bubbleColor, setBubbleColorState] = useState("white");
+  const [orbVariant, setOrbVariant] = useState<OrbVariant>("blob");
   // Whether the floating bubble has been moved off its default bottom-right spot.
-  const [bubbleCustom, setBubbleCustom] = useState(false);
+  const [orbPlacement, setOrbPlacement] = useState({ spot: "br", nudge: 0, nudgeY: 0 });
   const [showBubble, setShowBubble] = useState(true);
   const [playSounds, setPlaySounds] = useState(true);
+  const [soundSet, setSoundSetState] = useState("wood-low");
+  const [bubbleStyle, setBubbleStyleState] = useState<"classic" | "notch">("classic");
   const [autostart, setAutostart] = useState(false);
   const [fnEnabled, setFnEnabled] = useState(false);
   const [isMac, setIsMac] = useState(false);
@@ -421,14 +418,17 @@ export default function SettingsPage() {
       const bs = await getSetting("bubble_size");
       if (bs) setBubbleSizeState(bs);
 
-      const bc = await getSetting("bubble_color");
-      if (bc === "white" || bc === "black") setBubbleColorState(bc);
+      const orb = await getSetting("bubble_orb");
+      if (orb && ORB_VARIANTS.some((v) => v.id === orb)) setOrbVariant(orb as OrbVariant);
 
-      const bp = await getBubblePosition().catch(() => null);
-      setBubbleCustom(!!bp);
+      const pl = await getBubblePlacement().catch(() => null);
+      if (pl) setOrbPlacement({ spot: pl[0], nudge: pl[1], nudgeY: pl[2] });
 
       setShowBubble((await getSetting("show_bubble")) !== "false");
       setPlaySounds((await getSetting("play_sounds")) !== "false");
+      const ss = await getSetting("sound_set");
+      if (ss) setSoundSetState(ss);
+      setBubbleStyleState((await getSetting("bubble_style")) === "notch" ? "notch" : "classic");
       setFnEnabled((await getSetting("fn_quick_toggle")) === "true");
       setIsMac((await getPermissionStatus()).is_macos);
       setAutostart(await isAutostartEnabled().catch(() => false));
@@ -494,17 +494,17 @@ export default function SettingsPage() {
 
   const save = async (key: string, value: string) => setSetting(key, value).catch(console.error);
 
-  // Bubble-position D-pad handlers.
-  const nudgePos = (dx: number, dy: number) => {
-    nudgeBubble(dx, dy)
-      .then((pos) => setBubbleCustom(!!pos))
-      .catch(console.error);
+  const placeOrb = (spot: string, nudge: number, nudgeY: number) => {
+    setOrbPlacement({ spot, nudge, nudgeY });
+    setBubblePlacement(spot, nudge, nudgeY).catch(console.error);
   };
-  const resetPos = () => {
-    resetBubblePosition()
-      .then(() => setBubbleCustom(false))
-      .catch(console.error);
-  };
+
+  // Follow drags / placement-mode picks made on the orb itself.
+  useEffect(() => {
+    const un = listen<{ spot: string; nudge: number; nudge_y: number }>("bubble-placement-changed", ({ payload }) =>
+      setOrbPlacement({ spot: payload.spot, nudge: payload.nudge ?? 0, nudgeY: payload.nudge_y ?? 0 }));
+    return () => { un.then((f) => f()); };
+  }, []);
 
   type DisplayFeature = "bubble" | "sounds";
 
@@ -596,9 +596,54 @@ export default function SettingsPage() {
 
       <Section title="Display" className="settings-display">
         <SettingRow
+          icon={PanelTop}
+          label="Animation"
+          description={isMac
+            ? "What shows while you dictate: a small orb on screen, an island that grows out of the notch, or nothing at all."
+            : "What shows while you dictate: a small orb on screen, or nothing at all."}
+        >
+          <select
+            className="select"
+            style={{ width: 260 }}
+            value={!showBubble ? "off" : bubbleStyle === "notch" && isMac ? "notch" : "screen"}
+            onChange={(e) => {
+              const v = e.target.value === "notch" ? "notch" : e.target.value === "off" ? "off" : "screen";
+              setShowBubble(v !== "off");
+              if (v !== "off") setBubbleStyleState(v === "notch" ? "notch" : "classic");
+              setBubbleMode(v).catch(console.error);
+            }}
+          >
+            <option value="screen">On screen</option>
+            {isMac && <option value="notch">Notch</option>}
+            <option value="off">Off</option>
+          </select>
+        </SettingRow>
+        {showBubble && (bubbleStyle === "classic" || !isMac) && (<>
+        <SettingRow
+          icon={Circle}
+          label="Orb style"
+          description={isMac
+            ? "How the orb moves with your voice. It turns black over light windows and white over dark ones, which needs Screen Recording permission (nothing is saved)."
+            : "How the orb moves with your voice."}
+        >
+          <select
+            className="select"
+            style={{ width: 260 }}
+            value={orbVariant}
+            onChange={(e) => {
+              const v = e.target.value as OrbVariant;
+              setOrbVariant(v);
+              save("bubble_orb", v);
+              emit("bubble-orb-changed", v).catch(console.error);
+            }}
+          >
+            {ORB_VARIANTS.map((v) => <option key={v.id} value={v.id}>{v.label}</option>)}
+          </select>
+        </SettingRow>
+        <SettingRow
           icon={MonitorCheck}
-          label="Bubble size"
-          description="How big the floating mic bubble is. Step it up or down until it feels right, or leave it on Auto to match your display."
+          label="Orb size"
+          description="Step it up or down until it feels right, or leave it on Auto to match your display."
         >
           <BubbleSizeStepper
             value={bubbleSize}
@@ -609,47 +654,43 @@ export default function SettingsPage() {
           />
         </SettingRow>
         <SettingRow
-          icon={Circle}
-          label="Bubble color"
-          description="Black mic that lights up white when you talk, or the reverse. The wave matches the opposite color."
-        >
-          <select
-            className="select"
-            style={{ width: 260 }}
-            value={bubbleColor}
-            onChange={(e) => {
-              const v = e.target.value;
-              setBubbleColorState(v);
-              save("bubble_color", v);
-              // Tell the floating bubble window to restyle immediately.
-              emit("bubble-style-changed", v).catch(console.error);
-            }}
-          >
-            <option value="black">Black bubble, white wave</option>
-            <option value="white">White bubble, black wave</option>
-          </select>
-        </SettingRow>
-        <SettingRow
           icon={Move}
-          label="Bubble position"
-          description="Move the floating mic anywhere. Hold an arrow to glide it; tap the center to snap back to the default corner."
+          label="Orb position"
+          description="Drag the orb on screen and drop it near any of these spots, or pick one here. The sliders fine-tune it left/right and up/down."
         >
-          <DPad onNudge={nudgePos} onReset={resetPos} custom={bubbleCustom} />
+          <OrbPlacer spot={orbPlacement.spot} nudge={orbPlacement.nudge} nudgeY={orbPlacement.nudgeY} onChange={placeOrb} />
         </SettingRow>
-        <SettingRow
-          icon={Eye}
-          label="Show floating bubble"
-          description="The little mic that floats on screen. Turn off to dictate with shortcuts only."
-        >
-          <Switch checked={showBubble} onChange={() => toggleFeature("bubble", showBubble)} />
-        </SettingRow>
+        </>)}
         <SettingRow
           icon={Volume2}
           label="Play sounds"
-          description="Beeps when dictation starts, stops, and finishes."
+          description="A soft tap when dictation starts and stops."
         >
           <Switch checked={playSounds} onChange={() => toggleFeature("sounds", playSounds)} />
         </SettingRow>
+        {playSounds && (
+          <SettingRow
+            icon={Music}
+            label="Sound"
+            description="Pick one to hear its start sound."
+          >
+            <select
+              className="select"
+              style={{ width: 260 }}
+              value={soundSet}
+              onChange={(e) => {
+                const v = e.target.value;
+                setSoundSetState(v);
+                setSoundSet(v).catch(console.error);
+              }}
+            >
+              <option value="wood-low">Wood bar, low (default)</option>
+              <option value="wood">Wood bar</option>
+              <option value="wood-fifth">Wood fifth</option>
+              <option value="bump">Round bump</option>
+            </select>
+          </SettingRow>
+        )}
       </Section>
 
       <Section title="Startup" className="settings-startup">

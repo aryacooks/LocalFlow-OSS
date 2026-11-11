@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Orb Variants</title>
+<style>
+  :root {
+    --bg: #fafaf9; --panel: #fff; --ink: #18181b; --muted: #71717a; --line: #e7e5e4; --chip: #f4f4f5; --accent: #d66a2a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #111113; --panel: #18181b; --ink: #f4f4f5; --muted: #a1a1aa; --line: #2a2a2e; --chip: #232327; --accent: #e8834a; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Inter", system-ui, sans-serif; }
+  main { max-width: 1080px; margin: 0 auto; padding: 28px 16px 48px; }
+  h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); margin: 0 0 16px; }
+  .controls { display: flex; flex-wrap: wrap; gap: 12px 22px; align-items: center; margin: 0 0 18px;
+    position: sticky; top: 0; background: var(--bg); padding: 10px 0; z-index: 5; border-bottom: 1px solid var(--line); }
+  .group { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .group > span { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .07em; margin-right: 4px; }
+  button { font: inherit; border: 1px solid var(--line); background: var(--chip); color: var(--ink);
+    border-radius: 999px; padding: 5px 12px; cursor: pointer; }
+  button:hover { border-color: var(--muted); }
+  button.on { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; cursor: pointer;
+    transition: border-color .2s, box-shadow .2s; }
+  .card.picked { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
+  .tile { height: 150px; display: grid; place-items: center; transition: background .4s; }
+  .tile.warm { background: radial-gradient(120% 120% at 20% 10%, #f6c88f 0%, #e98a4b 50%, #7a3b1f 100%); }
+  .tile.light { background: linear-gradient(160deg, #fafaf9, #e7e5e4); }
+  .tile.dark { background: radial-gradient(120% 120% at 70% 20%, #3b3b46 0%, #121216 70%); }
+  .tile.busy { background:
+      linear-gradient(115deg, rgba(255,255,255,.0) 40%, rgba(255,255,255,.55) 41%, rgba(255,255,255,.55) 52%, rgba(255,255,255,0) 53%),
+      repeating-linear-gradient(45deg, #2b5876 0 14px, #4e4376 14px 28px, #d9a7c7 28px 42px); }
+  canvas { display: block; }
+  .meta { padding: 10px 12px 12px; }
+  .meta b { font-weight: 600; }
+  .meta b .n { color: var(--muted); font-weight: 500; margin-right: 4px; }
+  .meta p { margin: 2px 0 0; color: var(--muted); font-size: 13px; }
+  .pickbar { margin-top: 18px; color: var(--muted); }
+  .pickbar b { color: var(--ink); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Orb variants</h1>
+  <p class="sub">Twelve small round designs, all reacting to the same voice at the same time. Shown at real size. Click a card to mark the ones you like.</p>
+
+  <div class="controls">
+    <div class="group" id="states"><span>State</span></div>
+    <div class="group"><span>Voice</span><button id="demo" class="on">Demo loop</button><button id="mic">Use my mic</button></div>
+    <div class="group" id="walls"><span>Wallpaper</span></div>
+    <div class="group" id="sizes"><span>Size</span></div>
+  </div>
+
+  <div class="grid" id="grid"></div>
+  <p class="pickbar" id="pickbar">Nothing marked yet.</p>
+</main>
+
+<script>
+// ─────────────────────────────────────────────────────────────────────────────
+// Shared voice signal: a fast-attack / slow-release envelope (feels like a voice),
+// plus 8 band levels for the variants that show more than loudness.
+// ─────────────────────────────────────────────────────────────────────────────
+const STATES = ["idle", "listening", "processing", "done"];
+let state = "listening", stateAt = 0, demo = true, demoT = 0, scale = 1;
+let level = 0, bands = new Array(8).fill(0), hist = new Array(40).fill(0);
+let micAnalyser = null, micData = null;
+const TAU = Math.PI * 2;
+
+function simLevel(t) {
+  const phrase = t % 3.1 < 2.4 ? 1 : 0.03;
+  const syl = Math.pow(Math.abs(Math.sin(t * Math.PI * 4.6 + Math.sin(t * 1.7) * 1.3)), 0.55);
+  return Math.min(1, phrase * syl * (0.65 + 0.35 * Math.sin(t * 0.9)) + Math.random() * 0.05);
+}
+function readMic() {
+  micAnalyser.getByteFrequencyData(micData);
+  const lo = 2, hi = 90, out = []; let sum = 0;
+  for (let i = 0; i < 8; i++) {
+    const a = Math.floor(lo + (hi - lo) * Math.pow(i / 8, 1.6)), b = Math.floor(lo + (hi - lo) * Math.pow((i + 1) / 8, 1.6)) + 1;
+    let m = 0; for (let k = a; k < b; k++) m = Math.max(m, micData[k]);
+    const v = Math.max(0, (m - 70) / 150); out.push(Math.min(1, v)); sum += v;
+  }
+  return { level: Math.min(1, sum / 8 * 1.6), bands: out };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Drawing helpers. Every variant draws into a square canvas around (0,0), in
+// "points" (1 pt = 1 CSS px at size 1×). Listening diameter is ~36 pt.
+// ─────────────────────────────────────────────────────────────────────────────
+const INK = "#0b0b0c", WHITE = "#ffffff";
+const ease = (x) => 1 - Math.pow(1 - Math.min(1, Math.max(0, x)), 3);
+const back = (x) => { x = Math.min(1, Math.max(0, x)); const c = 1.7; return 1 + (c + 1) * Math.pow(x - 1, 3) + c * Math.pow(x - 1, 2); };
+function disc(ctx, r, fill = INK, alpha = 1) {
+  ctx.save(); ctx.globalAlpha = alpha; ctx.beginPath(); ctx.arc(0, 0, r, 0, TAU); ctx.fillStyle = fill; ctx.fill(); ctx.restore();
+}
+function shadowDisc(ctx, r, fill = INK) {
+  ctx.save(); ctx.shadowColor = "rgba(0,0,0,.35)"; ctx.shadowBlur = 10; ctx.shadowOffsetY = 3;
+  disc(ctx, r, fill); ctx.restore();
+  ctx.save(); ctx.beginPath(); ctx.arc(0, 0, r - 0.25, 0, TAU); ctx.strokeStyle = "rgba(255,255,255,.10)"; ctx.lineWidth = 0.5; ctx.stroke(); ctx.restore();
+}
+function check(ctx, p, size = 6, color = WHITE) {
+  if (p <= 0) return;
+  ctx.save(); ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.lineCap = "round"; ctx.lineJoin = "round";
+  const a = [-size * 0.8, 0], b = [-size * 0.2, size * 0.6], c = [size * 0.9, -size * 0.6];
+  const l1 = Math.hypot(b[0] - a[0], b[1] - a[1]), l2 = Math.hypot(c[0] - b[0], c[1] - b[1]);
+  let d = ease(p) * (l1 + l2);
+  ctx.beginPath(); ctx.moveTo(...a);
+  if (d <= l1) ctx.lineTo(a[0] + (b[0] - a[0]) * d / l1, a[1] + (b[1] - a[1]) * d / l1);
+  else { ctx.lineTo(...b); d -= l1; ctx.lineTo(b[0] + (c[0] - b[0]) * d / l2, b[1] + (c[1] - b[1]) * d / l2); }
+  ctx.stroke(); ctx.restore();
+}
+function arcSpin(ctx, r, t, w = 2, len = 0.28, color = WHITE) {
+  ctx.save(); ctx.strokeStyle = color; ctx.lineWidth = w; ctx.lineCap = "round";
+  const a = t * TAU * 1.1; ctx.beginPath(); ctx.arc(0, 0, r, a, a + TAU * len); ctx.stroke(); ctx.restore();
+}
+// Idle look shared by most variants: a small dimmed dot so it's findable but quiet.
+function idleDot(ctx, k, r = 5) {
+  shadowDisc(ctx, r + (1 - k) * 0, INK);
+  disc(ctx, 1.6, WHITE, 0.9);
+}
+
+// `s` = the per-frame snapshot: { t, st (state), sp (0..1 progress into state), lv, bands, hist, a (0..1 "active" presence) }
+const VARIANTS = [
+  {
+    name: "Halo", desc: "The original. A soft ring swells around the dot as you speak.",
+    draw(ctx, s) {
+      const R = 6 + 10 * s.a;
+      if (s.a < 0.05) return idleDot(ctx, s.a);
+      disc(ctx, R + 1 + s.lv * 9 * (s.st === "listening"), WHITE, 0.14 + s.lv * 0.22);
+      shadowDisc(ctx, R);
+      if (s.st === "processing") arcSpin(ctx, R + 3.5, s.t);
+      if (s.st === "done") check(ctx, s.sp * 3);
+      else disc(ctx, 3.2 + s.lv * 2.6 * (s.st === "listening"), WHITE);
+    },
+  },
+  {
+    name: "Ripple", desc: "Each syllable sends a thin ring rippling outwards.",
+    init() { this.rings = []; this.prev = 0; },
+    draw(ctx, s) {
+      const R = 6 + 9 * s.a;
+      if (s.st === "listening" && s.lv > 0.45 && this.prev <= 0.45) this.rings.push(s.t);
+      this.prev = s.lv;
+      this.rings = this.rings.filter((r0) => s.t - r0 < 0.9);
+      for (const r0 of this.rings) {
+        const p = (s.t - r0) / 0.9;
+        ctx.save(); ctx.beginPath(); ctx.arc(0, 0, R + 2 + p * 20, 0, TAU);
+        ctx.strokeStyle = `rgba(255,255,255,${(1 - p) * 0.75})`; ctx.lineWidth = 1.5 * (1 - p) + 0.4; ctx.stroke(); ctx.restore();
+      }
+      if (s.a < 0.05) return idleDot(ctx, s.a);
+      shadowDisc(ctx, R);
+      if (s.st === "processing") { const p = (s.t * 1.4) % 1; ctx.save(); ctx.beginPath(); ctx.arc(0, 0, R + p * 12, 0, TAU); ctx.strokeStyle = `rgba(255,255,255,${0.6 * (1 - p)})`; ctx.lineWidth = 1.2; ctx.stroke(); ctx.restore(); }
+      if (s.st === "done") check(ctx, s.sp * 3);
+      else disc(ctx, 3 + s.lv * 3 * (s.st === "listening"), WHITE);
+    },
+  },
+  {
+    name: "Sunburst", desc: "Tiny ticks around the rim, each following a part of your voice.",
+    draw(ctx, s) {
+      const R = 6 + 8 * s.a;
+      if (s.a < 0.05) return idleDot(ctx, s.a);
+      shadowDisc(ctx, R + 6 * s.a);
+      const n = 16;
+      for (let i = 0; i < n; i++) {
+        const ang = (i / n) * TAU - Math.PI / 2;
+        const bi = Math.min(7, Math.abs(i - n / 2) % 8);
+        let v = s.st === "listening" ? s.bands[bi] : s.st === "processing" ? 0.25 + 0.5 * Math.max(0, Math.sin(s.t * 8 - i * 0.6)) : 0;
+        const r1 = R - 3, r2 = r1 + 1.5 + v * 5.5;
+        ctx.save(); ctx.strokeStyle = WHITE; ctx.globalAlpha = s.st === "done" ? 0 : 0.95; ctx.lineWidth = 1.6; ctx.lineCap = "round";
+        ctx.beginPath(); ctx.moveTo(Math.cos(ang) * r1, Math.sin(ang) * r1); ctx.lineTo(Math.cos(ang) * r2, Math.sin(ang) * r2); ctx.stroke(); ctx.restore();
+      }
+      if (s.st === "done") check(ctx, s.sp * 3);
+      else disc(ctx, 2.2, WHITE);
+    },
+  },
+  {
+    name: "Blob", desc: "The dot goes soft and organic, wobbling with your voice.",
+    draw(ctx, s) {
+      const R = 6 + 9 * s.a;
+      if (s.a < 0.05) return idleDot(ctx, s.a);
+      const amp = s.st === "listening" ? 0.6 + s.lv * 4.2 : s.st === "processing" ? 1.2 : 0;
+      ctx.save(); ctx.shadowColor = "rgba(0,0,0,.35)"; ctx.shadowBlur = 10; ctx.shadowOffsetY = 3;
+      ctx.beginPath();
+      for (let i = 0; i <= 64; i++) {
+        const th = (i / 64) * TAU;
+        const r = R + amp * (0.55 * Math.sin(3 * th + s.t * 3.1) + 0.35 * Math.sin(5 * th - s.t * 4.3) + 0.25 * Math.sin(2 * th + s.t * 1.7));
+        const x = Math.cos(th) * r, y = Math.sin(th) * r;
+        i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+      }
+      ctx.closePath(); ctx.fillStyle = INK; ctx.fill(); ctx.restore();
+      if (s.st === "done") check(ctx, s.sp * 3);
+      else disc(ctx, 3 + s.lv * 2 * (s.st === "listening"), WHITE);
+    },
+  },
+  {
+    name: "Three dots", desc: "Three little dots inside the circle hop as you talk.",
+    draw(ctx, s) {
+      const R = 6 + 9 * s.a;
+      if (s.a < 0.05) return idleDot(ctx, s.a);
+      shadowDisc(ctx, R);
+      if (s.st === "done") return check(ctx, s.sp * 3);
+      for (let i = 0; i < 3; i++) {
+        const x = (i - 1) * 5.5;
+        let y = 0, r = 1.8;
+        if (s.st === "listening") { const v = s.bands[[1, 3, 5][i]]; y = -v * 4.5; r = 1.8 + v * 0.9; }
+        if (s.st === "processing") { y = -Math.max(0, Math.sin(s.t * 9 - i * 0.9)) * 3.5; }
+        ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fillStyle = WHITE; ctx.fill();
+      }
+    },
+  },
+  {
+    name: "Mini bars", desc: "Five tiny bars inside a circle: the classic wave, shrunk to a dot.",
+    draw(ctx, s) {
+      const R = 6 + 10 * s.a;
+      if (s.a < 0.05) return idleDot(ctx, s.a);
+      shadowDisc(ctx, R);
+      if (s.st === "done") return check(ctx, s.sp * 3);
+      const map = [6, 3, 0, 3, 6];
+      for (let i = 0; i < 5; i++) {
+        let v = s.st === "listening" ? s.bands[map[i]] * (1 - Math.abs(i - 2) * 0.12) : 0.2 + 0.45 * Math.max(0, Math.sin(s.t * 8 - i * 0.7));
+        const h = 2.5 + v * 13, x = (i - 2) * 4;
+        ctx.beginPath(); ctx.roundRect(x - 1.1, -h / 2, 2.2, h, 1.1); ctx.fillStyle = WHITE; ctx.fill();
+      }
+    },
+  },
+  {
+    name: "Liquid", desc: "The circle fills with a wavy surface that rises with your voice.",
+    draw(ctx, s) {
+      const R = 6 + 10 * s.a;
+      if (s.a < 0.05) return idleDot(ctx, s.a);
+      shadowDisc(ctx, R);
+      if (s.st === "done") return check(ctx, s.sp * 3);
+      const fill = s.st === "listening" ? 0.18 + s.lv * 0.62 : 0.35 + 0.08 * Math.sin(s.t * 3);
+      const surf = R - fill * 2 * R;
+      ctx.save(); ctx.beginPath(); ctx.arc(0, 0, R - 1.5, 0, TAU); ctx.clip();
+      ctx.beginPath(); ctx.moveTo(-R, R);
+      for (let x = -R; x <= R; x += 1) ctx.lineTo(x, surf + Math.sin(x * 0.45 + s.t * 7) * (1 + s.lv * 2.2) + Math.sin(x * 0.9 - s.t * 5) * 0.6);
+      ctx.lineTo(R, R); ctx.closePath(); ctx.fillStyle = "rgba(255,255,255,.92)"; ctx.fill(); ctx.restore();
+    },
+  },
+  {
+    name: "Orbit", desc: "A small moon circles the dot, faster when you talk louder.",
+    init() { this.ang = 0; },
+    draw(ctx, s, dt) {
+      const R = 6 + 7 * s.a;
+      if (s.a < 0.05) return idleDot(ctx, s.a);
+      const speed = s.st === "listening" ? 1.2 + s.lv * 9 : s.st === "processing" ? 7 : 0.6;
+      this.ang += speed * dt;
+      shadowDisc(ctx, R);
+      if (s.st === "done") return check(ctx, s.sp * 3);
+      disc(ctx, 3, WHITE);
+      const orbitR = R + 4.5;
+      for (let k = 6; k >= 0; k--) {
+        const a = this.ang - k * 0.09 * (speed / 6);
+        ctx.beginPath(); ctx.arc(Math.cos(a) * orbitR, Math.sin(a) * orbitR, 2.2 - k * 0.22, 0, TAU);
+        ctx.fillStyle = `rgba(255,255,255,${k === 0 ? 1 : 0.5 - k * 0.07})`; ctx.fill();
+      }
+    },
+  },
+  {
+    name: "Glow ring", desc: "Just a ring. It thickens and glows with your voice.",
+    draw(ctx, s) {
+      const R = 5 + 10 * s.a;
+      if (s.a < 0.05) return idleDot(ctx, s.a);
+      disc(ctx, R + 2, INK, 0.88);
+      if (s.st === "processing") { arcSpin(ctx, R, s.t, 2.4, 0.3); return; }
+      if (s.st === "done") return check(ctx, s.sp * 3);
+      ctx.save(); ctx.shadowColor = "rgba(255,255,255,.9)"; ctx.shadowBlur = 2 + s.lv * 14;
+      ctx.beginPath(); ctx.arc(0, 0, R, 0, TAU); ctx.strokeStyle = WHITE; ctx.lineWidth = 1.4 + s.lv * 3.2; ctx.stroke(); ctx.restore();
+    },
+  },
+  {
+    name: "Echo", desc: "Three rings follow your voice, each a beat behind the last.",
+    draw(ctx, s) {
+      const R = 6 + 8 * s.a;
+      if (s.a < 0.05) return idleDot(ctx, s.a);
+      for (let k = 2; k >= 0; k--) {
+        const v = s.st === "listening" ? s.hist[k * 6] : s.st === "processing" ? Math.max(0, Math.sin(s.t * 5 - k * 0.9)) * 0.6 : 0;
+        ctx.save(); ctx.beginPath(); ctx.arc(0, 0, R + 3 + k * 3.6 + v * 2.5, 0, TAU);
+        ctx.strokeStyle = `rgba(255,255,255,${(0.15 + v * 0.7) * (1 - k * 0.22)})`; ctx.lineWidth = 1.2; ctx.stroke(); ctx.restore();
+      }
+      shadowDisc(ctx, R);
+      if (s.st === "done") check(ctx, s.sp * 3);
+      else disc(ctx, 3, WHITE);
+    },
+  },
+  {
+    name: "Pebble", desc: "A white dot on black that stretches into a short pill while you talk.",
+    draw(ctx, s) {
+      if (s.a < 0.05) return idleDot(ctx, s.a);
+      const w = s.st === "listening" ? 14 + s.lv * 16 : s.st === "processing" ? 14 + 6 * Math.sin(s.t * 6) : 26;
+      const h = 26 * s.a + 6;
+      ctx.save(); ctx.shadowColor = "rgba(0,0,0,.35)"; ctx.shadowBlur = 10; ctx.shadowOffsetY = 3;
+      ctx.beginPath(); ctx.roundRect(-w / 2 - 6 * s.a, -h / 2, w + 12 * s.a, h, h / 2); ctx.fillStyle = INK; ctx.fill(); ctx.restore();
+      if (s.st === "done") return check(ctx, s.sp * 3);
+      const iw = Math.max(5, w - 8);
+      ctx.beginPath(); ctx.roundRect(-iw / 2, -2.6, iw, 5.2, 2.6); ctx.fillStyle = WHITE; ctx.fill();
+    },
+  },
+  {
+    name: "Breath", desc: "A plain dot that grows and shrinks with your voice. Nothing else.",
+    draw(ctx, s) {
+      if (s.a < 0.05) return idleDot(ctx, s.a);
+      const R = s.st === "listening" ? 9 + s.lv * 8 : s.st === "processing" ? 10 + 1.5 * Math.sin(s.t * 5) : 13;
+      shadowDisc(ctx, R * (0.4 + 0.6 * s.a));
+      if (s.st === "done") check(ctx, s.sp * 3);
+      else disc(ctx, 2.6, WHITE, 0.85);
+    },
+  },
+];
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Page wiring
+// ─────────────────────────────────────────────────────────────────────────────
+const grid = document.getElementById("grid");
+const picked = new Set();
+const cards = VARIANTS.map((v, i) => {
+  v.init?.();
+  const card = document.createElement("div"); card.className = "card";
+  const tile = document.createElement("div"); tile.className = "tile warm";
+  const cv = document.createElement("canvas"); tile.append(cv);
+  const meta = document.createElement("div"); meta.className = "meta";
+  meta.innerHTML = `<b><span class="n">${i + 1}</span>${v.name}</b><p>${v.desc}</p>`;
+  card.append(tile, meta); grid.append(card);
+  card.onclick = () => { picked.has(i) ? picked.delete(i) : picked.add(i); card.classList.toggle("picked"); renderPicks(); };
+  return { v, cv, tile, ctx: cv.getContext("2d") };
+});
+function renderPicks() {
+  const el = document.getElementById("pickbar");
+  el.innerHTML = picked.size ? "Marked: <b>" + [...picked].sort((a, b) => a - b).map((i) => `${i + 1} ${VARIANTS[i].name}`).join(", ") + "</b>" : "Nothing marked yet.";
+}
+function sizeCanvases() {
+  const dpr = window.devicePixelRatio || 1, px = 110;
+  for (const c of cards) { c.cv.width = px * dpr; c.cv.height = px * dpr; c.cv.style.width = px + "px"; c.cv.style.height = px + "px"; }
+}
+sizeCanvases();
+
+const mk = (parent, label, on) => { const b = document.createElement("button"); b.textContent = label; b.onclick = on; parent.append(b); return b; };
+const stateBtns = STATES.map((st) => [st, mk(document.getElementById("states"), st[0].toUpperCase() + st.slice(1), () => { demo = false; setState(st); sync(); })]);
+const wallBtns = ["warm", "light", "dark", "busy"].map((w) => [w, mk(document.getElementById("walls"), w[0].toUpperCase() + w.slice(1), () => { cards.forEach((c) => (c.tile.className = "tile " + w)); wall = w; sync(); })]);
+const sizeBtns = [[1, "1×"], [1.5, "1.5×"], [2, "2×"]].map(([k, l]) => [k, mk(document.getElementById("sizes"), l, () => { scale = k; sync(); })]);
+let wall = "warm";
+document.getElementById("demo").onclick = () => { demo = !demo; demoT = 0; sync(); };
+document.getElementById("mic").onclick = async () => {
+  const btn = document.getElementById("mic");
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const ac = new AudioContext();
+    micAnalyser = ac.createAnalyser(); micAnalyser.fftSize = 1024; micAnalyser.smoothingTimeConstant = 0.5;
+    ac.createMediaStreamSource(stream).connect(micAnalyser);
+    micData = new Uint8Array(micAnalyser.frequencyBinCount);
+    btn.textContent = "Mic on"; btn.classList.add("on"); demo = false; setState("listening"); sync();
+  } catch { btn.textContent = "Mic blocked here"; }
+};
+function sync() {
+  stateBtns.forEach(([k, b]) => b.classList.toggle("on", k === state && !demo));
+  wallBtns.forEach(([k, b]) => b.classList.toggle("on", k === wall));
+  sizeBtns.forEach(([k, b]) => b.classList.toggle("on", k === scale));
+  document.getElementById("demo").classList.toggle("on", demo);
+}
+function setState(s) { if (s !== state) { state = s; stateAt = performance.now() / 1000; } }
+
+let last = performance.now(), active = 1;
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  const t = now / 1000;
+  if (demo) {
+    demoT += dt;
+    const c = demoT % 8.2;
+    setState(c < 1.4 ? "idle" : c < 5.8 ? "listening" : c < 7.0 ? "processing" : "done");
+  }
+  let target = 0, mb = null;
+  if (state === "listening") { if (micAnalyser) { const r = readMic(); target = r.level; mb = r.bands; } else target = simLevel(demoT || t); }
+  const k = target > level ? 1 - Math.exp(-dt / 0.045) : 1 - Math.exp(-dt / 0.16);
+  level += (target - level) * k;
+  hist.pop(); hist.unshift(level);
+  for (let i = 0; i < 8; i++) {
+    const tb = state !== "listening" ? 0 : mb ? mb[i] : Math.min(1, level * (0.55 + 0.45 * Math.sin(t * (6 + i * 1.7) + i * 2.1)) * (1.15 - i * 0.06));
+    const kb = tb > bands[i] ? 1 - Math.exp(-dt / 0.04) : 1 - Math.exp(-dt / 0.14);
+    bands[i] += (tb - bands[i]) * kb;
+  }
+  // "Active" presence eases the circle in and out of its idle size.
+  active += ((state === "idle" ? 0 : 1) - active) * (1 - Math.exp(-dt / 0.09));
+  const snap = { t, st: state, sp: t - stateAt, lv: level, bands, hist, a: active };
+  const dpr = window.devicePixelRatio || 1;
+  for (const c of cards) {
+    const { ctx, cv } = c;
+    ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, cv.width, cv.height);
+    ctx.setTransform(dpr * scale, 0, 0, dpr * scale, cv.width / 2, cv.height / 2);
+    c.v.draw.call(c.v, ctx, snap, dt);
+  }
+  requestAnimationFrame(frame);
+}
+sync(); requestAnimationFrame(frame);
+</script>
+</body>
+</html>

@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bubble Concepts</title>
+<style>
+  :root {
+    --bg: #fafaf9; --panel: #fff; --ink: #18181b; --muted: #71717a; --line: #e7e5e4; --chip: #f4f4f5;
+    --accent: #d66a2a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #111113; --panel: #18181b; --ink: #f4f4f5; --muted: #a1a1aa; --line: #2a2a2e; --chip: #232327; --accent: #e8834a; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Inter", system-ui, sans-serif; }
+  main { max-width: 980px; margin: 0 auto; padding: 28px 16px 48px; }
+  h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); margin: 0 0 18px; }
+  .controls { display: flex; flex-wrap: wrap; gap: 14px 22px; align-items: center; margin: 14px 0; }
+  .group { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .group > span { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .07em; margin-right: 4px; }
+  button { font: inherit; border: 1px solid var(--line); background: var(--chip); color: var(--ink);
+    border-radius: 999px; padding: 5px 12px; cursor: pointer; }
+  button:hover { border-color: var(--muted); }
+  button.on { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+  .desc { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; margin-top: 14px; }
+  .desc h3 { margin: 0 0 4px; font-size: 15px; }
+  .desc p { margin: 0; color: var(--muted); }
+  .desc ul { margin: 8px 0 0; padding-left: 18px; color: var(--muted); }
+
+  /* ── Screen mock ── */
+  .screen { position: relative; width: 100%; aspect-ratio: 16 / 10; border-radius: 14px; overflow: hidden;
+    border: 1px solid var(--line); user-select: none; transition: background .4s; }
+  .screen.warm { background: radial-gradient(120% 90% at 20% 10%, #f6c88f 0%, #e98a4b 45%, #7a3b1f 100%); }
+  .screen.light { background: linear-gradient(160deg, #f5f5f4, #e7e5e4 60%, #d6d3d1); }
+  .screen.dark { background: radial-gradient(120% 90% at 70% 20%, #3b3b46 0%, #17171c 60%, #0b0b0e 100%); }
+  .menubar { position: absolute; left: 0; right: 0; top: 0; height: 3.2%; background: rgba(255,255,255,.18);
+    backdrop-filter: blur(8px); }
+  .notch { position: absolute; top: 0; left: 50%; width: 11%; height: 3.6%; transform: translateX(-50%);
+    background: #000; border-radius: 0 0 10px 10px; z-index: 3; }
+  .dock { position: absolute; bottom: 1.4%; left: 50%; transform: translateX(-50%); width: 46%; height: 7%;
+    border-radius: 14px; background: rgba(255,255,255,.22); backdrop-filter: blur(8px); border: 1px solid rgba(255,255,255,.25); }
+  .window { position: absolute; left: 22%; top: 14%; width: 56%; height: 62%; border-radius: 10px;
+    background: rgba(255,255,255,.88); box-shadow: 0 20px 50px rgba(0,0,0,.25); }
+  .window::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 8%; border-bottom: 1px solid #e7e5e4; }
+  .window i { position: absolute; left: 6%; height: 3%; background: #e7e5e4; border-radius: 3px; }
+  .slot { position: absolute; width: 9%; height: 7%; border: 1.5px dashed rgba(255,255,255,.65); border-radius: 12px;
+    cursor: pointer; transform: translate(-50%, -50%); z-index: 2; transition: opacity .2s, border-color .2s; }
+  .screen.light .slot { border-color: rgba(0,0,0,.35); }
+  .slot:hover { border-color: #fff; background: rgba(255,255,255,.12); }
+  .slot.v { width: 4.5%; height: 14%; }
+  .slot.active { opacity: 0; }
+  .anchor { position: absolute; z-index: 4; transition: left .45s cubic-bezier(.16,1,.3,1), top .45s cubic-bezier(.16,1,.3,1); }
+
+  /* ── Bubble shared ── */
+  .bub { position: absolute; transform: translate(-50%, -50%); display: flex; align-items: center; justify-content: center;
+    color: #fff; transition: width .35s cubic-bezier(.16,1,.3,1), height .35s cubic-bezier(.16,1,.3,1),
+      border-radius .35s cubic-bezier(.16,1,.3,1), opacity .25s, background .3s; }
+  .bars { display: flex; align-items: center; gap: 2.5px; height: 100%; }
+  .bars.v { flex-direction: column; }
+  .bar { width: 2.5px; border-radius: 2px; background: #fff; height: 3px; }
+  .bars.v .bar { height: 2.5px; width: 3px; }
+  .ctl { width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center; flex: none;
+    font-size: 11px; line-height: 1; transition: opacity .2s, transform .2s; }
+  .ctl.x { background: rgba(255,255,255,.18); }
+  .ctl.ok { background: #fff; color: #000; }
+  .check { font-size: 14px; transform: scale(0); transition: transform .3s cubic-bezier(.34,1.56,.64,1); }
+  .done .check { transform: scale(1); }
+  .hidden { opacity: 0 !important; pointer-events: none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Recording bubble: five directions</h1>
+  <p class="sub">Click a dashed spot to move the bubble there. Hover the bubble to see controls where a design has them. The wave runs on a simulated voice; turn on your mic to see it follow you.</p>
+
+  <div class="screen warm" id="screen">
+    <div class="menubar"></div>
+    <div class="notch"></div>
+    <div class="window"><i style="top:16%;width:60%"></i><i style="top:24%;width:72%"></i><i style="top:32%;width:48%"></i></div>
+    <div class="dock"></div>
+    <div class="anchor" id="anchor"><div class="bub" id="bub"></div></div>
+  </div>
+
+  <div class="controls">
+    <div class="group" id="designs"><span>Design</span></div>
+    <div class="group" id="states"><span>State</span></div>
+  </div>
+  <div class="controls">
+    <div class="group"><span>Voice</span>
+      <button id="demo" class="on">Demo loop</button>
+      <button id="mic">Use my mic</button>
+    </div>
+    <div class="group" id="walls"><span>Wallpaper</span></div>
+  </div>
+
+  <div class="desc" id="desc"></div>
+</main>
+
+<script>
+// ── Spots (from the screenshot): corners, top centre under the notch, edge middles, bottom centre.
+const SLOTS = {
+  // x/y: where the dashed spot sits. ax: which side of the bubble anchors to it, so a
+  // bubble in a right-hand spot grows leftwards and never runs off the screen.
+  tl: { x: 6,  y: 9,  edge: "top", ax: "l", bx: 1.6 },
+  tc: { x: 50, y: 6.5, edge: "top", ax: "c", bx: 50 },
+  tr: { x: 94, y: 9,  edge: "top", ax: "r", bx: 98.4 },
+  ml: { x: 2.6, y: 50, edge: "left", ax: "l", bx: 1 },
+  mr: { x: 97.4, y: 50, edge: "right", ax: "r", bx: 99 },
+  bl: { x: 6,  y: 91, edge: "bottom", ax: "l", bx: 1.6 },
+  bc: { x: 50, y: 85, edge: "bottom", ax: "c", bx: 50 },
+  br: { x: 94, y: 91, edge: "bottom", ax: "r", bx: 98.4 },
+};
+
+const DESIGNS = {
+  capsule: {
+    name: "A · Capsule",
+    blurb: "A solid black pill that reads on any wallpaper. Idle it shrinks to a short dash; talking stretches it into a mirrored wave. Hovering shows ✕ to discard and ✓ to finish.",
+    points: ["Closest to Wispr Flow, cleanest all-rounder", "Turns vertical on the left and right edges", "Processing: a soft light sweeps across the bars"],
+  },
+  edge: {
+    name: "B · Edge tab",
+    blurb: "Lives against the screen edge like Willow. Idle it's a 4 px line you barely notice; talking slides a tab out from the edge with the wave inside.",
+    points: ["Least intrusive; never covers content", "Edge spots use the side edge, corners and centres use the top or bottom edge", "Processing: the tab breathes"],
+  },
+  island: {
+    name: "C · Notch island",
+    blurb: "At the top centre it grows out of the MacBook notch: mic dot on one side, wave on the other. At other spots it becomes a small floating island with the same layout.",
+    points: ["Feels built into the Mac", "Idle is invisible: the notch is the bubble", "Best at the top centre spot"],
+  },
+  orb: {
+    name: "D · Orb",
+    blurb: "A single round dot. Your voice swells a soft ring around it instead of bars.",
+    points: ["Smallest footprint; nothing to read", "Processing: the ring becomes a spinning arc", "Done: the dot flips to a ✓"],
+  },
+  line: {
+    name: "E · Flow line",
+    blurb: "A pill with one smooth, continuous wave line instead of bars. Quiet speech gives a gentle ripple; louder speech gives taller waves.",
+    points: ["Most \"alive\" looking", "Matches the LocalFlow wave logo", "Processing: the line flattens and a dot travels along it"],
+  },
+};
+
+const STATES = ["idle", "listening", "processing", "done"];
+let design = "capsule", slot = "br", state = "listening", demo = true, hover = false;
+let micAnalyser = null, micData = null, level = 0, levelS = 0, bands = new Array(16).fill(0);
+const screen = document.getElementById("screen");
+const anchor = document.getElementById("anchor");
+const bub = document.getElementById("bub");
+
+// ── Controls
+const mk = (parent, label, on, cls = "") => {
+  const b = document.createElement("button");
+  b.textContent = label; b.className = cls; b.onclick = on; parent.append(b); return b;
+};
+const designBtns = Object.entries(DESIGNS).map(([k, d]) => [k, mk(document.getElementById("designs"), d.name.split(" · ")[1], () => { design = k; build(); sync(); })]);
+const stateBtns = STATES.map((s) => [s, mk(document.getElementById("states"), s[0].toUpperCase() + s.slice(1), () => { demo = false; setState(s); sync(); })]);
+const wallBtns = ["warm", "light", "dark"].map((w) => [w, mk(document.getElementById("walls"), w[0].toUpperCase() + w.slice(1), () => { screen.className = "screen " + w; sync(); })]);
+document.getElementById("demo").onclick = () => { demo = !demo; demoT = 0; sync(); };
+document.getElementById("mic").onclick = async () => {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const ac = new AudioContext();
+    micAnalyser = ac.createAnalyser(); micAnalyser.fftSize = 1024; micAnalyser.smoothingTimeConstant = 0.5;
+    ac.createMediaStreamSource(stream).connect(micAnalyser);
+    micData = new Uint8Array(micAnalyser.frequencyBinCount);
+    document.getElementById("mic").textContent = "Mic on"; document.getElementById("mic").classList.add("on");
+    demo = false; setState("listening"); sync();
+  } catch { document.getElementById("mic").textContent = "Mic blocked here"; }
+};
+
+for (const [k, s] of Object.entries(SLOTS)) {
+  const d = document.createElement("div");
+  d.className = "slot" + (s.edge === "left" || s.edge === "right" ? " v" : "");
+  d.style.left = s.x + "%"; d.style.top = s.y + "%"; d.dataset.k = k;
+  d.onclick = () => { slot = k; build(); sync(); };
+  screen.append(d);
+}
+bub.onmouseenter = () => { hover = true; };
+bub.onmouseleave = () => { hover = false; };
+
+function sync() {
+  designBtns.forEach(([k, b]) => b.classList.toggle("on", k === design));
+  stateBtns.forEach(([k, b]) => b.classList.toggle("on", k === state && !demo));
+  wallBtns.forEach(([k, b]) => b.classList.toggle("on", screen.classList.contains(k)));
+  document.getElementById("demo").classList.toggle("on", demo);
+  document.querySelectorAll(".slot").forEach((s) => s.classList.toggle("active", s.dataset.k === slot));
+  const s = SLOTS[slot];
+  // The edge tab sits flush against the screen edge; everything else keeps a margin.
+  const bx = design === "edge" && (s.edge === "left" || s.edge === "right") ? (s.ax === "l" ? 0 : 100) : s.bx;
+  let by = s.y, ty = "-50%";
+  if (design === "edge" && s.edge === "top") { by = 3.2; ty = "0"; }        // flush under the menu bar
+  if (design === "edge" && s.edge === "bottom") { by = 100; ty = "-100%"; } // flush with the bottom edge
+  anchor.style.left = bx + "%"; anchor.style.top = by + "%";
+  bub.style.transform = `translate(${s.ax === "l" ? "0" : s.ax === "r" ? "-100%" : "-50%"}, ${ty})`;
+  const d = DESIGNS[design];
+  document.getElementById("desc").innerHTML =
+    `<h3>${d.name}</h3><p>${d.blurb}</p><ul>${d.points.map((p) => `<li>${p}</li>`).join("")}</ul>`;
+}
+
+// ── Build the DOM for the current design + spot
+let parts = {};
+const N_BARS = 14;
+function vertical() {
+  const e = SLOTS[slot].edge;
+  return (design === "capsule" || design === "edge") && (e === "left" || e === "right");
+}
+function build() {
+  bub.innerHTML = ""; bub.style.cssText = ""; parts = {};
+  const sl = SLOTS[slot];
+  bub.style.transform = `translate(${sl.ax === "l" ? "0" : sl.ax === "r" ? "-100%" : "-50%"}, -50%)`;
+  const v = vertical();
+  if (design === "capsule" || design === "edge" || design === "island") {
+    const x = document.createElement("div"); x.className = "ctl x"; x.textContent = "✕";
+    const ok = document.createElement("div"); ok.className = "ctl ok"; ok.textContent = "✓";
+    const bars = document.createElement("div"); bars.className = "bars" + (v ? " v" : "");
+    parts.bars = Array.from({ length: design === "island" ? 9 : N_BARS }, () => {
+      const b = document.createElement("div"); b.className = "bar"; bars.append(b); return b;
+    });
+    const check = document.createElement("div"); check.className = "check"; check.textContent = "✓";
+    check.style.position = "absolute";
+    if (design === "island") {
+      const dot = document.createElement("div");
+      dot.style.cssText = "width:7px;height:7px;border-radius:50%;background:#ff9f5a;flex:none";
+      parts.dot = dot;
+      bub.append(dot, bars, check);
+    } else {
+      bub.append(x, bars, ok, check);
+    }
+    Object.assign(parts, { x, ok, barsEl: bars, check });
+  } else if (design === "orb") {
+    bub.innerHTML = `<svg viewBox="0 0 60 60" width="100%" height="100%" style="overflow:visible">
+      <circle id="ring" cx="30" cy="30" r="16" fill="rgba(255,255,255,0.18)"/>
+      <circle id="arc" cx="30" cy="30" r="19" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round"
+        stroke-dasharray="30 120" opacity="0"/>
+      <circle cx="30" cy="30" r="13" fill="#0b0b0c"/>
+      <circle id="core" cx="30" cy="30" r="4" fill="#fff"/>
+      <text id="ock" x="30" y="35" text-anchor="middle" font-size="14" fill="#fff" opacity="0">✓</text></svg>`;
+    parts.ring = bub.querySelector("#ring"); parts.arc = bub.querySelector("#arc");
+    parts.core = bub.querySelector("#core"); parts.ock = bub.querySelector("#ock");
+  } else if (design === "line") {
+    bub.innerHTML = `<svg viewBox="0 0 120 30" width="100%" height="100%" preserveAspectRatio="none">
+      <path id="wave" d="" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
+      <path id="wave2" d="" fill="none" stroke="rgba(255,255,255,.35)" stroke-width="1.4" stroke-linecap="round"/>
+      <circle id="dotp" r="2.6" fill="#fff" opacity="0"/></svg>
+      <div class="check">✓</div>`;
+    parts.wave = bub.querySelector("#wave"); parts.wave2 = bub.querySelector("#wave2");
+    parts.dotp = bub.querySelector("#dotp"); parts.check = bub.querySelector(".check");
+    parts.check.style.position = "absolute";
+  }
+  layout();
+}
+
+// Size/shape per design, spot and state. Called on every state change.
+function layout() {
+  const v = vertical();
+  const e = SLOTS[slot].edge;
+  const s = bub.style;
+  bub.classList.toggle("done", state === "done");
+  const shadow = "0 6px 18px rgba(0,0,0,.28), 0 0 0 1px rgba(255,255,255,.08)";
+  if (design === "capsule") {
+    const sizes = { idle: [34, 8], listening: [128, 30], processing: [92, 30], done: [30, 30] };
+    let [w, h] = sizes[state];
+    if (hover && state === "listening") w = 170;
+    if (v) [w, h] = [h, w];
+    Object.assign(s, { width: w + "px", height: h + "px", background: state === "idle" ? "rgba(0,0,0,.55)" : "#0b0b0c",
+      borderRadius: "999px", boxShadow: state === "idle" ? "none" : shadow, gap: "8px", padding: v ? "8px 0" : "0 7px",
+      flexDirection: v ? "column" : "row" });
+    showCtl(state === "listening" && hover);
+    parts.barsEl.classList.toggle("hidden", state === "idle" || state === "done");
+  } else if (design === "edge") {
+    // Attach to the nearest edge: side spots use the side edge, everything else top/bottom.
+    const side = e === "left" || e === "right";
+    const sizes = { idle: [36, 4], listening: [124, 30], processing: [92, 30], done: [30, 30] };
+    let [w, h] = sizes[state];
+    if (hover && state === "listening") w = 166;
+    if (side) [w, h] = [h, w];
+    const r = 14;
+    const radius = { left: `0 ${r}px ${r}px 0`, right: `${r}px 0 0 ${r}px`, top: `0 0 ${r}px ${r}px`, bottom: `${r}px ${r}px 0 0` }[e];
+    // Hug the edge: shift so the attached side sits flush with the screen edge.
+    Object.assign(s, { width: w + "px", height: h + "px", background: state === "idle" ? "rgba(0,0,0,.45)" : "#0b0b0c",
+      borderRadius: state === "idle" ? "999px" : radius, boxShadow: state === "idle" ? "none" : shadow,
+      gap: "8px", padding: side ? "8px 0" : "0 7px", flexDirection: side ? "column" : "row" });
+    showCtl(state === "listening" && hover);
+    parts.barsEl.classList.toggle("hidden", state === "idle" || state === "done");
+  } else if (design === "island") {
+    const atNotch = slot === "tc";
+    const sizes = atNotch
+      ? { idle: [screen.clientWidth * 0.11, 2], listening: [screen.clientWidth * 0.11 + 120, 32], processing: [screen.clientWidth * 0.11 + 70, 32], done: [screen.clientWidth * 0.11 + 40, 32] }
+      : { idle: [30, 10], listening: [110, 30], processing: [80, 30], done: [36, 30] };
+    const [w, h] = sizes[state];
+    Object.assign(s, { width: w + "px", height: h + "px", background: "#000",
+      borderRadius: atNotch ? "0 0 16px 16px" : "16px", boxShadow: atNotch ? "none" : shadow,
+      justifyContent: "space-between", padding: "0 12px", opacity: !atNotch && state === "idle" ? .55 : 1,
+      marginTop: atNotch ? (-SLOTS.tc.y / 100 * screen.clientHeight + h / 2) + "px" : "0px" });
+    parts.dot.classList.toggle("hidden", state === "idle" || state === "done");
+    parts.barsEl.classList.toggle("hidden", state === "idle" || state === "done");
+  } else if (design === "orb") {
+    const d = { idle: 12, listening: 40, processing: 40, done: 40 }[state];
+    Object.assign(s, { width: d + "px", height: d + "px", borderRadius: "50%",
+      opacity: state === "idle" ? .6 : 1, filter: state === "idle" ? "none" : "drop-shadow(0 4px 10px rgba(0,0,0,.35))" });
+  } else if (design === "line") {
+    const sizes = { idle: [34, 8], listening: [130, 30], processing: [100, 30], done: [30, 30] };
+    const [w, h] = sizes[state];
+    Object.assign(s, { width: w + "px", height: h + "px", borderRadius: "999px", background: state === "idle" ? "rgba(0,0,0,.55)" : "#0b0b0c",
+      boxShadow: state === "idle" ? "none" : shadow, padding: "0 10px" });
+    bub.querySelector("svg").classList.toggle("hidden", state === "idle" || state === "done");
+  }
+}
+function showCtl(on) {
+  if (!parts.x) return;
+  parts.x.style.display = parts.ok.style.display = on ? "grid" : "none";
+}
+
+function setState(s) { state = s; layout(); }
+
+// ── Voice: simulated speech, or the real mic
+let demoT = 0;
+function simLevel(t) {
+  // Phrases of ~2.4 s with short pauses; syllables at ~4.6/s with jitter.
+  const phrase = t % 3.1 < 2.4 ? 1 : 0.04;
+  const syl = Math.pow(Math.abs(Math.sin(t * Math.PI * 4.6 + Math.sin(t * 1.7) * 1.3)), 0.55);
+  const breath = 0.65 + 0.35 * Math.sin(t * 0.9);
+  return Math.min(1, phrase * syl * breath + Math.random() * 0.06);
+}
+function readMic() {
+  micAnalyser.getByteFrequencyData(micData);
+  // Speech lives roughly in bins 2..90 at 1024 FFT; split into 8 bands, mirror to 16.
+  const half = 8, lo = 2, hi = 90, out = [];
+  let sum = 0;
+  for (let i = 0; i < half; i++) {
+    const a = Math.floor(lo + (hi - lo) * Math.pow(i / half, 1.6)), b = Math.floor(lo + (hi - lo) * Math.pow((i + 1) / half, 1.6)) + 1;
+    let m = 0; for (let k = a; k < b; k++) m = Math.max(m, micData[k]);
+    const v = Math.max(0, (m - 70) / 150); out.push(v); sum += v;
+  }
+  return { level: Math.min(1, sum / half * 1.6), bands: out };
+}
+
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  const t = now / 1000;
+  if (demo) {
+    demoT += dt;
+    const c = demoT % 8.2;
+    const want = c < 1.2 ? "idle" : c < 5.8 ? "listening" : c < 7.0 ? "processing" : "done";
+    if (want !== state) setState(want);
+  }
+  // Envelope follower: fast attack, slower release — what makes it feel like a voice.
+  let target = 0, micBands = null;
+  if (state === "listening") {
+    if (micAnalyser) { const r = readMic(); target = r.level; micBands = r.bands; } else target = simLevel(demoT || t);
+  }
+  const k = target > level ? 1 - Math.exp(-dt / 0.045) : 1 - Math.exp(-dt / 0.16);
+  level += (target - level) * k;
+  levelS += (level - levelS) * (1 - Math.exp(-dt / 0.25));
+  draw(t, micBands);
+  requestAnimationFrame(frame);
+}
+
+function draw(t, micBands) {
+  if (parts.bars) {
+    const n = parts.bars.length, v = parts.barsEl.classList.contains("v");
+    const maxH = 18, minH = 3;
+    parts.bars.forEach((b, i) => {
+      const x = (i - (n - 1) / 2) / ((n - 1) / 2);           // -1..1
+      const shape = 1 - Math.pow(Math.abs(x), 1.5) * 0.65;      // taller in the middle
+      let val;
+      if (state === "processing") {
+        val = 0.12 + 0.35 * Math.max(0, Math.sin(t * 7 - i * 0.55));   // light sweeping across
+      } else if (micBands) {
+        const bi = Math.min(7, Math.floor(Math.abs(x) * 8));            // mirrored spectrum
+        val = micBands[7 - bi] * 0.8 + level * 0.3 * shape;
+      } else {
+        const wob = 0.72 + 0.28 * Math.sin(t * (7 + i * 1.3) + i * 2.1);
+        val = level * shape * wob;
+      }
+      const h = minH + (maxH - minH) * Math.min(1, val);
+      if (v) b.style.width = h + "px"; else b.style.height = h + "px";
+      b.style.opacity = state === "processing" ? 0.55 + 0.45 * Math.max(0, Math.sin(t * 7 - i * 0.55)) : 1;
+    });
+  }
+  if (parts.dot) parts.dot.style.transform = `scale(${0.8 + level * 0.7})`;
+  if (parts.ring) {
+    const r = state === "listening" ? 15 + level * 11 : 15;
+    parts.ring.setAttribute("r", r.toFixed(2));
+    parts.ring.setAttribute("fill", `rgba(255,255,255,${(0.14 + level * 0.22).toFixed(3)})`);
+    parts.arc.setAttribute("opacity", state === "processing" ? 1 : 0);
+    parts.arc.setAttribute("transform", `rotate(${(t * 360) % 360} 30 30)`);
+    parts.core.setAttribute("opacity", state === "done" ? 0 : 1);
+    parts.core.setAttribute("r", (state === "listening" ? 3.5 + level * 2.5 : 4).toFixed(2));
+    parts.ock.setAttribute("opacity", state === "done" ? 1 : 0);
+  }
+  if (parts.wave) {
+    const pts = 48, W = 120, H = 30, mid = H / 2;
+    const amp = state === "processing" ? 0.6 : 1.5 + level * 11;
+    const path = (phase, mult, freq) => {
+      let d = "";
+      for (let i = 0; i <= pts; i++) {
+        const x = (i / pts) * W, u = i / pts;
+        const taper = Math.sin(Math.PI * u);                     // pinned at both ends
+        const y = mid + Math.sin(u * Math.PI * freq + phase) * amp * mult * taper
+                + Math.sin(u * Math.PI * freq * 2.3 - phase * 1.4) * amp * 0.3 * mult * taper;
+        d += (i ? "L" : "M") + x.toFixed(1) + " " + y.toFixed(2);
+      }
+      return d;
+    };
+    parts.wave.setAttribute("d", path(t * 6, 1, 3));
+    parts.wave2.setAttribute("d", path(t * 4.3 + 1.2, 0.6, 2.4));
+    parts.dotp.setAttribute("opacity", state === "processing" ? 1 : 0);
+    parts.dotp.setAttribute("cx", (((t * 0.9) % 1) * 112 + 4).toFixed(1));
+    parts.dotp.setAttribute("cy", "15");
+  }
+}
+
+build(); sync(); requestAnimationFrame(frame);
+window.addEventListener("resize", () => layout());
+</script>
+</body>
+</html>

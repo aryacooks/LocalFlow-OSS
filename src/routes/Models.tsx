@@ -18,11 +18,6 @@ const MODEL_COMPARISONS: Record<string, {
   speed: string;
   avgRam: string;
 }> = {
-  "tiny.en": {
-    accuracy: "Basic",
-    speed: "Fastest",
-    avgRam: "~130 MB"
-  },
   "base.en": {
     accuracy: "Okay",
     speed: "Very fast",
@@ -37,11 +32,6 @@ const MODEL_COMPARISONS: Record<string, {
     accuracy: "Very good",
     speed: "Slower",
     avgRam: "~660 MB"
-  },
-  "distil-large-v3": {
-    accuracy: "Great",
-    speed: "Slower",
-    avgRam: "~900 MB"
   },
   "large-v3-turbo": {
     accuracy: "Best",
@@ -172,8 +162,8 @@ export default function ModelsPage() {
         <p className="row-desc" style={{ margin: 0 }}>
           {recommendedId === "small.en"
             ? "Start with Small English, our recommended English model for computers with less than 24 GB of RAM. It balances speed, accuracy, and memory use."
-            : "With 24 GB of RAM or more, we recommend Large V3 Turbo for higher accuracy and multilingual speech."}
-          {" "}For Hindi or mixed Hindi-English speech, choose Large V3 Turbo regardless of the English recommendation.
+            : "With 24 GB of RAM or more, we recommend Multilingual flow for higher accuracy and multilingual speech."}
+          {" "}For Hindi or mixed Hindi-English speech, choose Multilingual flow regardless of the English recommendation.
         </p>
         <p className="row-desc" style={{ margin: "8px 0 0" }}>
           {MODEL_MEMORY_NOTE}

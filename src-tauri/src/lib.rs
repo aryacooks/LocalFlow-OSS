@@ -3,6 +3,7 @@ mod cleanup;
 mod db;
 mod download;
 mod earcon;
+mod emoji;
 #[cfg(any(target_os = "macos", test))]
 mod fn_gesture;
 #[cfg(windows)]
@@ -14,6 +15,11 @@ mod hook;
 mod inject;
 mod llm;
 mod mac_permissions;
+mod notch;
+mod placement;
+mod placer;
+mod pastecard;
+mod tint;
 mod pipeline;
 mod translit;
 mod whisper;
@@ -68,6 +74,16 @@ pub fn run() {
                         .unwrap_or_else(|_| "true".to_string())
                     };
                     earcon::set_sounds_enabled(sounds != "false");
+                    let sound_set = {
+                        let conn = db_state.0.lock().unwrap();
+                        conn.query_row(
+                            "SELECT value FROM settings WHERE key = 'sound_set'",
+                            [],
+                            |r| r.get::<_, String>(0),
+                        )
+                        .unwrap_or_else(|_| earcon::DEFAULT_SOUND_SET.to_string())
+                    };
+                    earcon::set_sound_set(&sound_set);
                 }
 
                 // Restore the preferred microphone before global shortcuts become
@@ -150,8 +166,33 @@ pub fn run() {
                     audio_state.clone(),
                     pipeline_state.clone(),
                 );
+                // Read the notch size now, on the main thread (AppKit), for the
+                // "Notch island" bubble style.
+                notch::init();
+                placer::create(app.handle());
+                pastecard::create(app.handle());
+                // The orb samples the screen behind it to pick black or white; macOS
+                // asks for Screen Recording once (a no-op after that).
+                let adaptive = adaptive_tint_wanted(app.handle());
+                if adaptive {
+                    tint::request_access();
+                }
+                tint::set_enabled(adaptive);
+                tint::start(app.handle().clone());
                 // Show the bubble window on startup
                 show_bubble_window(app.handle());
+                // Notch island: keep it pinned if anything moves the window.
+                #[cfg(target_os = "macos")]
+                if let Some(bw) = app.get_webview_window("bubble") {
+                    let bw2 = bw.clone();
+                    bw.on_window_event(move |e| {
+                        if matches!(e, tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_))
+                            && bubble_is_notch(bw2.app_handle())
+                        {
+                            notch::repin(&bw2);
+                        }
+                    });
+                }
 
                 // Intercept main window close to hide it instead of closing, keeping it in tray
                 if let Some(main_win) = app.get_webview_window("main") {
@@ -296,6 +337,9 @@ pub fn run() {
             start_recording_cmd,
             set_bubble_visible,
             set_earcons_enabled,
+            set_sound_set,
+            set_bubble_mode,
+            get_notch_geometry,
             stop_and_transcribe_cmd,
             get_system_stats,
             reload_global_shortcut,
@@ -303,9 +347,17 @@ pub fn run() {
             open_main_window,
             resize_bubble,
             set_bubble_size,
-            get_bubble_position,
-            nudge_bubble,
-            reset_bubble_position,
+            get_bubble_placement,
+            set_bubble_placement,
+            drag_bubble,
+            drop_bubble,
+            placer::get_placer_layout,
+            pastecard::get_paste_card,
+            pastecard::hide_paste_card,
+            inject::copy_to_clipboard,
+            placer::toggle_placing,
+            placer::cancel_placing,
+            placer::place_at_spot,
         ])
         .build(tauri::generate_context!())
         .expect("error while running LocalFlow")
@@ -338,11 +390,9 @@ pub fn run() {
             }
         });
 }
-/// Logical (CSS-px) size of the idle bubble — just big enough for the logo plus a
-/// little breathing room for the hover-enlarge. Kept tight so it doesn't intercept
-/// clicks across the empty space to the left of the floating logo.
-const BUBBLE_IDLE_W: f64 = 44.0;
-const BUBBLE_IDLE_H: f64 = 44.0;
+/// Logical size of the bubble window when it only shows the orb (idle or active).
+const BUBBLE_IDLE_W: f64 = placement::ORB_BOX;
+const BUBBLE_IDLE_H: f64 = placement::ORB_BOX;
 
 fn bubble_scale(monitor_size: tauri::PhysicalSize<u32>, scale_factor: f64) -> f64 {
     let logical_width = monitor_size.width as f64 / scale_factor;
@@ -391,27 +441,54 @@ fn user_scale_override(app: &tauri::AppHandle) -> Option<f64> {
     bubble_size_to_scale(&val)
 }
 
-/// Read the user's custom bubble position, stored as `"fx,fy"` — a fraction (0..1) of
-/// the available work-area span for the window's top-left corner. `None` means the
-/// user hasn't moved it, so the default bottom-right anchor is used.
-fn saved_bubble_pos(app: &tauri::AppHandle) -> Option<(f64, f64)> {
-    let db = app.try_state::<DbState>()?;
-    let conn = db.0.lock().ok()?;
-    let val: String = conn
-        .query_row(
-            "SELECT value FROM settings WHERE key = 'bubble_pos'",
-            [],
-            |row| row.get(0),
-        )
-        .ok()?;
-    let mut parts = val.split(',');
-    let fx: f64 = parts.next()?.trim().parse().ok()?;
-    let fy: f64 = parts.next()?.trim().parse().ok()?;
-    if fx.is_finite() && fy.is_finite() {
-        Some((fx.clamp(0.0, 1.0), fy.clamp(0.0, 1.0)))
+/// The orb's spot (one of `placement::SPOTS`) and horizontal shift in logical points.
+fn saved_placement(app: &tauri::AppHandle) -> (String, f64, f64) {
+    let get = |key: &str| -> Option<String> {
+        let db = app.try_state::<DbState>()?;
+        let conn = db.0.lock().ok()?;
+        conn.query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| r.get(0))
+            .ok()
+    };
+    let spot = get("bubble_spot")
+        .filter(|s| placement::is_spot(s))
+        .unwrap_or_else(|| placement::DEFAULT_SPOT.to_string());
+    let num = |key: &str| {
+        get(key)
+            .and_then(|v| v.parse::<f64>().ok())
+            .filter(|v| v.is_finite())
+            .unwrap_or(0.0)
+            .clamp(-placement::NUDGE_MAX, placement::NUDGE_MAX)
+    };
+    (spot, num("bubble_nudge"), num("bubble_nudge_y"))
+}
+
+/// The monitor's work area (excludes menu bar / Dock / taskbar), or the full monitor
+/// if the platform reports nothing usable.
+fn work_area(monitor: &tauri::Monitor) -> placement::Area {
+    let wa = monitor.work_area();
+    if wa.size.width > 0 && wa.size.height > 0 {
+        placement::Area {
+            x: wa.position.x as f64,
+            y: wa.position.y as f64,
+            w: wa.size.width as f64,
+            h: wa.size.height as f64,
+        }
     } else {
-        None
+        let p = monitor.position();
+        placement::Area {
+            x: p.x as f64,
+            y: p.y as f64,
+            w: monitor.size().width as f64,
+            h: monitor.size().height as f64,
+        }
     }
+}
+
+/// Bubble scale (Settings size override, else the display heuristic) times DPI.
+fn adaptive_scale_for(b: &tauri::WebviewWindow, monitor: &tauri::Monitor) -> f64 {
+    let base = user_scale_override(b.app_handle())
+        .unwrap_or_else(|| bubble_scale(*monitor.size(), monitor.scale_factor()));
+    monitor.scale_factor() * base
 }
 
 /// Size the bubble window to the given logical (CSS-px) dimensions and pin its
@@ -422,55 +499,75 @@ fn saved_bubble_pos(app: &tauri::AppHandle) -> Option<(f64, f64)> {
 /// right-anchored, so changing the width only moves the LEFT edge — the logo never
 /// shifts on screen.
 fn place_bubble(b: &tauri::WebviewWindow, logical_w: f64, logical_h: f64) {
-    if let Ok(Some(monitor)) = b.current_monitor() {
-        let monitor_size = monitor.size();
-        let scale_factor = monitor.scale_factor();
-
-        // Bubble sizing is unaffected by the Dock/taskbar, so it keys off the FULL
-        // display size. A manual screen-size override (Settings) wins; otherwise fall
-        // back to the geometry-based heuristic.
-        let base_scale = user_scale_override(b.app_handle())
-            .unwrap_or_else(|| bubble_scale(*monitor_size, scale_factor));
-        let adaptive_scale = scale_factor * base_scale;
-
-        let width = (logical_w * adaptive_scale).round() as u32;
-        let height = (logical_h * adaptive_scale).round() as u32;
-
-        // Anchor to the work area. Fall back to the full monitor rect if the work area
-        // is unavailable or reports a zero size (older platforms / edge cases).
-        let wa = monitor.work_area();
-        let (area_x, area_y, area_w, area_h) = if wa.size.width > 0 && wa.size.height > 0 {
-            (wa.position.x, wa.position.y, wa.size.width, wa.size.height)
-        } else {
+    // Notch island: a fixed-size window flush with the top of the notch screen,
+    // centred on the notch. Size and position settings don't apply.
+    if bubble_is_notch(b.app_handle()) {
+        if let Some(monitor) = notch::notch_monitor(b) {
+            let sf = monitor.scale_factor();
+            let (w, h) = notch::window_size();
+            let width = (w * sf).round() as u32;
+            let height = (h * sf).round() as u32;
             let p = monitor.position();
-            (p.x, p.y, monitor_size.width, monitor_size.height)
-        };
-
-        // The user can move the bubble anywhere via Settings → Bubble position. We store
-        // that as a fraction (0..1) of the available work-area span for the window's
-        // top-left corner, so it survives resolution and size changes. With no custom
-        // position, fall back to the default bottom-right anchor.
-        let avail_w = (area_w as i32 - width as i32).max(0);
-        let avail_h = (area_h as i32 - height as i32).max(0);
-        let (x, y) = if let Some((fx, fy)) = saved_bubble_pos(b.app_handle()) {
-            (
-                area_x + (fx * avail_w as f64).round() as i32,
-                area_y + (fy * avail_h as f64).round() as i32,
-            )
-        } else {
-            // Keep the side gap; the work area already excludes the Dock, so the bottom gap
-            // is just a small breather (don't re-add the old taskbar-sized 72px margin).
-            let margin_x = (28.0 * adaptive_scale).round() as i32;
-            let margin_y = (12.0 * adaptive_scale).round() as i32;
-            (
-                area_x + area_w as i32 - width as i32 - margin_x,
-                area_y + area_h as i32 - height as i32 - margin_y,
-            )
-        };
-
-        let _ = b.set_size(tauri::Size::Physical(tauri::PhysicalSize { width, height }));
-        let _ = b.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y }));
+            let x = p.x + (monitor.size().width as i32 - width as i32) / 2;
+            let _ = b.set_size(tauri::Size::Physical(tauri::PhysicalSize { width, height }));
+            // On macOS the final frame is set in notch::apply_window_mode (AppKit would
+            // clamp this position to below the menu bar).
+            if !cfg!(target_os = "macos") {
+                let _ = b.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y: p.y }));
+            }
+        }
+        return;
     }
+    if let Ok(Some(monitor)) = b.current_monitor() {
+        // Bubble sizing is unaffected by the Dock/taskbar, so it keys off the FULL
+        // display size. A manual screen-size override (Settings) wins.
+        let adaptive_scale = adaptive_scale_for(b, &monitor);
+        let width = (logical_w * adaptive_scale).round();
+        let height = (logical_h * adaptive_scale).round();
+
+        // The orb sits in one of 8 spots (+ the user's left/right shift); a bigger
+        // window (menu, error) grows away from the screen edge so the orb stays put.
+        let (spot, nudge, nudge_y) = saved_placement(b.app_handle());
+        let orb = (placement::ORB_BOX * adaptive_scale).round();
+        let margin = placement::EDGE_MARGIN * adaptive_scale;
+        let orb_at = placement::orb_origin(
+            &spot,
+            work_area(&monitor),
+            orb,
+            margin,
+            nudge * monitor.scale_factor(),
+            nudge_y * monitor.scale_factor(),
+        );
+        let (x, y) = placement::window_origin(&spot, orb_at, orb, width, height);
+
+        let _ = b.set_size(tauri::Size::Physical(tauri::PhysicalSize {
+            width: width as u32,
+            height: height as u32,
+        }));
+        let _ = b.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
+            x: x.round() as i32,
+            y: y.round() as i32,
+        }));
+    }
+}
+
+/// Whether the bubble uses the "Notch island" style (Settings → Display, macOS only).
+fn bubble_is_notch(app: &tauri::AppHandle) -> bool {
+    if !cfg!(target_os = "macos") {
+        return false;
+    }
+    app.try_state::<DbState>()
+        .and_then(|db| {
+            let conn = db.0.lock().ok()?;
+            conn.query_row(
+                "SELECT value FROM settings WHERE key = 'bubble_style'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .ok()
+        })
+        .map(|v| v == "notch")
+        .unwrap_or(false)
 }
 
 /// Whether the user has hidden the floating bubble (Settings → Display).
@@ -505,6 +602,7 @@ pub fn show_bubble_window(app: &tauri::AppHandle) {
         place_bubble(&b, BUBBLE_IDLE_W, BUBBLE_IDLE_H);
         let _ = b.show();
         let _ = b.set_always_on_top(true);
+        notch::apply_window_mode(&b, bubble_is_notch(app));
     }
 }
 
@@ -825,9 +923,18 @@ pub async fn run_pipeline(
     )
     .ok();
 
-    // Inject
-    if let Err(e) = inject::inject_text_clipboard(text_to_inject).await {
+    // Inject. Check first whether anything can take text: if not (or the paste
+    // fails), show the card with a Copy button so the words aren't lost. We still
+    // paste either way in case the check is wrong.
+    let accepts_text = inject::focused_accepts_text();
+    let pasted = inject::inject_text_clipboard(text_to_inject.clone()).await;
+    if let Err(e) = &pasted {
         eprintln!("Injection failed: {}", e);
+    }
+    if pasted.is_err() || accepts_text == Some(false) {
+        let ah = app.clone();
+        let text = text_to_inject.clone();
+        let _ = app.run_on_main_thread(move || pastecard::show(&ah, &text));
     }
 
     app.emit("recording-stopped", ()).ok();
@@ -1414,6 +1521,7 @@ fn set_bubble_visible(app: tauri::AppHandle, visible: bool) -> Result<(), String
             place_bubble(&b, BUBBLE_IDLE_W, BUBBLE_IDLE_H);
             let _ = b.show();
             let _ = b.set_always_on_top(true);
+            notch::apply_window_mode(&b, bubble_is_notch(&app));
         } else {
             let _ = b.hide();
         }
@@ -1429,6 +1537,55 @@ fn set_earcons_enabled(app: tauri::AppHandle, enabled: bool) -> Result<(), Strin
     crate::earcon::set_sounds_enabled(enabled);
     let _ = app.emit("display-settings-changed", serde_json::json!({ "sounds": enabled }));
     Ok(())
+}
+
+/// Pick which start/stop sounds play (Settings → Display), and play the start cue
+/// so the user hears what they chose.
+#[tauri::command]
+fn set_sound_set(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    if !crate::earcon::is_known_sound_set(&id) {
+        return Err(format!("Unknown sound set: {id}"));
+    }
+    write_setting(&app, "sound_set", &id)?;
+    crate::earcon::set_sound_set(&id);
+    crate::earcon::preview_sound_set(&id);
+    Ok(())
+}
+
+/// The one "Animation" switch (Settings → Display): "screen" (floating orb), "notch"
+/// (the island, macOS only) or "off". Stored as the two settings the rest of the app
+/// already reads: `bubble_style` and `show_bubble`.
+#[tauri::command]
+fn set_bubble_mode(app: tauri::AppHandle, mode: String) -> Result<(), String> {
+    match mode.as_str() {
+        "screen" | "notch" => {
+            let style = if mode == "notch" { "notch" } else { "classic" };
+            write_setting(&app, "bubble_style", style)?;
+            let _ = app.emit("bubble-mode-changed", style);
+            set_bubble_visible(app.clone(), true)?;
+        }
+        "off" => set_bubble_visible(app.clone(), false)?,
+        _ => return Err(format!("Unknown bubble mode: {mode}")),
+    }
+    let adaptive = adaptive_tint_wanted(&app);
+    if adaptive {
+        tint::request_access();
+    }
+    tint::set_enabled(adaptive);
+    Ok(())
+}
+
+/// The on-screen orb always adapts its colour; the notch island is always black.
+fn adaptive_tint_wanted(app: &tauri::AppHandle) -> bool {
+    !bubble_is_notch(app) && !bubble_hidden(app)
+}
+
+
+/// Notch size in points (falls back to a typical notch on screens without one), so
+/// the island can match it exactly.
+#[tauri::command]
+fn get_notch_geometry() -> notch::NotchGeometry {
+    notch::geometry()
 }
 
 fn write_setting(app: &tauri::AppHandle, key: &str, value: &str) -> Result<(), String> {
@@ -1471,82 +1628,124 @@ fn set_bubble_size(app: tauri::AppHandle, size: String) -> Result<(), String> {
     Ok(())
 }
 
-/// Return the bubble's current position as a fraction (0..1) of the work area's
-/// available span. `None` if it's still at the default bottom-right anchor.
+/// The orb's spot and left/right shift (logical points), for Settings.
 #[tauri::command]
-fn get_bubble_position(app: tauri::AppHandle) -> Option<(f64, f64)> {
-    saved_bubble_pos(&app)
+fn get_bubble_placement(app: tauri::AppHandle) -> (String, f64, f64) {
+    saved_placement(&app)
 }
 
-/// Nudge the floating bubble by a fractional step (used by the Settings D-pad).
-/// `dx`/`dy` are deltas in work-area fractions; positive moves right/down. The new
-/// position is clamped to the visible work area, persisted, and applied immediately.
-/// Returns the new `(fx, fy)`.
-#[tauri::command]
-fn nudge_bubble(app: tauri::AppHandle, dx: f64, dy: f64) -> Option<(f64, f64)> {
-    let b = app.get_webview_window("bubble")?;
-    let monitor = b.current_monitor().ok()??;
-    let monitor_size = monitor.size();
-    let wa = monitor.work_area();
-    let (area_x, area_y, area_w, area_h) = if wa.size.width > 0 && wa.size.height > 0 {
-        (
-            wa.position.x,
-            wa.position.y,
-            wa.size.width as i32,
-            wa.size.height as i32,
-        )
-    } else {
-        let p = monitor.position();
-        (
-            p.x,
-            p.y,
-            monitor_size.width as i32,
-            monitor_size.height as i32,
-        )
-    };
-
-    let size = b.outer_size().ok()?;
-    let avail_w = (area_w - size.width as i32).max(1);
-    let avail_h = (area_h - size.height as i32).max(1);
-
-    // Seed from the saved fraction, or derive it from where the window sits right now
-    // (so the first nudge starts from the default bottom-right spot, not the corner).
-    let (cur_fx, cur_fy) = saved_bubble_pos(&app).unwrap_or_else(|| {
-        let pos = b.outer_position().unwrap_or(tauri::PhysicalPosition {
-            x: area_x + avail_w,
-            y: area_y + avail_h,
-        });
-        (
-            (pos.x - area_x) as f64 / avail_w as f64,
-            (pos.y - area_y) as f64 / avail_h as f64,
-        )
-    });
-
-    let fx = (cur_fx + dx).clamp(0.0, 1.0);
-    let fy = (cur_fy + dy).clamp(0.0, 1.0);
-
-    if let Some(db) = app.try_state::<DbState>() {
-        if let Ok(conn) = db.0.lock() {
-            let _ = conn.execute(
-                "INSERT OR REPLACE INTO settings (key, value) VALUES ('bubble_pos', ?1)",
-                rusqlite::params![format!("{:.4},{:.4}", fx, fy)],
-            );
-        }
-    }
-
-    let x = area_x + (fx * avail_w as f64).round() as i32;
-    let y = area_y + (fy * avail_h as f64).round() as i32;
-    let _ = b.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y }));
-    Some((fx, fy))
+fn store_placement(app: &tauri::AppHandle, spot: &str, nudge: f64, nudge_y: f64) -> Result<(), String> {
+    write_setting(app, "bubble_spot", spot)?;
+    write_setting(app, "bubble_nudge", &format!("{:.0}", nudge))?;
+    write_setting(app, "bubble_nudge_y", &format!("{:.0}", nudge_y))?;
+    let _ = app.emit(
+        "bubble-placement-changed",
+        serde_json::json!({ "spot": spot, "nudge": nudge, "nudge_y": nudge_y }),
+    );
+    Ok(())
 }
 
-/// Clear the custom bubble position and snap it back to the default bottom-right anchor.
+/// Put the orb in a spot with a left/right and up/down shift (Settings → Orb position).
 #[tauri::command]
-fn reset_bubble_position(app: tauri::AppHandle) {
-    if let Some(db) = app.try_state::<DbState>() {
-        if let Ok(conn) = db.0.lock() {
-            let _ = conn.execute("DELETE FROM settings WHERE key = 'bubble_pos'", []);
-        }
+fn set_bubble_placement(app: tauri::AppHandle, spot: String, nudge: f64, nudge_y: f64) -> Result<(), String> {
+    if !placement::is_spot(&spot) {
+        return Err(format!("Unknown spot: {spot}"));
     }
+    let clean = |v: f64| if v.is_finite() { v.clamp(-placement::NUDGE_MAX, placement::NUDGE_MAX) } else { 0.0 };
+    store_placement(&app, &spot, clean(nudge), clean(nudge_y))?;
     show_bubble_window(&app);
+    Ok(())
+}
+
+/// The spot nearest a physical point and where the orb-sized window would sit there
+/// (physical top-left), plus the orb size.
+fn snap_target(b: &tauri::WebviewWindow, cx: f64, cy: f64) -> Option<(&'static str, (f64, f64), f64)> {
+    let monitor = monitor_at(b, cx, cy)?;
+    let scale = adaptive_scale_for(b, &monitor);
+    let orb = (placement::ORB_BOX * scale).round();
+    let margin = placement::EDGE_MARGIN * scale;
+    let area = work_area(&monitor);
+    let spot = placement::nearest_spot(area, orb, margin, cx, cy);
+    let at = placement::orb_origin(spot, area, orb, margin, 0.0, 0.0);
+    Some((spot, at, orb))
+}
+
+/// Live drag: move the bubble window so its top-left is at (x, y) logical screen points.
+/// Near a spot the orb is pulled towards it, like a magnet.
+#[tauri::command]
+fn drag_bubble(app: tauri::AppHandle, x: f64, y: f64) {
+    let Some(b) = app.get_webview_window("bubble") else { return };
+    let sf = b.scale_factor().unwrap_or(1.0);
+    let Ok(size) = b.outer_size() else { return };
+    let (w, h) = (size.width as f64, size.height as f64);
+    let (mut px, mut py) = (x * sf, y * sf);
+    let (cx, cy) = (px + w / 2.0, py + h / 2.0);
+    if let Some((_, at, orb)) = snap_target(&b, cx, cy) {
+        let (sx, sy) = (at.0 + orb / 2.0, at.1 + orb / 2.0);
+        let d = ((sx - cx).powi(2) + (sy - cy).powi(2)).sqrt();
+        let reach = orb * 1.8;
+        if d < reach {
+            let k = (1.0 - d / reach).powi(2) * 0.85;
+            px += (sx - cx) * k;
+            py += (sy - cy) * k;
+        }
+    }
+    let _ = b.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
+        x: px.round() as i32,
+        y: py.round() as i32,
+    }));
+    // Show the drop guide and highlight the spot the orb will snap to.
+    placer::update(&app, &b, px + w / 2.0, py + h / 2.0);
+}
+
+/// The monitor containing a physical point, else the window's current monitor.
+fn monitor_at(b: &tauri::WebviewWindow, cx: f64, cy: f64) -> Option<tauri::Monitor> {
+    b.available_monitors()
+        .ok()?
+        .into_iter()
+        .find(|m| {
+            let (p, s) = (m.position(), m.size());
+            cx >= p.x as f64
+                && cx < p.x as f64 + s.width as f64
+                && cy >= p.y as f64
+                && cy < p.y as f64 + s.height as f64
+        })
+        .or_else(|| b.current_monitor().ok().flatten())
+}
+
+/// End of a drag: snap the orb to the spot nearest where it was dropped (on whichever
+/// screen it's on now), clear the shift, and return the spot.
+#[tauri::command]
+fn drop_bubble(app: tauri::AppHandle) -> Option<String> {
+    placer::hide(&app);
+    let b = app.get_webview_window("bubble")?;
+    let pos = b.outer_position().ok()?;
+    let size = b.outer_size().ok()?;
+    let (w, h) = (size.width as f64, size.height as f64);
+    let cx = pos.x as f64 + w / 2.0;
+    let cy = pos.y as f64 + h / 2.0;
+    let (spot, at, orb) = snap_target(&b, cx, cy)?;
+    store_placement(&app, spot, 0.0, 0.0).ok()?;
+    // Glide to the spot (ease-out with a touch of overshoot, ~280 ms), then let
+    // place_bubble set the exact final frame.
+    let (fx, fy) = (pos.x as f64, pos.y as f64);
+    let (tx, ty) = placement::window_origin(spot, at, orb, w, h);
+    let bw = b.clone();
+    std::thread::spawn(move || {
+        let back = |t: f64| {
+            let c = 1.4;
+            1.0 + (c + 1.0) * (t - 1.0).powi(3) + c * (t - 1.0).powi(2)
+        };
+        let frames = 17;
+        for i in 1..=frames {
+            let k = back(i as f64 / frames as f64);
+            let _ = bw.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
+                x: (fx + (tx - fx) * k).round() as i32,
+                y: (fy + (ty - fy) * k).round() as i32,
+            }));
+            std::thread::sleep(std::time::Duration::from_millis(16));
+        }
+        place_bubble(&bw, BUBBLE_IDLE_W, BUBBLE_IDLE_H);
+    });
+    Some(spot.to_string())
 }

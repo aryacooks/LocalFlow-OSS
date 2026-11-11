@@ -1,16 +1,16 @@
 /// earcon.rs — UI sound effects.
 ///
-/// Tones are synthesized in pure Rust to WAV bytes (shared across platforms) and
-/// played through the OS's native facility: PlaySoundW on Windows, `afplay` on
-/// macOS. This keeps a single `cpal` version in the dependency graph (cpal is used
-/// for *recording* in audio.rs) while still producing identical beeps everywhere.
-use std::f32::consts::PI;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::OnceLock;
+/// The sounds are short WAV files in `src-tauri/sounds/`, compiled into the binary. They
+/// were designed to sit with Wispr Flow / Willow style cues: short (70–180 ms), low
+/// (250–600 Hz) and soft, with the start a step higher than the stop so the pair reads
+/// as "on" then "off". The user picks a set in Settings → Display.
+///
+/// Playback is native per OS, so `cpal` stays recording-only: NSSound on macOS (each
+/// sound decoded once and kept, so a start cue lands on the key press instead of after
+/// a process launch), PlaySoundW on Windows, and paplay/aplay elsewhere.
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
-const SAMPLE_RATE: u32 = 22050;
-
-/// Master switch for UI beeps, toggled from Settings via `set_earcons_enabled`.
+/// Master switch for UI sounds, toggled from Settings via `set_earcons_enabled`.
 static SOUNDS_ENABLED: AtomicBool = AtomicBool::new(true);
 
 pub fn set_sounds_enabled(enabled: bool) {
@@ -21,112 +21,84 @@ fn sounds_enabled() -> bool {
     SOUNDS_ENABLED.load(Ordering::Relaxed)
 }
 
-static START_WAV: OnceLock<Vec<u8>> = OnceLock::new();
-static STOP_WAV: OnceLock<Vec<u8>> = OnceLock::new();
-static CANCEL_WAV: OnceLock<Vec<u8>> = OnceLock::new();
-
-/// Wrap raw mono i16 PCM samples in a minimal WAV container.
-fn pcm_to_wav(samples: &[i16], sample_rate: u32) -> Vec<u8> {
-    let mut data = Vec::with_capacity(samples.len() * 2);
-    for s in samples {
-        data.extend_from_slice(&s.to_le_bytes());
-    }
-    let data_len = data.len() as u32;
-    let bits_per_sample = 16u16;
-    let channels = 1u16;
-    let byte_rate = sample_rate * channels as u32 * bits_per_sample as u32 / 8;
-    let block_align = channels * bits_per_sample / 8;
-
-    let mut wav = Vec::with_capacity(44 + data.len());
-    wav.extend_from_slice(b"RIFF");
-    wav.extend_from_slice(&(36 + data_len).to_le_bytes());
-    wav.extend_from_slice(b"WAVE");
-    wav.extend_from_slice(b"fmt ");
-    wav.extend_from_slice(&16u32.to_le_bytes());
-    wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
-    wav.extend_from_slice(&channels.to_le_bytes());
-    wav.extend_from_slice(&sample_rate.to_le_bytes());
-    wav.extend_from_slice(&byte_rate.to_le_bytes());
-    wav.extend_from_slice(&block_align.to_le_bytes());
-    wav.extend_from_slice(&bits_per_sample.to_le_bytes());
-    wav.extend_from_slice(b"data");
-    wav.extend_from_slice(&data_len.to_le_bytes());
-    wav.extend(data);
-    wav
+struct SoundSet {
+    id: &'static str,
+    start: &'static [u8],
+    stop: &'static [u8],
 }
 
-/// Linear frequency sweep with fade-in / fade-out → WAV bytes.
-fn generate_sweep_wav(
-    start_freq: f32,
-    end_freq: f32,
-    duration_ms: u32,
-    sample_rate: u32,
-) -> Vec<u8> {
-    let num_samples = (sample_rate as f32 * (duration_ms as f32 / 1000.0)) as usize;
-    let mut samples = Vec::with_capacity(num_samples);
-    let duration_secs = duration_ms as f32 / 1000.0;
-    let fade_in = (sample_rate as f32 * 0.015) as usize;
-    let fade_out = (sample_rate as f32 * 0.030) as usize;
+/// Selectable sets. The first is the default.
+const SETS: &[SoundSet] = &[
+    SoundSet {
+        id: "wood-low",
+        start: include_bytes!("../sounds/wood-low-start.wav"),
+        stop: include_bytes!("../sounds/wood-low-stop.wav"),
+    },
+    SoundSet {
+        id: "wood",
+        start: include_bytes!("../sounds/wood-start.wav"),
+        stop: include_bytes!("../sounds/wood-stop.wav"),
+    },
+    SoundSet {
+        id: "wood-fifth",
+        start: include_bytes!("../sounds/wood-fifth-start.wav"),
+        stop: include_bytes!("../sounds/wood-fifth-stop.wav"),
+    },
+    SoundSet {
+        id: "bump",
+        start: include_bytes!("../sounds/bump-start.wav"),
+        stop: include_bytes!("../sounds/bump-stop.wav"),
+    },
+];
 
-    for i in 0..num_samples {
-        let t = i as f32 / sample_rate as f32;
-        let phase =
-            2.0 * PI * (start_freq * t + 0.5 * (end_freq - start_freq) * t * t / duration_secs);
-        let mut sample = phase.sin();
-        if i < fade_in {
-            sample *= i as f32 / fade_in as f32;
-        } else if i > num_samples.saturating_sub(fade_out) {
-            sample *= (num_samples - i) as f32 / fade_out as f32;
-        }
-        samples.push((sample * 14000.0) as i16);
-    }
-    pcm_to_wav(&samples, sample_rate)
+pub const DEFAULT_SOUND_SET: &str = "wood-low";
+
+/// Shared by every set: a dull two-step down, quieter than stop, so a discarded
+/// recording never sounds like a finished one.
+static CANCEL_WAV: &[u8] = include_bytes!("../sounds/cancel.wav");
+
+static ACTIVE_SET: AtomicU8 = AtomicU8::new(0);
+
+/// Select a sound set by id. Unknown ids fall back to the default.
+pub fn set_sound_set(id: &str) {
+    let idx = SETS.iter().position(|s| s.id == id).unwrap_or(0);
+    ACTIVE_SET.store(idx as u8, Ordering::Relaxed);
 }
 
-/// Bell-like "ting": two mixed high frequencies with exponential decay → WAV bytes.
-fn generate_ting_wav(sample_rate: u32) -> Vec<u8> {
-    let duration_ms = 150;
-    let num_samples = (sample_rate as f32 * (duration_ms as f32 / 1000.0)) as usize;
-    let mut samples = Vec::with_capacity(num_samples);
-    let (f1, f2) = (1200.0f32, 1500.0f32);
+pub fn is_known_sound_set(id: &str) -> bool {
+    SETS.iter().any(|s| s.id == id)
+}
 
-    for i in 0..num_samples {
-        let t = i as f32 / sample_rate as f32;
-        let decay = (-18.0 * t).exp();
-        let sample = 0.6 * (2.0 * PI * f1 * t).sin() + 0.4 * (2.0 * PI * f2 * t).sin();
-        samples.push((sample * decay * 14000.0) as i16);
-    }
-    pcm_to_wav(&samples, sample_rate)
+fn active() -> &'static SoundSet {
+    &SETS[ACTIVE_SET.load(Ordering::Relaxed) as usize % SETS.len()]
 }
 
 pub fn play_start_sound() {
-    if !sounds_enabled() {
-        return;
+    if sounds_enabled() {
+        let set = active();
+        backend::play(set.start, set.id, "start");
     }
-    backend::play(
-        START_WAV.get_or_init(|| generate_ting_wav(SAMPLE_RATE)),
-        "start",
-    );
 }
 
 pub fn play_stop_sound() {
-    if !sounds_enabled() {
-        return;
+    if sounds_enabled() {
+        let set = active();
+        backend::play(set.stop, set.id, "stop");
     }
-    backend::play(
-        STOP_WAV.get_or_init(|| generate_sweep_wav(659.25, 523.25, 120, SAMPLE_RATE)),
-        "stop",
-    );
 }
 
 pub fn play_cancel_sound() {
-    if !sounds_enabled() {
-        return;
+    if sounds_enabled() {
+        backend::play(CANCEL_WAV, "shared", "cancel");
     }
-    backend::play(
-        CANCEL_WAV.get_or_init(|| generate_sweep_wav(400.0, 200.0, 150, SAMPLE_RATE)),
-        "cancel",
-    );
+}
+
+/// Play a set's start cue regardless of the on/off switch — used when the user picks
+/// a set in Settings, so they hear what they chose.
+pub fn preview_sound_set(id: &str) {
+    if let Some(set) = SETS.iter().find(|s| s.id == id) {
+        backend::play(set.start, set.id, "start");
+    }
 }
 
 // ─── Platform playback backends ─────────────────────────────────────────────
@@ -136,8 +108,8 @@ mod backend {
     use windows::core::PCWSTR;
     use windows::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};
 
-    /// `wav` points into a 'static OnceLock buffer, so it stays valid for SND_ASYNC.
-    pub fn play(wav: &[u8], _name: &str) {
+    /// `wav` is compiled into the binary ('static), so it stays valid for SND_ASYNC.
+    pub fn play(wav: &'static [u8], _set: &str, _cue: &str) {
         unsafe {
             let pcwstr = PCWSTR::from_raw(wav.as_ptr() as *const u16);
             let flags = SND_MEMORY | SND_ASYNC | SND_NODEFAULT;
@@ -146,32 +118,65 @@ mod backend {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 mod backend {
-    use std::path::PathBuf;
+    use objc::runtime::{Object, BOOL, NO};
+    use objc::{class, msg_send, sel, sel_impl};
+    use once_cell::sync::Lazy;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
 
-    pub fn play(wav: &[u8], name: &str) {
-        let Some(path) = ensure_file(wav, name) else {
+    /// A retained NSSound. Only ever touched while holding the cache lock.
+    struct Sound(*mut Object);
+    unsafe impl Send for Sound {}
+
+    static CACHE: Lazy<Mutex<HashMap<String, Sound>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+
+    /// Decode once, keep the NSSound, and replay it: no process launch and no temp
+    /// file per cue. Never released — there are at most nine, a few KB each.
+    pub fn play(wav: &'static [u8], set: &str, cue: &str) {
+        let key = format!("{set}/{cue}");
+        let Ok(mut cache) = CACHE.lock() else { return };
+        let sound = cache.entry(key).or_insert_with(|| unsafe {
+            // alloc/init rather than the convenience constructors: this can run on a
+            // thread with no autorelease pool, and nothing here is autoreleased.
+            let data: *mut Object = msg_send![class!(NSData), alloc];
+            let data: *mut Object =
+                msg_send![data, initWithBytes: wav.as_ptr() length: wav.len()];
+            let snd: *mut Object = msg_send![class!(NSSound), alloc];
+            let snd: *mut Object = msg_send![snd, initWithData: data];
+            let _: () = msg_send![data, release]; // NSSound keeps its own reference
+            Sound(snd)
+        });
+        if sound.0.is_null() {
             return;
-        };
-        #[cfg(target_os = "macos")]
-        {
-            let _ = std::process::Command::new("afplay").arg(&path).spawn();
         }
-        #[cfg(not(target_os = "macos"))]
-        {
-            // Best-effort on other Unix (PulseAudio, then ALSA).
-            if std::process::Command::new("paplay")
-                .arg(&path)
-                .spawn()
-                .is_err()
-            {
-                let _ = std::process::Command::new("aplay").arg(&path).spawn();
+        unsafe {
+            // Restart from the top if the same cue is still ringing (fast toggles).
+            let _: BOOL = msg_send![sound.0, stop];
+            let ok: BOOL = msg_send![sound.0, play];
+            if ok == NO {
+                eprintln!("earcon: NSSound refused to play {set}/{cue}");
             }
         }
     }
+}
 
-    /// Write the WAV to a stable temp path once; reuse it on subsequent plays.
+#[cfg(all(not(windows), not(target_os = "macos")))]
+mod backend {
+    use std::path::PathBuf;
+
+    pub fn play(wav: &'static [u8], set: &str, cue: &str) {
+        let Some(path) = ensure_file(wav, &format!("{set}-{cue}")) else {
+            return;
+        };
+        // Best-effort: PulseAudio, then ALSA.
+        if std::process::Command::new("paplay").arg(&path).spawn().is_err() {
+            let _ = std::process::Command::new("aplay").arg(&path).spawn();
+        }
+    }
+
+    /// Write the WAV to a temp path named after the set, once; reuse it after.
     fn ensure_file(wav: &[u8], name: &str) -> Option<PathBuf> {
         let mut path = std::env::temp_dir();
         path.push(format!("localflow_{}.wav", name));
