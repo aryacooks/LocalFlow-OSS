@@ -35,7 +35,7 @@ const FALLBACK: NotchGeometry = NotchGeometry {
 /// sized for the widest state; the React side animates within it.
 pub const WING: f64 = 76.0;
 /// Extra transparent room under the notch, for the island's soft shadow.
-pub const BOTTOM_PAD: f64 = 10.0;
+pub const BOTTOM_PAD: f64 = 44.0; // room for the message row (DROP in NotchIsland.tsx) + shadow
 
 static GEOMETRY: Lazy<Mutex<Option<NotchGeometry>>> = Lazy::new(|| Mutex::new(None));
 
@@ -173,7 +173,10 @@ fn apply_appkit(b: &tauri::WebviewWindow, notch: bool) {
             let num: i64 = msg_send![ns, windowNumber];
             crate::tint::set_window_id(num.max(0) as u32);
             if !notch {
-                return; // Tauri's always-on-top level is right for the floating orb.
+                // kCGDockWindowLevel (20) + 1: the orb can be shifted over the Dock
+                // strip, and a plain floating window would sit behind the Dock.
+                let _: () = msg_send![ns, setLevel: 21i64];
+                return;
             }
             // NSMainMenuWindowLevel (24) + 3: above the menu bar and status items.
             let _: () = msg_send![ns, setLevel: 27i64];

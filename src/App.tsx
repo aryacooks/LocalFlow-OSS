@@ -272,18 +272,28 @@ export default function App() {
         <div className="sidebar-footer">
           {/* Opened through the opener plugin, not a plain link: a target="_blank"
               here would navigate the settings webview itself and strand the user. */}
-          <button
-            type="button"
-            className="theme-toggle report-bug"
-            onClick={() => openUrl(BUG_REPORT_URL).catch(console.error)}
-            onMouseEnter={() => bugRef.current?.startAnimation()}
-            onMouseLeave={() => bugRef.current?.stopAnimation()}
-            title="Found a bug? Tell me about it"
-            aria-label="Report a bug"
-          >
-            <BugIcon ref={bugRef} size={15} />
-            <span>Report</span>
-          </button>
+          <div className="report-row">
+            <button
+              type="button"
+              className="theme-toggle report-bug"
+              onClick={() => openUrl(BUG_REPORT_URL).catch(console.error)}
+              onMouseEnter={() => bugRef.current?.startAnimation()}
+              onMouseLeave={() => bugRef.current?.stopAnimation()}
+              title="Found a bug? Tell me about it"
+              aria-label="Report a bug"
+            >
+              <BugIcon ref={bugRef} size={15} />
+              <span>Report</span>
+            </button>
+            <button
+              type="button"
+              className="built-by"
+              onClick={() => openUrl("https://Aryab.in").catch(console.error)}
+              title="Aryab.in"
+            >
+              built by&nbsp;<strong>Arya</strong>
+            </button>
+          </div>
           <button
             type="button"
             className="theme-toggle"
@@ -345,25 +355,6 @@ export default function App() {
           <div className="titlebar-title">
             <h1>{title}</h1>
             <p>{subtitle}</p>
-          </div>
-          <div className="titlebar-actions" style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <a
-              href="https://Aryab.in"
-              target="_blank"
-              rel="noopener noreferrer"
-              style={{
-                fontSize: "11px",
-                textDecoration: "underline",
-                textUnderlineOffset: "2px",
-                color: "var(--accent)",
-                fontWeight: 500,
-                transition: "opacity 150ms ease"
-              }}
-              onMouseEnter={(e) => (e.currentTarget.style.opacity = "0.7")}
-              onMouseLeave={(e) => (e.currentTarget.style.opacity = "1")}
-            >
-              built by&nbsp;<span style={{ fontWeight: 600 }}>Arya</span>
-            </a>
           </div>
         </header>
 

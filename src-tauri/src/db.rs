@@ -35,6 +35,9 @@ pub struct DashboardStats {
     pub total_words: i64,
     pub words_today: i64,
     pub avg_wpm_7d: f64,
+    /// Average WPM over your most recent 5%, 25%, 50% and 100% of dictations.
+    #[serde(default)]
+    pub wpm_recent: Vec<f64>,
     pub streak_days: i64,
     pub longest_streak: i64,
     pub total_dictations: i64,
@@ -451,6 +454,33 @@ pub fn get_dashboard_stats(db: State<'_, DbState>) -> Result<DashboardStats, Str
         )
         .unwrap_or(0.0);
 
+    // WPM over the most recent 5 / 25 / 50 / 100 % of dictations (at least one each).
+    let timed: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM dictation_history WHERE privacy_mode=0 AND duration_secs > 0",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    let wpm_recent: Vec<f64> = [0.05, 0.25, 0.5, 1.0]
+        .iter()
+        .map(|p| {
+            if timed == 0 {
+                return 0.0;
+            }
+            let n = ((timed as f64 * p).ceil() as i64).max(1);
+            conn.query_row(
+                "SELECT CASE WHEN SUM(duration_secs) > 0 THEN SUM(word_count) / (SUM(duration_secs) / 60.0) ELSE 0 END
+                 FROM (SELECT word_count, duration_secs FROM dictation_history
+                       WHERE privacy_mode=0 AND duration_secs > 0
+                       ORDER BY timestamp DESC, id DESC LIMIT ?1)",
+                [n],
+                |r| r.get(0),
+            )
+            .unwrap_or(0.0)
+        })
+        .collect();
+
     // Streaks
     let (streak_days, longest_streak) = calculate_streaks(&conn);
 
@@ -467,6 +497,7 @@ pub fn get_dashboard_stats(db: State<'_, DbState>) -> Result<DashboardStats, Str
         total_words,
         words_today,
         avg_wpm_7d,
+        wpm_recent,
         streak_days,
         longest_streak,
         total_dictations,

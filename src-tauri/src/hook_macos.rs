@@ -47,8 +47,10 @@ pub fn refresh_mouse_binds(app: &AppHandle) {
         }
         "none".to_string()
     };
-    let instant = read("keybind_mouse_instant");
-    let toggle = read("keybind_mouse_toggle");
+    // A trigger switched off in Settings → Shortcuts acts as unset ("none") but keeps
+    // its button, so switching it back on restores it.
+    let instant = if crate::trigger_enabled(app, "keybind_mouse_instant_enabled") { read("keybind_mouse_instant") } else { "none".into() };
+    let toggle = if crate::trigger_enabled(app, "keybind_mouse_toggle_enabled") { read("keybind_mouse_toggle") } else { "none".into() };
     let fn_enabled = read("fn_quick_toggle") == "true";
     let was_enabled = FN_ENABLED.swap(fn_enabled, Ordering::Relaxed);
     #[cfg(target_os = "macos")]

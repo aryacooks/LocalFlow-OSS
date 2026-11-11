@@ -19,6 +19,8 @@ mod notch;
 mod placement;
 mod placer;
 mod pastecard;
+mod appicon;
+mod thermal;
 mod tint;
 mod pipeline;
 mod translit;
@@ -45,6 +47,15 @@ pub fn run() {
     let pipeline_state = Arc::new(PipelineState::new());
 
     tauri::Builder::default()
+        // Must be registered first. A second launch (login item + manual open, a
+        // double-click in Finder) would otherwise run a second copy: two hotkey hooks,
+        // two bubbles, two pastes. The new copy exits and the running one shows itself.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(win) = app.get_webview_window("main") {
+                win.show().ok();
+                win.set_focus().ok();
+            }
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
@@ -349,6 +360,8 @@ pub fn run() {
             set_bubble_size,
             get_bubble_placement,
             set_bubble_placement,
+            get_nudge_range,
+            appicon::get_app_icon,
             drag_bubble,
             drop_bubble,
             placer::get_placer_layout,
@@ -381,6 +394,17 @@ pub fn run() {
                 // macOS: clicking the Dock icon while the window is hidden re-shows it.
                 #[cfg(target_os = "macos")]
                 tauri::RunEvent::Reopen { .. } => {
+                    // A click on the paste card or the placement guide can activate
+                    // the app; that must not pop the settings window open.
+                    let overlay_up = ["card", "placer"].iter().any(|l| {
+                        _app_handle
+                            .get_webview_window(l)
+                            .map(|w| w.is_visible().unwrap_or(false))
+                            .unwrap_or(false)
+                    });
+                    if overlay_up {
+                        return;
+                    }
                     if let Some(win) = _app_handle.get_webview_window("main") {
                         let _ = win.show();
                         let _ = win.set_focus();
@@ -484,6 +508,19 @@ fn work_area(monitor: &tauri::Monitor) -> placement::Area {
     }
 }
 
+/// The whole monitor below the menu bar: how far the orb may be shifted. Unlike the
+/// work area it includes the Dock / taskbar strip, so the orb can sit right at the
+/// bottom or side edge (the bubble's window level keeps it above the Dock).
+fn free_area(monitor: &tauri::Monitor) -> placement::Area {
+    let p = monitor.position();
+    let (x, y) = (p.x as f64, p.y as f64);
+    let (w, h) = (monitor.size().width as f64, monitor.size().height as f64);
+    let wa = work_area(monitor);
+    // Keep below the macOS menu bar (the work area's top edge), nothing else.
+    let top = if cfg!(target_os = "macos") { wa.y.max(y) } else { y };
+    placement::Area { x, y: top, w, h: (y + h - top).max(1.0) }
+}
+
 /// Bubble scale (Settings size override, else the display heuristic) times DPI.
 fn adaptive_scale_for(b: &tauri::WebviewWindow, monitor: &tauri::Monitor) -> f64 {
     let base = user_scale_override(b.app_handle())
@@ -530,9 +567,10 @@ fn place_bubble(b: &tauri::WebviewWindow, logical_w: f64, logical_h: f64) {
         let (spot, nudge, nudge_y) = saved_placement(b.app_handle());
         let orb = (placement::ORB_BOX * adaptive_scale).round();
         let margin = placement::EDGE_MARGIN * adaptive_scale;
-        let orb_at = placement::orb_origin(
+        let orb_at = placement::orb_origin_free(
             &spot,
             work_area(&monitor),
+            free_area(&monitor),
             orb,
             margin,
             nudge * monitor.scale_factor(),
@@ -785,15 +823,7 @@ pub async fn run_pipeline(
             params.set_initial_prompt(&prompt);
         }
         state.full(params, &audio_data).map_err(|e| e.to_string())?;
-        let n = state.full_n_segments();
-        let mut text = String::new();
-        for i in 0..n {
-            if let Some(segment) = state.get_segment(i) {
-                if let Ok(seg) = segment.to_str() {
-                    text.push_str(seg);
-                }
-            }
-        }
+        let text = whisper::collect_segments(&state, &audio_data);
         Ok::<String, String>(whisper::strip_non_speech(&whisper::collapse_repetitions(
             &text,
         )))
@@ -923,19 +953,30 @@ pub async fn run_pipeline(
     )
     .ok();
 
-    // Inject. Check first whether anything can take text: if not (or the paste
-    // fails), show the card with a Copy button so the words aren't lost. We still
-    // paste either way in case the check is wrong.
-    let accepts_text = inject::focused_accepts_text();
+    // Inject, then check whether anything could have taken the text: if clearly not
+    // (or the paste failed), show the card with a Copy button so the words aren't lost.
     let pasted = inject::inject_text_clipboard(text_to_inject.clone()).await;
+    // Checked after the paste so it never delays typing; the paste doesn't move focus.
+    let accepts_text = tauri::async_runtime::spawn_blocking(inject::focused_accepts_text)
+        .await
+        .ok()
+        .flatten();
     if let Err(e) = &pasted {
         eprintln!("Injection failed: {}", e);
     }
-    if pasted.is_err() || accepts_text == Some(false) {
+    let landed = pasted.is_ok() && accepts_text != Some(false);
+    eprintln!("paste check: pasted_ok={} accepts_text={:?}", pasted.is_ok(), accepts_text);
+    if !landed {
         let ah = app.clone();
         let text = text_to_inject.clone();
         let _ = app.run_on_main_thread(move || pastecard::show(&ah, &text));
     }
+    // Tell the Dashboard where the text went (or that it went to the copy card).
+    app.emit(
+        "paste-result",
+        serde_json::json!({ "app_name": app_name, "app_exe": app_exe, "pasted": landed }),
+    )
+    .ok();
 
     app.emit("recording-stopped", ()).ok();
 }
@@ -1083,6 +1124,10 @@ pub struct SystemStats {
     pub system_memory_pct: f64,
     pub estimated_power_watts: f64,
     pub app_state: String,
+    /// Hottest CPU die sensor in °C (None where it can't be read).
+    pub cpu_temp_c: Option<f64>,
+    /// macOS thermal pressure: Normal / Warm / Hot / Critical.
+    pub thermal_state: Option<String>,
 }
 
 #[tauri::command]
@@ -1296,7 +1341,23 @@ async fn get_system_stats(
         system_memory_pct: sys_memory_pct,
         estimated_power_watts,
         app_state,
+        cpu_temp_c: thermal::cpu_temp_c(), // cached; a sensor read is ~1 ms
+        thermal_state: thermal::thermal_state().map(String::from),
     })
+}
+
+/// Whether a trigger is switched on in Settings → Shortcuts. Each trigger has an
+/// "<name>_enabled" setting; missing means on, so older installs keep working.
+pub fn trigger_enabled(app: &tauri::AppHandle, key: &str) -> bool {
+    if let Some(db_state) = app.try_state::<crate::db::DbState>() {
+        if let Ok(conn) = db_state.0.lock() {
+            return conn
+                .query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| r.get::<_, String>(0))
+                .map(|v| v != "false")
+                .unwrap_or(true);
+        }
+    }
+    true
 }
 
 pub fn register_global_toggle_shortcut(app: &tauri::AppHandle) -> Result<(), String> {
@@ -1332,6 +1393,7 @@ pub fn register_global_toggle_shortcut(app: &tauri::AppHandle) -> Result<(), Str
 
     static TOGGLE_SHORTCUT_HELD: std::sync::Mutex<bool> = std::sync::Mutex::new(false);
 
+    if trigger_enabled(app, "shortcut_toggle_enabled") {
     global_sc
         .on_shortcut(shortcut, move |app, _shortcut, event| {
             if event.state() == ShortcutState::Released {
@@ -1386,6 +1448,7 @@ pub fn register_global_toggle_shortcut(app: &tauri::AppHandle) -> Result<(), Str
             }
         })
         .map_err(|e| e.to_string())?;
+    }
 
     // ── Non-Windows (macOS): hold-to-talk via the same plugin (Pressed/Released). ──
     // On Windows, hold-to-talk is handled by the native low-level keyboard hook;
@@ -1414,6 +1477,8 @@ pub fn register_global_toggle_shortcut(app: &tauri::AppHandle) -> Result<(), Str
             Err(e) => {
                 eprintln!("Hold-to-talk: could not parse '{}': {}", hold_str, e);
             }
+            // Switched off in Settings → Shortcuts.
+            Ok(_) if !trigger_enabled(app, "keybind_instant_enabled") => {}
             // Skip if the hold combo collides with the toggle combo.
             Ok(_) if hold_str == shortcut_str => {
                 eprintln!(
@@ -1643,6 +1708,33 @@ fn store_placement(app: &tauri::AppHandle, spot: &str, nudge: f64, nudge_y: f64)
         serde_json::json!({ "spot": spot, "nudge": nudge, "nudge_y": nudge_y }),
     );
     Ok(())
+}
+
+/// How far the orb can shift from `spot` on its current screen, in logical points:
+/// [min_x, max_x, min_y, max_y, screen_w, screen_h]. Settings uses it for the sliders.
+#[tauri::command]
+fn get_nudge_range(app: tauri::AppHandle, spot: String) -> Option<[f64; 6]> {
+    let b = app.get_webview_window("bubble")?;
+    let monitor = b
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| b.primary_monitor().ok().flatten())?;
+    let sf = monitor.scale_factor();
+    let scale = adaptive_scale_for(&b, &monitor);
+    let orb = (placement::ORB_BOX * scale).round();
+    let margin = placement::EDGE_MARGIN * scale;
+    let spot = if placement::is_spot(&spot) { spot } else { placement::DEFAULT_SPOT.to_string() };
+    let (a, bx, c, d) = placement::nudge_range(&spot, work_area(&monitor), free_area(&monitor), orb, margin);
+    let size = monitor.size();
+    Some([
+        (a / sf).ceil(),
+        (bx / sf).floor(),
+        (c / sf).ceil(),
+        (d / sf).floor(),
+        size.width as f64 / sf,
+        size.height as f64 / sf,
+    ])
 }
 
 /// Put the orb in a spot with a left/right and up/down shift (Settings → Orb position).

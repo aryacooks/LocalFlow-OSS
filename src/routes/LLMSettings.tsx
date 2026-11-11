@@ -17,7 +17,6 @@ export default function LLMSettingsPage() {
   const [models, setModels] = useState<LlmModelInfo[]>([]);
   const [activeModel, setActiveModel] = useState("Llama-3.2-1B-Instruct-Q4_K_M.gguf");
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
-  const showBanner = true;
   
   // Action states — downloads live in the global store so progress survives navigating
   // away from this page (the backend keeps downloading regardless).
@@ -150,21 +149,6 @@ export default function LLMSettingsPage() {
 
   return (
     <div className="page" style={{ position: "relative", minHeight: "calc(100vh - 100px)" }}>
-      {showBanner && (
-        <div className="banner-card" style={{ backgroundImage: "url('/Local LLM Background.png')" }}>
-          <div className="banner-content">
-            <h2 className="banner-title">Cleaner text, <em>automatically</em>.</h2>
-            <p className="banner-desc">
-              Let the app tidy up after you. It sweeps out every "um" and "uh", fixes your punctuation, and untangles the sentences you said sideways. All of it happens quietly on your computer, with zero judgment.
-            </p>
-            <div className="banner-actions">
-              <span className="banner-tag">Bye-bye "um"</span>
-              <span className="banner-tag">Fixes punctuation</span>
-              <span className="banner-tag">Zero judgment</span>
-            </div>
-          </div>
-        </div>
-      )}
 
       <div className="page-header">
         <div>

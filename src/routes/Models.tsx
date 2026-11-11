@@ -13,32 +13,25 @@ function Switch({ checked, onChange }: { checked: boolean; onChange: () => void 
   );
 }
 
-const MODEL_COMPARISONS: Record<string, {
-  accuracy: string;
-  speed: string;
-  avgRam: string;
-}> = {
-  "base.en": {
-    accuracy: "Okay",
-    speed: "Very fast",
-    avgRam: "~160 MB"
-  },
-  "small.en": {
-    accuracy: "Good",
-    speed: "Fast",
-    avgRam: "~310 MB"
-  },
-  "medium.en": {
-    accuracy: "Very good",
-    speed: "Slower",
-    avgRam: "~660 MB"
-  },
-  "large-v3-turbo": {
-    accuracy: "Best",
-    speed: "Slowest",
-    avgRam: "~1.0 GB"
-  }
+// Relative scores (0–100) for the Speed / Accuracy meters, plus the RAM estimate.
+const MODEL_COMPARISONS: Record<string, { speed: number; accuracy: number; avgRam: string }> = {
+  "base.en": { speed: 96, accuracy: 55, avgRam: "~160 MB" },
+  "small.en": { speed: 82, accuracy: 74, avgRam: "~310 MB" },
+  "medium.en": { speed: 52, accuracy: 86, avgRam: "~660 MB" },
+  "large-v3-turbo": { speed: 40, accuracy: 97, avgRam: "~1.0 GB" },
 };
+
+/** One labelled meter: "Speed ▬▬▬▬▬▬▬───". */
+function Meter({ label, value, tone }: { label: string; value: number; tone: "ink" | "accent" }) {
+  return (
+    <div className="model-meter">
+      <span className="model-meter-label">{label}</span>
+      <span className="model-meter-track" role="meter" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={value}>
+        <span className={`model-meter-fill ${tone}`} style={{ width: `${value}%` }} />
+      </span>
+    </div>
+  );
+}
 
 // Multilingual models that expose the romanize (Hindi → English letters) toggle.
 const ROMANIZE_CAPABLE = ["large-v3-turbo"];
@@ -55,7 +48,6 @@ export default function ModelsPage() {
   const anyDownloading = Object.keys(modelDownloads).length > 0;
   const [autoRomanize, setAutoRomanize] = useState(true);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
-  const showBanner = true;
 
   const load = async () => {
     const list = await listModels();
@@ -135,21 +127,6 @@ export default function ModelsPage() {
 
   return (
     <div className="page">
-      {showBanner && (
-        <div className="banner-card" style={{ backgroundImage: "url('/hotorangish.png')" }}>
-          <div className="banner-content">
-            <h2 className="banner-title">Speech to text, <em>your</em> way.</h2>
-            <p className="banner-desc">
-              Pick the model that turns your voice into text. Small ones are quick but occasionally mishear you; big ones are sharper but take their sweet time. Either way, it all runs on your computer, with no internet, no account, and no one listening in.
-            </p>
-            <div className="banner-actions">
-              <span className="banner-tag">Voice in, text out</span>
-              <span className="banner-tag">Runs on your computer</span>
-              <span className="banner-tag">Works on airplane mode</span>
-            </div>
-          </div>
-        </div>
-      )}
 
       <div className="page-header">
         <div>
@@ -193,23 +170,14 @@ export default function ModelsPage() {
                 </div>
                 <p className="row-desc" style={{ margin: 0 }}>{model.description}</p>
                 
-                <div className="model-specs-grid">
-                  <div className="spec-item">
-                    <span className="spec-label">Accuracy</span>
-                    <span className="spec-value">{MODEL_COMPARISONS[model.id]?.accuracy || "N/A"}</span>
+                {MODEL_COMPARISONS[model.id] && (
+                  <div className="model-meters">
+                    <Meter label="Speed" value={MODEL_COMPARISONS[model.id].speed} tone="ink" />
+                    <Meter label="Accuracy" value={MODEL_COMPARISONS[model.id].accuracy} tone="accent" />
                   </div>
-                  <div className="spec-item">
-                    <span className="spec-label">File Size</span>
-                    <span className="spec-value">{formatSize(model.size_mb)}</span>
-                  </div>
-                  <div className="spec-item">
-                    <span className="spec-label">Processing RAM (est.)</span>
-                    <span className="spec-value">{MODEL_COMPARISONS[model.id]?.avgRam || `~${formatSize(model.ram_mb)}`}</span>
-                  </div>
-                  <div className="spec-item">
-                    <span className="spec-label">Speed</span>
-                    <span className="spec-value highlight">{MODEL_COMPARISONS[model.id]?.speed || "N/A"}</span>
-                  </div>
+                )}
+                <div className="model-meta">
+                  {formatSize(model.size_mb)} download · {MODEL_COMPARISONS[model.id]?.avgRam || `~${formatSize(model.ram_mb)}`} RAM
                 </div>
 
                 {status && (

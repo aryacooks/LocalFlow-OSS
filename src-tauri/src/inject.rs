@@ -363,46 +363,100 @@ pub fn focused_accepts_text() -> Option<bool> {
         };
 
         // Electron apps only expose their accessibility tree when asked; harmless elsewhere.
-        if let (AX_OK, Some(app)) = copy(sys_ref, "AXFocusedApplication") {
-            let key = CFString::new("AXManualAccessibility");
-            AXUIElementSetAttributeValue(
-                app.as_CFTypeRef() as AXUIElementRef,
-                key.as_concrete_TypeRef(),
-                CFBoolean::true_value().as_CFTypeRef(),
-            );
-        }
-
-        let (err, focused) = copy(sys_ref, "AXFocusedUIElement");
-        let focused = match (err, focused) {
-            (AX_OK, Some(f)) => f,
-            (AX_NO_VALUE, _) => return Some(false), // nothing focused at all
-            _ => return None,
+        let focused_app = match copy(sys_ref, "AXFocusedApplication") {
+            (AX_OK, Some(app)) => {
+                let key = CFString::new("AXManualAccessibility");
+                AXUIElementSetAttributeValue(
+                    app.as_CFTypeRef() as AXUIElementRef,
+                    key.as_concrete_TypeRef(),
+                    CFBoolean::true_value().as_CFTypeRef(),
+                );
+                Some(app)
+            }
+            _ => None,
         };
-        let el = focused.as_CFTypeRef() as AXUIElementRef;
 
-        if let (AX_OK, Some(role)) = copy(el, "AXRole") {
-            if let Some(role) = role.downcast::<CFString>() {
-                let role = role.to_string();
-                if matches!(role.as_str(), "AXTextField" | "AXTextArea" | "AXComboBox" | "AXSearchField") {
-                    return Some(true);
-                }
+        // Ask a few times: an Electron app (Claude, Slack, VS Code…) only builds its
+        // tree after the AXManualAccessibility request above, so the first answer can
+        // be "nothing focused" even with the cursor in a text box.
+        let mut verdict = None;
+        for attempt in 0..3 {
+            if attempt > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(120));
+            }
+            verdict = classify_focus(sys_ref, &copy);
+            if verdict != Some(false) {
+                return verdict;
             }
         }
-        // Rich editors (web contenteditable, code editors) report other roles but
-        // still have a text cursor.
-        if copy(el, "AXSelectedTextRange").0 == AX_OK {
-            return Some(true);
+        // Still "nothing focused". Many apps (Electron, games, custom views) never
+        // report a focused element even with the cursor in a text box, so only call
+        // it a miss when the app has no window in focus, or it's the Finder (the
+        // desktop). Anything else: assume the paste landed.
+        let Some(app) = focused_app else { return verdict };
+        let app_ref = app.as_CFTypeRef() as AXUIElementRef;
+        let has_window = matches!(copy(app_ref, "AXFocusedWindow"), (AX_OK, Some(_)));
+        let is_finder = match copy(app_ref, "AXTitle") {
+            (AX_OK, Some(t)) => t.downcast::<CFString>().map(|t| t.to_string() == "Finder").unwrap_or(false),
+            _ => false,
+        };
+        if !has_window || is_finder {
+            Some(false)
+        } else {
+            None
         }
-        if let (AX_OK, Some(v)) = copy(el, "AXEditable") {
-            if v.downcast::<CFBoolean>().map(bool::from).unwrap_or(false) {
+    }
+}
+
+/// One look at the focused element. Some(true) = clearly a text box, Some(false) =
+/// clearly nothing focused, None = can't tell (treated as "probably fine": the card
+/// only shows when we're sure the text had nowhere to go).
+#[cfg(target_os = "macos")]
+unsafe fn classify_focus(
+    sys_ref: *const std::ffi::c_void,
+    copy: &dyn Fn(*const std::ffi::c_void, &str) -> (i32, Option<core_foundation::base::CFType>),
+) -> Option<bool> {
+    use core_foundation::base::TCFType;
+    use core_foundation::boolean::CFBoolean;
+    use core_foundation::string::CFString;
+    const AX_OK: i32 = 0;
+    const AX_NO_VALUE: i32 = -25212;
+
+    let (err, focused) = copy(sys_ref, "AXFocusedUIElement");
+    let focused = match (err, focused) {
+        (AX_OK, Some(f)) => f,
+        (AX_NO_VALUE, _) => return Some(false), // nothing focused at all
+        _ => return None,
+    };
+    let el = focused.as_CFTypeRef() as *const std::ffi::c_void;
+
+    if let (AX_OK, Some(role)) = copy(el, "AXRole") {
+        if let Some(role) = role.downcast::<CFString>() {
+            if matches!(
+                role.to_string().as_str(),
+                "AXTextField" | "AXTextArea" | "AXComboBox" | "AXSearchField"
+            ) {
                 return Some(true);
             }
         }
-        Some(false)
     }
+    // Rich editors (web contenteditable, code editors, terminals) report other roles
+    // but still have a text cursor.
+    if copy(el, "AXSelectedTextRange").0 == AX_OK {
+        return Some(true);
+    }
+    if let (AX_OK, Some(v)) = copy(el, "AXEditable") {
+        if v.downcast::<CFBoolean>().map(bool::from).unwrap_or(false) {
+            return Some(true);
+        }
+    }
+    // Something is focused but it doesn't look like a text box. Many apps (terminals,
+    // canvases, custom editors) still take a paste, so don't claim it failed.
+    None
 }
 
 #[cfg(not(target_os = "macos"))]
 pub fn focused_accepts_text() -> Option<bool> {
     None
 }
+

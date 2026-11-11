@@ -43,6 +43,11 @@ export async function getDashboardStats() {
   return invoke<DashboardStats>("get_dashboard_stats");
 }
 
+/** The app's icon as a PNG data URL (macOS), or null. */
+export async function getAppIcon(appName: string, appExe: string) {
+  return invoke<string | null>("get_app_icon", { appName, appExe });
+}
+
 export async function getHistory(search?: string, limit?: number, offset?: number) {
   return invoke<DictationEntry[]>("get_history", { search, limit, offset });
 }
@@ -160,6 +165,11 @@ export async function getBubblePlacement() {
   return invoke<[string, number, number]>("get_bubble_placement");
 }
 
+/** [minX, maxX, minY, maxY, screenW, screenH] in logical points for a spot. */
+export async function getNudgeRange(spot: string) {
+  return invoke<[number, number, number, number, number, number] | null>("get_nudge_range", { spot });
+}
+
 export async function setBubblePlacement(spot: string, nudge: number, nudgeY: number) {
   return invoke<void>("set_bubble_placement", { spot, nudge, nudgeY });
 }
@@ -231,6 +241,8 @@ export interface DashboardStats {
   total_words: number;
   words_today: number;
   avg_wpm_7d: number;
+  /** WPM over the most recent 5%, 25%, 50% and 100% of dictations. */
+  wpm_recent?: number[];
   streak_days: number;
   longest_streak: number;
   total_dictations: number;
@@ -287,6 +299,8 @@ export interface SystemStats {
   system_memory_pct: number;
   estimated_power_watts: number;
   app_state: string;
+  cpu_temp_c?: number | null;
+  thermal_state?: string | null;
 }
 
 export async function getSystemStats() {

@@ -228,6 +228,79 @@ pub fn collapse_repetitions(text: &str) -> String {
         .join(" ")
 }
 
+/// Phrases Whisper invents on silence, breath or room noise. It learned them from
+/// subtitle files, where quiet stretches are captioned "Thank you." or "Thanks for
+/// watching!". Compared after lowercasing and dropping punctuation.
+const STOCK_HALLUCINATIONS: &[&str] = &[
+    "thank you",
+    "thank you so much",
+    "thank you very much",
+    "thank you for watching",
+    "thanks for watching",
+    "thank you for listening",
+    "thanks for listening",
+    "thank you for watching and see you next time",
+    "please subscribe",
+    "subscribe to my channel",
+    "like and subscribe",
+    "see you next time",
+    "see you in the next video",
+    "bye",
+    "bye bye",
+    "you",
+    "thanks",
+];
+
+/// True if `text` is nothing but one of Whisper's stock silence phrases.
+pub fn is_stock_hallucination(text: &str) -> bool {
+    let norm: String = text
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '\'' { c } else { ' ' })
+        .collect();
+    let norm = norm.split_whitespace().collect::<Vec<_>>().join(" ");
+    !norm.is_empty() && STOCK_HALLUCINATIONS.contains(&norm.as_str())
+}
+
+/// RMS of `audio` between two Whisper timestamps (centiseconds), 16 kHz.
+fn span_rms(audio: &[f32], t0: i64, t1: i64) -> f32 {
+    let a = ((t0.max(0) as usize) * 160).min(audio.len());
+    let b = ((t1.max(0) as usize) * 160).min(audio.len());
+    if b <= a {
+        return 0.0;
+    }
+    let s = &audio[a..b];
+    (s.iter().map(|x| x * x).sum::<f32>() / s.len() as f32).sqrt()
+}
+
+/// Whether a decoded segment should be kept. A stock phrase ("Thank you.") is dropped
+/// when Whisper itself thinks the stretch probably wasn't speech, or the audio under it
+/// is quiet. A "thank you" you actually say out loud is loud and confident, so it stays.
+pub fn keep_segment(text: &str, no_speech_prob: f32, rms: f32) -> bool {
+    if !is_stock_hallucination(text) {
+        return true;
+    }
+    no_speech_prob < 0.2 && rms >= 0.02
+}
+
+/// Join all decoded segments, dropping hallucinated stock phrases (see `keep_segment`).
+/// Shared by both transcription paths.
+pub fn collect_segments(state: &whisper_rs::WhisperState, audio: &[f32]) -> String {
+    let mut out = String::new();
+    for i in 0..state.full_n_segments() {
+        let Some(seg) = state.get_segment(i) else { continue };
+        let Ok(text) = seg.to_str() else { continue };
+        let nsp = seg.no_speech_probability();
+        let rms = span_rms(audio, seg.start_timestamp(), seg.end_timestamp());
+        if keep_segment(text, nsp, rms) {
+            out.push_str(text);
+        } else {
+            eprintln!("dropped hallucination {:?} (no_speech={:.2}, rms={:.4})", text.trim(), nsp, rms);
+        }
+    }
+    out
+}
+
 /// Strip Whisper's subtitle-style non-speech artifacts from a raw transcription.
 ///
 /// Removes bracketed tags — `[BLANK_AUDIO]`, `(Clapping)`, `(Upbeat music)`, `{music}` —
@@ -612,16 +685,7 @@ pub async fn transcribe_audio(
             .full(params, &audio_data[..])
             .map_err(|e| format!("Transcription failed: {}", e))?;
 
-        let num_segments = state.full_n_segments();
-        let mut transcription = String::new();
-
-        for i in 0..num_segments {
-            if let Some(segment) = state.get_segment(i) {
-                if let Ok(text) = segment.to_str() {
-                    transcription.push_str(text);
-                }
-            }
-        }
+        let transcription = collect_segments(&state, &audio_data);
 
         // Backstops: collapse any decoder repetition loop, then strip bracketed non-speech
         // tags and drop the result if only punctuation/whitespace remains (a stray "."
@@ -700,6 +764,21 @@ pub fn delete_model(app: AppHandle, model_id: String) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn stock_thank_you_dropped_on_quiet_audio() {
+        use super::{is_stock_hallucination, keep_segment};
+        assert!(is_stock_hallucination(" Thank you."));
+        assert!(is_stock_hallucination("Thanks for watching!"));
+        assert!(!is_stock_hallucination("Thank you for the update, see you Monday."));
+        // Hallucinated over silence / flagged as non-speech -> dropped.
+        assert!(!keep_segment(" Thank you.", 0.05, 0.004));
+        assert!(!keep_segment(" Thank you.", 0.6, 0.08));
+        // Actually said it, clearly -> kept.
+        assert!(keep_segment(" Thank you.", 0.02, 0.08));
+        // Ordinary speech is never touched.
+        assert!(keep_segment(" Send the report.", 0.9, 0.0));
+    }
+
     use super::collapse_repetitions;
 
     /// Resident set size of this process, in MB. macOS `ps` reports RSS in KB.

@@ -17,8 +17,9 @@ pub const DEFAULT_SPOT: &str = "br";
 pub const ORB_BOX: f64 = 64.0;
 /// Gap between the orb box and the screen edge, logical points (before scaling).
 pub const EDGE_MARGIN: f64 = 6.0;
-/// Limit for the left/right shift slider, logical points.
-pub const NUDGE_MAX: f64 = 600.0;
+/// Sanity limit for the stored shifts, logical points. The real limit is the screen
+/// edge (see `nudge_range`).
+pub const NUDGE_MAX: f64 = 4000.0;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Area {
@@ -59,6 +60,37 @@ pub fn orb_origin(spot: &str, area: Area, orb: f64, margin: f64, nudge: f64, nud
         _ => max_y,
     };
     ((x + nudge).clamp(min_x, max_x), (y + nudge_y).clamp(min_y, max_y))
+}
+
+/// Like `orb_origin`, but the shift may carry the orb anywhere inside `bounds` (the
+/// whole screen below the menu bar), right up to the edge and over the Dock/taskbar
+/// strip. The spot itself still comes from the work area.
+pub fn orb_origin_free(
+    spot: &str,
+    area: Area,
+    bounds: Area,
+    orb: f64,
+    margin: f64,
+    nudge: f64,
+    nudge_y: f64,
+) -> (f64, f64) {
+    let (bx, by) = orb_origin(spot, area, orb, margin, 0.0, 0.0);
+    let (lo_x, hi_x, lo_y, hi_y) = nudge_range(spot, area, bounds, orb, margin);
+    (bx + nudge.clamp(lo_x, hi_x), by + nudge_y.clamp(lo_y, hi_y))
+}
+
+/// How far the orb can be shifted from its spot before it hits a screen edge:
+/// (min_x, max_x, min_y, max_y), same units as the inputs.
+pub fn nudge_range(spot: &str, area: Area, bounds: Area, orb: f64, margin: f64) -> (f64, f64, f64, f64) {
+    let (bx, by) = orb_origin(spot, area, orb, margin, 0.0, 0.0);
+    let max_x = (bounds.x + bounds.w - orb).max(bounds.x);
+    let max_y = (bounds.y + bounds.h - orb).max(bounds.y);
+    (
+        (bounds.x - bx).min(0.0),
+        (max_x - bx).max(0.0),
+        (bounds.y - by).min(0.0),
+        (max_y - by).max(0.0),
+    )
 }
 
 /// Top-left of a `w`×`h` window that keeps the orb box at `orb_at`, growing away from
@@ -118,6 +150,18 @@ mod tests {
         assert_eq!(orb_origin("ml", A, 60.0, 6.0, 0.0, -100.0).1, 25.0 + (975.0 - 60.0) / 2.0 - 100.0);
         assert_eq!(orb_origin("br", A, 60.0, 6.0, 0.0, 200.0).1, 934.0);
         assert_eq!(orb_origin("tl", A, 60.0, 6.0, 0.0, -50.0).1, 31.0);
+    }
+
+    #[test]
+    fn free_shift_reaches_the_screen_edge() {
+        // Full screen below a 25px menu bar; the work area also loses a 75px Dock.
+        let screen = Area { x: 0.0, y: 25.0, w: 1600.0, h: 1050.0 };
+        let work = Area { x: 0.0, y: 25.0, w: 1600.0, h: 975.0 };
+        let (lo_x, hi_x, lo_y, hi_y) = nudge_range("br", work, screen, 60.0, 6.0);
+        assert_eq!((hi_x, hi_y), (6.0, 81.0));
+        assert_eq!((lo_x, lo_y), (-1534.0, -909.0));
+        assert_eq!(orb_origin_free("br", work, screen, 60.0, 6.0, 900.0, 900.0), (1540.0, 1015.0));
+        assert_eq!(orb_origin_free("br", work, screen, 60.0, 6.0, -20.0, 30.0), (1514.0, 964.0));
     }
 
     #[test]

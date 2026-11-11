@@ -5,14 +5,23 @@
 /// words aren't lost. It sits next to the orb, under the notch in notch mode, or at
 /// the bottom centre when the animation is off. It never takes focus.
 use once_cell::sync::Lazy;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use tauri::{Emitter, Manager};
 
 use crate::placement;
 
-const CARD_W: f64 = 360.0;
-const CARD_H: f64 = 176.0;
+/// 20% smaller than the design size; the page scales itself to match (zoom 0.8).
+const CARD_W: f64 = 320.0;
+const CARD_H: f64 = 186.0;
 const GAP: f64 = 8.0;
+/// Seconds the card stays up (the clock pauses while the pointer is over it).
+const LIFETIME: f64 = 10.0;
+
+/// Bumped on every show/hide so an older countdown stops itself.
+static GEN: AtomicU64 = AtomicU64::new(0);
+/// Whether LocalFlow's own window was the one in use when the card appeared.
+static MAIN_WAS_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 static TEXT: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None));
 
@@ -47,6 +56,11 @@ pub fn show(app: &tauri::AppHandle, text: &str) {
         *t = Some(text.to_string());
     }
     let Some(w) = app.get_webview_window("card") else { return };
+    let main_focused = app
+        .get_webview_window("main")
+        .map(|m| m.is_visible().unwrap_or(false) && m.is_focused().unwrap_or(false))
+        .unwrap_or(false);
+    MAIN_WAS_ACTIVE.store(main_focused, Ordering::SeqCst);
     if let Some((x, y, sf)) = position(app) {
         let _ = w.set_size(tauri::Size::Physical(tauri::PhysicalSize {
             width: (CARD_W * sf).round() as u32,
@@ -60,6 +74,46 @@ pub fn show(app: &tauri::AppHandle, text: &str) {
     let _ = w.show();
     let _ = w.set_always_on_top(true);
     let _ = app.emit_to("card", "paste-card", text);
+    start_countdown(app.clone());
+}
+
+/// Hide the card after LIFETIME seconds of the pointer not being over it. Runs here
+/// rather than in the webview: a non-focused window's page doesn't reliably get timer
+/// ticks or mouse-leave events. Sends (fraction left, paused) for the countdown ring.
+fn start_countdown(app: tauri::AppHandle) {
+    let gen = GEN.fetch_add(1, Ordering::SeqCst) + 1;
+    std::thread::spawn(move || {
+        let tick = 0.1;
+        let mut left = LIFETIME;
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis((tick * 1000.0) as u64));
+            if GEN.load(Ordering::SeqCst) != gen {
+                return;
+            }
+            let Some(w) = app.get_webview_window("card") else { return };
+            if !w.is_visible().unwrap_or(false) {
+                return;
+            }
+            let hovered = match (app.cursor_position(), w.outer_position(), w.outer_size()) {
+                (Ok(c), Ok(p), Ok(s)) => {
+                    c.x >= p.x as f64
+                        && c.x < p.x as f64 + s.width as f64
+                        && c.y >= p.y as f64
+                        && c.y < p.y as f64 + s.height as f64
+                }
+                _ => false,
+            };
+            if !hovered {
+                left -= tick;
+            }
+            let _ = app.emit_to("card", "paste-card-left", ((left / LIFETIME).max(0.0), hovered));
+            if left <= 0.0 {
+                GEN.fetch_add(1, Ordering::SeqCst);
+                let _ = w.hide();
+                return;
+            }
+        }
+    });
 }
 
 /// Physical top-left for the card and the monitor's DPI scale.
@@ -93,9 +147,10 @@ fn position(app: &tauri::AppHandle) -> Option<(f64, f64, f64)> {
     let (spot, nudge, nudge_y) = crate::saved_placement(app);
     let scale = crate::adaptive_scale_for(&b, &monitor);
     let orb = (placement::ORB_BOX * scale).round();
-    let (ox, oy) = placement::orb_origin(
+    let (ox, oy) = placement::orb_origin_free(
         &spot,
         area,
+        crate::free_area(&monitor),
         orb,
         placement::EDGE_MARGIN * scale,
         nudge * sf,
@@ -123,7 +178,35 @@ pub fn get_paste_card() -> Option<String> {
 
 #[tauri::command]
 pub fn hide_paste_card(app: tauri::AppHandle) {
+    GEN.fetch_add(1, Ordering::SeqCst);
     if let Some(w) = app.get_webview_window("card") {
         let _ = w.hide();
     }
+    give_focus_back(&app);
+}
+
+/// Clicking the card makes macOS activate LocalFlow (and raise its settings window).
+/// Unless the user was really in that window, hand focus straight back to the app
+/// they were dictating into.
+fn give_focus_back(app: &tauri::AppHandle) {
+    #[cfg(target_os = "macos")]
+    {
+        let main_was_used = MAIN_WAS_ACTIVE.load(Ordering::SeqCst);
+        let main_visible = app
+            .get_webview_window("main")
+            .map(|m| m.is_visible().unwrap_or(false))
+            .unwrap_or(false);
+        if !(main_was_used && main_visible) {
+            let _ = app.run_on_main_thread(|| unsafe {
+                use objc::runtime::Object;
+                use objc::{class, msg_send, sel, sel_impl};
+                let nsapp: *mut Object = msg_send![class!(NSApplication), sharedApplication];
+                if !nsapp.is_null() {
+                    let _: () = msg_send![nsapp, deactivate];
+                }
+            });
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = app;
 }

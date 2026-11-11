@@ -61,12 +61,22 @@ function friendlyError(error: unknown): string {
   return raw;
 }
 
+export interface LastTranscript {
+  raw: string;
+  cleaned: string;
+  appName?: string;
+  appExe?: string;
+  /** undefined while pasting; false when it went to the copy card instead. */
+  pasted?: boolean;
+}
+
 interface AppState {
   isRecording: boolean;
   isProcessing: boolean;
   privacyMode: boolean;
   language: string;
-  lastTranscript: { raw: string; cleaned: string } | null;
+  /** The latest dictation, where it was headed, and (once known) whether it pasted. */
+  lastTranscript: LastTranscript | null;
   lastError: string | null;
   amplitude: { rms: number; bars: number[] };
   theme: Theme;
@@ -80,7 +90,7 @@ interface AppState {
   setIsProcessing: (v: boolean) => void;
   setPrivacyMode: (v: boolean) => void;
   setLanguage: (v: string) => void;
-  setLastTranscript: (t: { raw: string; cleaned: string } | null) => void;
+  setLastTranscript: (t: LastTranscript | null) => void;
   clearLastError: () => void;
   setAmplitude: (a: { rms: number; bars: number[] }) => void;
 
@@ -265,7 +275,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const unlisten3 = await listen("processing-started", () => {
       set({ isProcessing: true });
     });
-    const unlisten4 = await listen<{ raw?: string; cleaned?: string; error?: string }>(
+    const unlisten4 = await listen<{ raw?: string; cleaned?: string; error?: string; app_name?: string }>(
       "processing-done",
       (event) => {
         set({ isProcessing: false });
@@ -279,9 +289,25 @@ export const useAppStore = create<AppState>((set, get) => ({
             lastTranscript: {
               raw: event.payload.raw || "",
               cleaned: event.payload.cleaned,
+              appName: event.payload.app_name || undefined,
             },
           });
         }
+      }
+    );
+    const unlistenPaste = await listen<{ app_name?: string; app_exe?: string; pasted?: boolean }>(
+      "paste-result",
+      (event) => {
+        const t = get().lastTranscript;
+        if (!t) return;
+        set({
+          lastTranscript: {
+            ...t,
+            appName: event.payload.app_name || t.appName,
+            appExe: event.payload.app_exe || t.appExe,
+            pasted: !!event.payload.pasted,
+          },
+        });
       }
     );
     // Keep incognito (privacy) state in sync when toggled from the bubble or tray.
@@ -307,6 +333,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       unlisten2();
       unlisten3();
       unlisten4();
+      unlistenPaste();
       unlisten5();
       unlisten6();
     };

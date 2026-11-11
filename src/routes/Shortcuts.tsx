@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { AlertTriangle, Check, ExternalLink, X } from "lucide-react";
 import { getSetting, setSetting, reloadGlobalShortcut, getPermissionStatus, requestInputMonitoringPermission, openPrivacySettings, type PermissionStatus } from "../lib/ipc";
-import { keyLabel, shortcutLabel } from "../lib/utils";
+import { keyLabel } from "../lib/utils";
 import ShieldCheck from "../components/ui/shield-check";
 
 function getWindowsVkCode(code: string, keyCode: number): number {
@@ -21,13 +21,30 @@ function getWindowsVkCode(code: string, keyCode: number): number {
 }
 
 // Lightweight on/off switch matching the one used on the Settings page.
-function Switch({ checked, onChange }: { checked: boolean; onChange: () => void }) {
+function Switch({ checked, onChange, label, disabled }: { checked: boolean; onChange: () => void; label?: string; disabled?: boolean }) {
   return (
-    <button className={`switch ${checked ? "on" : ""}`} onClick={onChange} aria-pressed={checked}>
+    <button className={`switch ${checked ? "on" : ""}`} onClick={onChange} role="switch" aria-checked={checked} aria-label={label} disabled={disabled}>
       <span />
     </button>
   );
 }
+
+// Short names for keycaps.
+const mouseShort: Record<string, string> = {
+  middle: "Middle click",
+  right: "Right click",
+  button4: "Mouse 4",
+  button5: "Mouse 5",
+};
+
+const TRIGGER_KEYS = [
+  "shortcut_toggle_enabled",
+  "keybind_instant_enabled",
+  "keybind_mouse_toggle_enabled",
+  "keybind_mouse_instant_enabled",
+  "cancel_esc_enabled",
+] as const;
+type TriggerKey = (typeof TRIGGER_KEYS)[number];
 
 const mouseNameMap: Record<string, string> = {
   none: "Disabled",
@@ -43,8 +60,18 @@ export default function ShortcutsPage() {
   const [mouseToggle, setMouseToggle] = useState("none");
   const [mouseInstant, setMouseInstant] = useState("none");
   const [fnEnabled, setFnEnabled] = useState(false);
+  // Per-trigger on/off (Settings keys "<trigger>_enabled"; missing = on).
+  const [enabled, setEnabled] = useState<Record<TriggerKey, boolean>>({
+    shortcut_toggle_enabled: true,
+    keybind_instant_enabled: true,
+    keybind_mouse_toggle_enabled: true,
+    keybind_mouse_instant_enabled: true,
+    cancel_esc_enabled: true,
+  });
   const [permissions, setPermissions] = useState<PermissionStatus | null>(null);
   const [saveError, setSaveError] = useState("");
+  // Rows render once settings are read, so switches don't flick from off to on.
+  const [loaded, setLoaded] = useState(false);
 
   // Re-binding capture state
   // Types: toggle_key | instant_key | toggle_mouse | instant_mouse
@@ -52,7 +79,6 @@ export default function ShortcutsPage() {
   const [recordedKeys, setRecordedKeys] = useState<Array<{ key: string; code: string; keyCode: number }>>([]);
   const [recordedMouse, setRecordedMouse] = useState<{ button: string; name: string } | null>(null);
 
-  const showBanner = true;
 
   const loadSettings = async () => {
     const toggle = await getSetting("shortcut_toggle");
@@ -68,6 +94,23 @@ export default function ShortcutsPage() {
     if (mInstant) setMouseInstant(mInstant);
 
     setFnEnabled((await getSetting("fn_quick_toggle")) === "true");
+
+    const flags = await Promise.all(TRIGGER_KEYS.map((k) => getSetting(k)));
+    setEnabled(Object.fromEntries(TRIGGER_KEYS.map((k, i) => [k, flags[i] !== "false"])) as Record<TriggerKey, boolean>);
+    setLoaded(true);
+  };
+
+  // Switch one trigger on/off; the backend re-registers so it takes effect at once.
+  const toggleTrigger = async (key: TriggerKey) => {
+    const next = !enabled[key];
+    setEnabled((e) => ({ ...e, [key]: next }));
+    try {
+      await setSetting(key, String(next));
+      await reloadGlobalShortcut();
+    } catch (error) {
+      console.error(error);
+      setEnabled((e) => ({ ...e, [key]: !next }));
+    }
   };
 
   // Fn is an extra trigger on macOS; the other shortcuts keep working alongside it.
@@ -84,7 +127,7 @@ export default function ShortcutsPage() {
   };
 
   useEffect(() => {
-    loadSettings().catch(console.error);
+    loadSettings().catch(console.error).finally(() => setLoaded(true));
   }, []);
 
   useEffect(() => {
@@ -273,12 +316,17 @@ export default function ShortcutsPage() {
       await openPrivacySettings("input-monitoring").catch(() => {});
     }
 
+    // Setting a button also switches that trigger on.
     if (bindingType === "toggle_mouse") {
       await setSetting("keybind_mouse_toggle", recordedMouse.button);
+      await setSetting("keybind_mouse_toggle_enabled", "true");
       setMouseToggle(recordedMouse.button);
+      setEnabled((e) => ({ ...e, keybind_mouse_toggle_enabled: true }));
     } else if (bindingType === "instant_mouse") {
       await setSetting("keybind_mouse_instant", recordedMouse.button);
+      await setSetting("keybind_mouse_instant_enabled", "true");
       setMouseInstant(recordedMouse.button);
+      setEnabled((e) => ({ ...e, keybind_mouse_instant_enabled: true }));
     }
     // Refresh the backend's in-memory mouse-bind cache so the new trigger takes
     // effect immediately (the tap reads the cache, not the DB).
@@ -287,38 +335,6 @@ export default function ShortcutsPage() {
     setBindingType(null);
     setRecordedMouse(null);
   };
-
-  const handleDisableMouseBind = async (type: "toggle" | "instant") => {
-    if (type === "toggle") {
-      await setSetting("keybind_mouse_toggle", "none");
-      setMouseToggle("none");
-    } else {
-      await setSetting("keybind_mouse_instant", "none");
-      setMouseInstant("none");
-    }
-    await reloadGlobalShortcut();
-  };
-
-  // Compact mouse-button labels for the banner summary tag.
-  const shortMouseLabel = (v: string): string | null => {
-    switch (v) {
-      case "middle": return "Middle click";
-      case "right": return "Right click";
-      case "button4": return "Mouse 4";
-      case "button5": return "Mouse 5";
-      default: return null;
-    }
-  };
-
-  // Reflect the actual configured mouse triggers (toggle + instant), de-duped. Falls
-  // back to a neutral label when no mouse button is bound.
-  const mouseTagLabel = (() => {
-    const parts = [shortMouseLabel(mouseToggle), shortMouseLabel(mouseInstant)].filter(
-      (p): p is string => p !== null
-    );
-    if (parts.length === 0) return "No mouse trigger";
-    return Array.from(new Set(parts)).join(" & ");
-  })();
 
   const renderKeycaps = (shortcutStr: string) => {
     return (
@@ -481,21 +497,6 @@ export default function ShortcutsPage() {
         </div>
       )}
 
-      {showBanner && (
-        <div className="banner-card" style={{ backgroundImage: "url('/Shortcuts Background.png')" }}>
-          <div className="banner-content">
-            <h2 className="banner-title">One key to <em>rule</em> them all.</h2>
-            <p className="banner-desc">
-              Pick the keys or mouse buttons that start and stop dictation. Set it once, then talk to type anywhere. Your keyboard finally gets a break, and so do your fingers.
-            </p>
-            <div className="banner-actions">
-              <span className="banner-tag">{shortcutLabel(shortcutToggle)} Toggle</span>
-              <span className="banner-tag">{shortcutLabel(keybindKeyboardName)} Instant</span>
-              <span className="banner-tag">{mouseTagLabel}</span>
-            </div>
-          </div>
-        </div>
-      )}
 
       <div className="page-header">
         <div>
@@ -511,76 +512,80 @@ export default function ShortcutsPage() {
         </section>
       )}
 
-      {/* SECTION 1: KEYBOARD SHORTCUTS */}
-      <section className="section-label" style={{ marginBottom: 6 }}>1. Keyboard hotkeys</section>
-      <section className="glass-panel" style={{ marginBottom: 18, display: "flex", flexDirection: "column", gap: 12 }}>
-        
-        {/* Fn quick toggle (macOS only) */}
-        {permissions?.is_macos && (
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid var(--separator-soft)", paddingBottom: 12 }}>
-            <div>
-              <div className="setting-title">Fn Quick Toggle</div>
-              <div className="setting-desc" style={{ marginTop: 2 }}>Hold Fn to talk. Double-tap to keep recording; press Fn again to finish.</div>
+      {loaded && (<>
+      {/* PRIMARY: the Fn key (macOS) */}
+      {permissions?.is_macos && (
+        <section className={`glass-panel fn-hero ${fnEnabled ? "" : "is-off"}`} style={{ marginBottom: 18 }}>
+          <div className="fn-hero-key" aria-hidden="true">fn</div>
+          <div className="fn-hero-body">
+            <div className="fn-hero-title">
+              Fn key <span className="fn-hero-badge">Primary</span>
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              {renderKeycaps("Fn")}
-              <Switch checked={fnEnabled} onChange={toggleFn} />
+            <div className="fn-gestures">
+              <div className="fn-gesture">
+                <span className="fn-gesture-keys"><kbd className="keycap">Fn</kbd></span>
+                <span><b>Hold</b> to talk, let go to type</span>
+              </div>
+              <div className="fn-gesture is-main">
+                <span className="fn-gesture-keys"><kbd className="keycap" aria-label="Fn twice">Fn<sup className="fn-sq">2</sup></kbd></span>
+                <span><b>Double-tap</b> to go hands-free · tap Fn again to stop</span>
+              </div>
+            </div>
+          </div>
+          <Switch checked={fnEnabled} onChange={toggleFn} label="Fn key" />
+        </section>
+      )}
+
+      {/* SECTION 1: KEYBOARD */}
+      <section className="section-label" style={{ marginBottom: 6 }}>{permissions?.is_macos ? "More shortcuts" : "Keyboard"}</section>
+      <section className="glass-panel shortcut-list" style={{ marginBottom: 18 }}>
+        <div className={`shortcut-row ${enabled.shortcut_toggle_enabled ? "" : "is-off"}`}>
+          <div>
+            <div className="setting-title">Toggle</div>
+            <div className="setting-desc">Press to start, press again to stop</div>
+          </div>
+          <div className="shortcut-controls">
+            {renderKeycaps(shortcutToggle)}
+            <button className="button" onClick={() => setBindingType("toggle_key")}>Change</button>
+            <Switch checked={enabled.shortcut_toggle_enabled} onChange={() => toggleTrigger("shortcut_toggle_enabled")} label="Toggle shortcut" />
+          </div>
+        </div>
+
+        <div className={`shortcut-row ${enabled.keybind_instant_enabled ? "" : "is-off"}`}>
+          <div>
+            <div className="setting-title">Hold to talk</div>
+            <div className="setting-desc">Hold the keys, let go to type</div>
+          </div>
+          <div className="shortcut-controls">
+            {renderKeycaps(keybindKeyboardName)}
+            <button className="button" onClick={() => setBindingType("instant_key")}>Change</button>
+            <Switch checked={enabled.keybind_instant_enabled} onChange={() => toggleTrigger("keybind_instant_enabled")} label="Hold-to-talk shortcut" />
+          </div>
+        </div>
+
+        {/* Esc-to-cancel exists only in the Windows keyboard hook. */}
+        {permissions && !permissions.is_macos && (
+          <div className={`shortcut-row ${enabled.cancel_esc_enabled ? "" : "is-off"}`}>
+            <div>
+              <div className="setting-title">Cancel</div>
+              <div className="setting-desc">Stop and throw away the recording</div>
+            </div>
+            <div className="shortcut-controls">
+              {renderKeycaps("Esc")}
+              <Switch checked={enabled.cancel_esc_enabled} onChange={() => toggleTrigger("cancel_esc_enabled")} label="Esc to cancel" />
             </div>
           </div>
         )}
-
-        {/* Toggle Dictation */}
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <div>
-            <div className="setting-title">Toggle Dictation</div>
-            <div className="setting-desc" style={{ marginTop: 2 }}>Press combo to start recording, press again to stop.</div>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            {renderKeycaps(shortcutToggle)}
-            <button className="button" onClick={() => setBindingType("toggle_key")}>
-              Change
-            </button>
-          </div>
-        </div>
-
-        {/* Instant Dictation */}
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderTop: "1px solid var(--separator-soft)", paddingTop: 12 }}>
-          <div>
-            <div className="setting-title">Instant Dictation (Hold to Talk)</div>
-            <div className="setting-desc" style={{ marginTop: 2 }}>Hold keys together to speak, release them to transcribe.</div>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            {renderKeycaps(keybindKeyboardName)}
-            <button className="button" onClick={() => setBindingType("instant_key")}>
-              Change
-            </button>
-          </div>
-        </div>
-
-        {/* Escape note */}
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderTop: "1px solid var(--separator-soft)", paddingTop: 12 }}>
-          <div>
-            <div className="setting-title">Cancel Dictation</div>
-            <div className="setting-desc" style={{ marginTop: 2 }}>Instantly stops and discards recording without transcribing.</div>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 12, paddingRight: 6 }}>
-            {renderKeycaps("Esc")}
-          </div>
-        </div>
-
       </section>
 
-      {/* SECTION 2: MOUSE TRIGGERS */}
-      <section className="section-label" style={{ marginBottom: 6 }}>2. Mouse button triggers</section>
-      <section className="glass-panel" style={{ marginBottom: 18, display: "flex", flexDirection: "column", gap: 12 }}>
+      {/* SECTION 2: MOUSE */}
+      <section className="section-label" style={{ marginBottom: 6 }}>Mouse</section>
+      <section className="glass-panel shortcut-list" style={{ marginBottom: 18 }}>
         {permissions?.is_macos && !permissions.input_monitoring && (
           <div className="mac-callout" style={{ color: "var(--warning)", borderBottom: "1px solid var(--separator-soft)", paddingBottom: 12 }}>
             <AlertTriangle size={16} />
             <div style={{ flex: 1 }}>
-              <div className="setting-title">Allow Input Monitoring for mouse triggers</div>
-              <div className="setting-desc">
-                Keyboard shortcuts already work. macOS needs this extra permission only if you want a mouse button to start dictation.
-              </div>
+              <div className="setting-title">Mouse buttons need Input Monitoring</div>
             </div>
             <button
               className="button"
@@ -589,59 +594,39 @@ export default function ShortcutsPage() {
                 await openPrivacySettings("input-monitoring").catch(() => {});
               }}
             >
-              Open Settings <ExternalLink size={12} />
+              Allow <ExternalLink size={12} />
             </button>
           </div>
         )}
-        
-        {/* Toggle Dictation Mouse */}
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <div>
-            <div className="setting-title">Toggle Dictation Trigger</div>
-            <div className="setting-desc" style={{ marginTop: 2 }}>Click mouse button to start/stop dictation.</div>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ fontSize: 13, color: mouseToggle === "none" ? "var(--secondary)" : "var(--accent)", fontWeight: 500, marginRight: 4 }}>
-              {mouseNameMap[mouseToggle]}
-            </span>
-            {mouseToggle !== "none" && (
-              <button className="button danger" onClick={() => handleDisableMouseBind("toggle")}>
-                Disable
-              </button>
-            )}
-            <button className="button" onClick={() => setBindingType("toggle_mouse")}>
-              Configure
-            </button>
-          </div>
-        </div>
 
-        {/* Instant Dictation Mouse */}
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderTop: "1px solid var(--separator-soft)", paddingTop: 12 }}>
-          <div>
-            <div className="setting-title">Instant Dictation Trigger (Hold to Talk)</div>
-            <div className="setting-desc" style={{ marginTop: 2 }}>Hold mouse button to talk, release it to transcribe.</div>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ fontSize: 13, color: mouseInstant === "none" ? "var(--secondary)" : "var(--accent)", fontWeight: 500, marginRight: 4 }}>
-              {mouseNameMap[mouseInstant]}
-            </span>
-            {mouseInstant !== "none" && (
-              <button className="button danger" onClick={() => handleDisableMouseBind("instant")}>
-                Disable
-              </button>
-            )}
-            <button className="button" onClick={() => setBindingType("instant_mouse")}>
-              Configure
-            </button>
-          </div>
-        </div>
-
+        {([
+          { type: "toggle_mouse", key: "keybind_mouse_toggle_enabled", title: "Toggle", desc: "Click to start, click again to stop", value: mouseToggle },
+          { type: "instant_mouse", key: "keybind_mouse_instant_enabled", title: "Hold to talk", desc: "Hold the button, let go to type", value: mouseInstant },
+        ] as const).map((m) => {
+          const set = m.value !== "none";
+          const on = set && enabled[m.key];
+          return (
+            <div key={m.type} className={`shortcut-row ${on ? "" : "is-off"}`}>
+              <div>
+                <div className="setting-title">{m.title}</div>
+                <div className="setting-desc">{m.desc}</div>
+              </div>
+              <div className="shortcut-controls">
+                {set ? renderKeycaps(mouseShort[m.value] ?? m.value) : <span className="setting-desc">Not set</span>}
+                <button className="button" onClick={() => setBindingType(m.type)}>{set ? "Change" : "Set"}</button>
+                <Switch checked={on} disabled={!set} onChange={() => toggleTrigger(m.key)} label={`Mouse ${m.title}`} />
+              </div>
+            </div>
+          );
+        })}
       </section>
+
+      </>)}
 
       <section className="glass-panel mac-callout" style={{ border: "1px solid var(--separator-soft)" }}>
         <ShieldCheck size={16} color="var(--success)" loop />
         <p className="row-desc" style={{ margin: 0 }}>
-          Your shortcuts work everywhere on your computer, every app, from a Word doc to the Roblox game you're definitely not playing right now.
+          Works in every app.
         </p>
       </section>
     </div>

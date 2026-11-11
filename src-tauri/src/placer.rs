@@ -134,6 +134,8 @@ fn show_at(app: &tauri::AppHandle, bubble: &tauri::WebviewWindow, cx: f64, cy: f
         // re-ordered to the front of that level.
         let _ = bubble.set_always_on_top(false);
         let _ = bubble.set_always_on_top(true);
+        // That resets the level to "floating"; put it back above the Dock.
+        crate::notch::apply_window_mode(bubble, false);
     }
     if changed {
         let _ = app.emit_to("placer", "placer-layout", st.layout.clone());

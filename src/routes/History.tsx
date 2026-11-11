@@ -1,110 +1,140 @@
 import { useCallback, useEffect, useState } from "react";
-import { ChevronDown, ChevronUp, Clipboard, Search, Trash2 } from "lucide-react";
-import { clearHistory, deleteHistoryEntry, DictationEntry, getHistory, getSetting, setSetting } from "../lib/ipc";
+import { Check, ChevronDown, Clipboard, Search, Trash2 } from "lucide-react";
+import { clearHistory, deleteHistoryEntry, DictationEntry, getAppIcon, getHistory, getSetting, setSetting } from "../lib/ipc";
 import { useAppStore } from "../lib/store";
+import { appColor } from "../lib/utils";
 
-// Vibrant mid-tone palette that stays legible on both light and dark themes.
-const APP_PALETTE = [
-  "#E8632A", "#3B82F6", "#10B981", "#8B5CF6", "#EF4444", "#F59E0B",
-  "#14B8A6", "#EC4899", "#6366F1", "#22C55E", "#F97316", "#06B6D4",
-];
-
-// Deterministic color per app, so each app always gets the same distinct hue.
-function appColor(entry: DictationEntry): string {
-  const key = (entry.app_exe || entry.app_name || "").trim().toLowerCase();
-  if (!key) return "#9aa0a6"; // neutral gray for unknown / untracked
-  let h = 0;
-  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
-  return APP_PALETTE[h % APP_PALETTE.length];
+/** "localflow" and "LocalFlow" are the same app: show one tidy name. */
+function displayName(entry: DictationEntry): string {
+  const n = (entry.app_name || "").replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g, "").trim();
+  if (!n || n.toLowerCase() === "unknown") return "Unknown app";
+  if (/^localflow$/i.test(n)) return "LocalFlow";
+  return n === n.toLowerCase() ? n.charAt(0).toUpperCase() + n.slice(1) : n;
 }
 
-function formatDate(ts: string) {
-  try {
-    return new Date(ts).toLocaleString("en-IN", {
-      day: "numeric",
-      month: "short",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  } catch {
-    return ts;
+// Stored timestamps are UTC ("YYYY-MM-DD HH:MM:SS"); show them in local time.
+function parseTs(ts: string): Date {
+  const d = new Date(ts.includes("T") ? ts : ts.replace(" ", "T") + "Z");
+  return Number.isNaN(d.getTime()) ? new Date(ts) : d;
+}
+
+function dayLabel(d: Date): string {
+  const today = new Date();
+  const start = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const diff = Math.round((start(today) - start(d)) / 86400000);
+  if (diff === 0) return "Today";
+  if (diff === 1) return "Yesterday";
+  return d.toLocaleDateString(undefined, {
+    weekday: "short", day: "numeric", month: "short",
+    ...(d.getFullYear() !== today.getFullYear() ? { year: "numeric" } : {}),
+  });
+}
+
+const timeOf = (d: Date) => d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+
+// One lookup per app, shared by every row that shows it.
+const iconCache = new Map<string, Promise<string | null>>();
+function iconFor(entry: DictationEntry): Promise<string | null> {
+  const key = `${entry.app_name}|${entry.app_exe}`;
+  let p = iconCache.get(key);
+  if (!p) {
+    p = getAppIcon(entry.app_name, entry.app_exe).catch(() => null);
+    iconCache.set(key, p);
   }
+  return p;
+}
+
+/** The app's real icon (macOS), or a letter badge in the app's colour. */
+function AppIcon({ entry }: { entry: DictationEntry }) {
+  const [src, setSrc] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    iconFor(entry).then((s) => { if (live) setSrc(s); });
+    return () => { live = false; };
+  }, [entry.app_name, entry.app_exe]);
+  if (src) return <img className="history-icon" src={src} alt="" />;
+  const color = appColor(entry.app_exe || entry.app_name || "");
+  return (
+    <span className="history-icon history-icon-letter" style={{ background: color }}>
+      {displayName(entry).charAt(0).toUpperCase()}
+    </span>
+  );
 }
 
 function HistoryRow({ entry, onDelete }: { entry: DictationEntry; onDelete: (id: number) => void }) {
   const [expanded, setExpanded] = useState(false);
-  const color = appColor(entry);
+  const [copied, setCopied] = useState(false);
+  const when = parseTs(entry.timestamp);
+  const text = entry.cleaned_text;
+
+  const copy = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!text) return;
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    }).catch(console.error);
+  };
 
   return (
-    <article className="history-card" style={{ borderLeft: `3px solid ${color}` }}>
-      <button className="history-summary" onClick={() => setExpanded((v) => !v)}>
-        <span
-          className="badge"
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 6,
-            background: `${color}1a`,
-            border: `1px solid ${color}55`,
-          }}
-        >
-          <span style={{ width: 7, height: 7, borderRadius: "50%", background: color, flexShrink: 0 }} />
-          {entry.app_name || "Unknown"}
-        </span>
-        <span className="truncate" style={{ fontSize: 13, color: entry.cleaned_text ? "var(--label)" : "var(--tertiary)", fontStyle: entry.cleaned_text ? "normal" : "italic" }}>
-          {entry.cleaned_text || "(Transcript omitted - history disabled)"}
-        </span>
-        <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <span className="subtle" style={{ fontSize: 12 }}>
-            {entry.word_count}w · {Math.round(entry.duration_secs)}s
-          </span>
-          {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-        </span>
-      </button>
+    <article className={`history-row ${expanded ? "is-open" : ""}`}>
+      <div className="history-summary" role="button" tabIndex={0}
+        onClick={() => setExpanded((v) => !v)}
+        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setExpanded((v) => !v); } }}>
+        <AppIcon entry={entry} />
+        <div className="history-main">
+          <div className="history-meta">
+            <span className="history-app">{displayName(entry)}</span>
+            <span className="history-time">{timeOf(when)}</span>
+          </div>
+          <p className={`history-text ${text ? "" : "is-empty"} ${expanded ? "is-full" : ""}`}>
+            {text || "Text not saved (history was off)"}
+          </p>
+        </div>
+        <div className="history-side">
+          <span className="history-stats">{entry.word_count} words · {Math.round(entry.duration_secs)}s</span>
+          {text && (
+            <button className="history-iconbtn" onClick={copy} title={copied ? "Copied" : "Copy text"} aria-label="Copy text">
+              {copied ? <Check size={14} /> : <Clipboard size={14} />}
+            </button>
+          )}
+          <ChevronDown size={15} className="history-chevron" />
+        </div>
+      </div>
 
       {expanded && (
-        <div style={{ padding: "0 12px 12px" }}>
-          <div style={{ borderTop: "1px solid var(--separator-soft)", paddingTop: 12 }}>
-            <div className="section-label">Cleaned transcript</div>
-            <p style={{ margin: 0, color: entry.cleaned_text ? "var(--label)" : "var(--tertiary)", fontSize: 14, lineHeight: "22px", fontStyle: entry.cleaned_text ? "normal" : "italic" }}>
-              {entry.cleaned_text || "(Text content was not saved because history saving was disabled for this session. Only word count and duration statistics were recorded.)"}
-            </p>
-          </div>
-
+        <div className="history-detail">
           {entry.raw_text && entry.raw_text !== entry.cleaned_text && (
-            <div style={{ marginTop: 12 }}>
-              <div className="section-label">Raw transcript</div>
-              <p
-                style={{
-                  margin: 0,
-                  color: "var(--secondary)",
-                  fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
-                  fontSize: 12,
-                  lineHeight: "18px",
-                }}
-              >
-                {entry.raw_text}
-              </p>
+            <div>
+              <div className="section-label">Before cleanup</div>
+              <p className="history-raw">{entry.raw_text}</p>
             </div>
           )}
-
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12 }}>
-            <button className="button" disabled={!entry.cleaned_text} onClick={() => entry.cleaned_text && navigator.clipboard.writeText(entry.cleaned_text)}>
-              <Clipboard size={14} />
-              Copy
-            </button>
+          <div className="history-actions">
+            <span className="subtle">
+              {when.toLocaleString(undefined, { day: "numeric", month: "short", year: "numeric", hour: "numeric", minute: "2-digit" })}
+              {entry.language ? ` · ${entry.language}` : ""}
+            </span>
             <button className="button danger" onClick={() => onDelete(entry.id)}>
               <Trash2 size={14} />
               Delete
             </button>
-            <span className="subtle" style={{ marginLeft: "auto", fontSize: 12 }}>
-              {entry.language} · {formatDate(entry.timestamp)}
-            </span>
           </div>
         </div>
       )}
     </article>
   );
+}
+
+function groupByDay(entries: DictationEntry[]): [string, DictationEntry[]][] {
+  const out: [string, DictationEntry[]][] = [];
+  for (const e of entries) {
+    const label = dayLabel(parseTs(e.timestamp));
+    const last = out[out.length - 1];
+    if (last && last[0] === label) last[1].push(e);
+    else out.push([label, [e]]);
+  }
+  return out;
 }
 
 export default function HistoryPage() {
@@ -113,7 +143,6 @@ export default function HistoryPage() {
   const [loading, setLoading] = useState(true);
   const [saveHistoryEnabled, setSaveHistoryEnabled] = useState(true);
   const { lastTranscript } = useAppStore();
-  const showBanner = true;
 
   const loadSetting = useCallback(async () => {
     try {
@@ -157,21 +186,6 @@ export default function HistoryPage() {
 
   return (
     <div className="page">
-      {showBanner && (
-        <div className="banner-card" style={{ backgroundImage: "url('/hotredish.png')" }}>
-          <div className="banner-content">
-            <h2 className="banner-title">Every word, remembered <em>locally</em>.</h2>
-            <p className="banner-desc">
-              A complete record of everything you've dictated, kept only on this device. Search by keyword to find an old note, reread exactly what you said, or delete any entry for good. Nothing is uploaded, synced, or visible to anyone but you.
-            </p>
-            <div className="banner-actions">
-              <span className="banner-tag">Stored on this device</span>
-              <span className="banner-tag">Instant keyword search</span>
-              <span className="banner-tag">Never leaves your computer</span>
-            </div>
-          </div>
-        </div>
-      )}
 
       <div className="page-header">
         <div>
@@ -216,11 +230,18 @@ export default function HistoryPage() {
           <p>{search ? "Try a different term." : "Recorded dictations will appear here after your first session."}</p>
         </section>
       ) : (
-        <section>
-          {entries.map((entry) => (
-            <HistoryRow key={entry.id} entry={entry} onDelete={handleDelete} />
+        <div className="history-groups">
+          {groupByDay(entries).map(([label, items]) => (
+            <section key={label} className="history-group">
+              <h3 className="history-day">{label}</h3>
+              <div className="history-list">
+                {items.map((entry) => (
+                  <HistoryRow key={entry.id} entry={entry} onDelete={handleDelete} />
+                ))}
+              </div>
+            </section>
           ))}
-        </section>
+        </div>
       )}
     </div>
   );

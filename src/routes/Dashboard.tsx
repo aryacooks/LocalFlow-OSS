@@ -1,22 +1,24 @@
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import {
-  Bar,
-  BarChart,
   Cell,
   Line,
   LineChart,
+  Pie,
+  PieChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis,
 } from "recharts";
-import { Mic, Timer, TrendingUp, Cpu, Zap, Activity, Scissors, Hourglass, MemoryStick } from "lucide-react";
+import { Mic, Timer, TrendingUp, Cpu, Zap, Activity, Scissors, Hourglass, MemoryStick, Thermometer, Check, X } from "lucide-react";
+import { AppBadge, cleanAppName } from "../components/AppBadge";
 import InfoCircleIcon from "../components/ui/info-circle-icon";
 import { DashboardStats, getDashboardStats, getSystemStats, SystemStats, getSetting, setSetting, WordsPerDay } from "../lib/ipc";
 import { keyLabel } from "../lib/utils";
-import { useAppStore } from "../lib/store";
+import { useAppStore, type LastTranscript } from "../lib/store";
 
-const CHART_COLORS = ["#007aff", "#34c759", "#5ac8fa", "#ff9500", "#af52de", "#8e8e93"];
+// Donut slices: brand orange first, then calm neutrals so the top app stands out.
+const CHART_COLORS = ["var(--accent)", "#3f7cff", "#2f9e6e", "#a26bd6", "#e0a33a", "#8e8e93"];
 
 const IS_MAC = typeof navigator !== "undefined" && /mac/i.test(navigator.userAgent);
 
@@ -98,17 +100,21 @@ function totalsFor(days: WordsPerDay[], period: Period, today = new Date()) {
   return { words, dictations, minutesSaved: words / TYPING_WPM };
 }
 
-type Bucket = { label: string; words: number; dictations: number };
+type Bucket = { label: string; words: number; dictations: number; minutes: number; wpm: number | null };
 
 /** Roll the daily series into chart buckets, keeping empty periods so gaps show. */
 function bucketSeries(days: WordsPerDay[], grain: Grain, today = new Date()): Bucket[] {
   const byKey = new Map(days.map((d) => [d.date, d]));
+  // Speaking minutes come back from each day's words / wpm, so a bucket's speed is
+  // weighted by how much was said, not a plain average of daily speeds.
+  const addDay = (bucket: Bucket, day: WordsPerDay) => {
+    bucket.words += day.words;
+    bucket.dictations += day.dictations ?? 0;
+    if (day.wpm > 0) bucket.minutes += day.words / day.wpm;
+  };
   const add = (bucket: Bucket, key: string) => {
     const day = byKey.get(key);
-    if (day) {
-      bucket.words += day.words;
-      bucket.dictations += day.dictations ?? 0;
-    }
+    if (day) addDay(bucket, day);
   };
   const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   const out: Bucket[] = [];
@@ -116,7 +122,7 @@ function bucketSeries(days: WordsPerDay[], grain: Grain, today = new Date()): Bu
   if (grain === "daily") {
     for (let i = 13; i >= 0; i--) {
       const d = new Date(today.getFullYear(), today.getMonth(), today.getDate() - i);
-      const bucket: Bucket = { label: `${d.getDate()} ${months[d.getMonth()]}`, words: 0, dictations: 0 };
+      const bucket: Bucket = { label: `${d.getDate()} ${months[d.getMonth()]}`, words: 0, dictations: 0, minutes: 0, wpm: null };
       add(bucket, dateKey(d));
       out.push(bucket);
     }
@@ -125,7 +131,7 @@ function bucketSeries(days: WordsPerDay[], grain: Grain, today = new Date()): Bu
     for (let i = 11; i >= 0; i--) {
       const start = new Date(thisWeek);
       start.setDate(start.getDate() - i * 7);
-      const bucket: Bucket = { label: `${start.getDate()} ${months[start.getMonth()]}`, words: 0, dictations: 0 };
+      const bucket: Bucket = { label: `${start.getDate()} ${months[start.getMonth()]}`, words: 0, dictations: 0, minutes: 0, wpm: null };
       for (let d = 0; d < 7; d++) {
         const day = new Date(start);
         day.setDate(start.getDate() + d);
@@ -136,13 +142,12 @@ function bucketSeries(days: WordsPerDay[], grain: Grain, today = new Date()): Bu
   } else if (grain === "monthly") {
     for (let i = 11; i >= 0; i--) {
       const start = new Date(today.getFullYear(), today.getMonth() - i, 1);
-      const bucket: Bucket = { label: months[start.getMonth()], words: 0, dictations: 0 };
+      const bucket: Bucket = { label: months[start.getMonth()], words: 0, dictations: 0, minutes: 0, wpm: null };
       const end = new Date(start.getFullYear(), start.getMonth() + 1, 1);
       for (const day of days) {
         const d = parseKey(day.date);
         if (d >= start && d < end) {
-          bucket.words += day.words;
-          bucket.dictations += day.dictations ?? 0;
+          addDay(bucket, day);
         }
       }
       out.push(bucket);
@@ -150,17 +155,17 @@ function bucketSeries(days: WordsPerDay[], grain: Grain, today = new Date()): Bu
   } else {
     for (let i = 4; i >= 0; i--) {
       const year = today.getFullYear() - i;
-      const bucket: Bucket = { label: String(year), words: 0, dictations: 0 };
+      const bucket: Bucket = { label: String(year), words: 0, dictations: 0, minutes: 0, wpm: null };
       for (const day of days) {
         if (day.date.startsWith(`${year}-`)) {
-          bucket.words += day.words;
-          bucket.dictations += day.dictations ?? 0;
+          addDay(bucket, day);
         }
       }
       out.push(bucket);
     }
   }
 
+  for (const b of out) b.wpm = b.minutes > 0 ? Math.round(b.words / b.minutes) : null;
   return out;
 }
 
@@ -262,7 +267,19 @@ function LocalOnlyTyping() {
   );
 }
 
-function WpmGauge({ wpm }: { wpm: number }) {
+type WpmRange = "5" | "25" | "50" | "all";
+const WPM_RANGES: { id: WpmRange; label: string }[] = [
+  { id: "5", label: "Last 5%" },
+  { id: "25", label: "Last 25%" },
+  { id: "50", label: "Last 50%" },
+  { id: "all", label: "All" },
+];
+
+function WpmGauge({ recent, fallback }: { recent?: number[]; fallback: number }) {
+  // Which slice of your dictations to average: your most recent 5 / 25 / 50 % or all.
+  const [range, setRange] = useState<WpmRange>("25");
+  const idx = WPM_RANGES.findIndex((r) => r.id === range);
+  const wpm = recent && recent.length === 4 ? recent[idx] : fallback;
   let pct = 50;
   let text = "Average WPM";
   let badge = "Top 50%";
@@ -319,8 +336,9 @@ function WpmGauge({ wpm }: { wpm: number }) {
 
   return (
     <div className="glass-panel dashboard-wpm-panel" style={{ minHeight: 185 }}>
-      <div className="dashboard-wpm-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
+      <div className="dashboard-wpm-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
         <span className="stat-label">Words Per Minute</span>
+        <SegmentedControl options={WPM_RANGES} value={range} onChange={setRange} ariaLabel="Which recent dictations to average" />
       </div>
       <span className="stat-value dashboard-wpm-value">
         {wpm > 0 ? Math.round(wpm) : "--"}
@@ -344,12 +362,22 @@ function WpmGauge({ wpm }: { wpm: number }) {
   );
 }
 
+/** Weeks visible at once (about 4 months); older weeks are a scroll away. */
+const STREAK_VISIBLE_WEEKS = 17;
+
 function getStreakGridData(wordsPerDay: { date: string; words: number }[]) {
   const today = new Date();
   const currentDayOfWeek = today.getDay(); // 0 is Sunday, 6 is Saturday
-  
+
+  // Go back to whichever is earlier: a full year, or the first day you dictated
+  // (capped at 3 years, the span the backend sends).
+  const DAY = 86400000;
+  const first = wordsPerDay.reduce<string | null>((m, d) => (d.words > 0 && (!m || d.date < m) ? d.date : m), null);
+  const sinceFirst = first ? Math.ceil((today.getTime() - new Date(first + "T00:00:00").getTime()) / DAY / 7) + 1 : 0;
+  const weeks = Math.min(156, Math.max(STREAK_VISIBLE_WEEKS, 52, sinceFirst));
+
   const startDate = new Date(today);
-  startDate.setDate(today.getDate() - currentDayOfWeek - 11 * 7); // Go back 11 weeks + current week's Sunday
+  startDate.setDate(today.getDate() - currentDayOfWeek - (weeks - 1) * 7);
   
   const wordMap = new Map<string, number>();
   wordsPerDay.forEach(d => {
@@ -357,7 +385,7 @@ function getStreakGridData(wordsPerDay: { date: string; words: number }[]) {
   });
   
   const cols = [];
-  for (let week = 0; week < 12; week++) {
+  for (let week = 0; week < weeks; week++) {
     const colDays = [];
     for (let d = 0; d < 7; d++) {
       const dayDate = new Date(startDate);
@@ -387,6 +415,46 @@ function getStreakGridData(wordsPerDay: { date: string; words: number }[]) {
 
 function StreakCalendar({ wordsPerDay, currentStreak, longestStreak }: { wordsPerDay: any[], currentStreak: number, longestStreak: number }) {
   const cols = getStreakGridData(wordsPerDay || []);
+  // About 4 months fit; the rest scrolls sideways. A plain mouse wheel scrolls it too
+  // while the pointer is over the grid. Starts scrolled to today.
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const [colW, setColW] = useState(14);
+  // One tooltip for the whole grid, drawn in the panel (outside the scroll area) so
+  // it is never clipped and never adds scroll width.
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const [tip, setTip] = useState<{ text: string; x: number; y: number } | null>(null);
+  const showTip = (e: React.MouseEvent) => {
+    const cell = (e.target as HTMLElement).closest<HTMLElement>(".streak-cell");
+    const panel = panelRef.current;
+    if (!cell || !panel || !cell.dataset.tooltip) { setTip(null); return; }
+    const c = cell.getBoundingClientRect(), p = panel.getBoundingClientRect();
+    const half = 70; // keep the bubble inside the panel
+    const x = Math.min(Math.max(c.left + c.width / 2 - p.left, half), p.width - half);
+    setTip({ text: cell.dataset.tooltip, x, y: c.top - p.top });
+  };
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const fit = () => {
+      const w = el.clientWidth;
+      setColW(Math.max(8, (w - (STREAK_VISIBLE_WEEKS - 1) * 4) / STREAK_VISIBLE_WEEKS));
+    };
+    fit();
+    const ro = new ResizeObserver(fit);
+    ro.observe(el);
+    const onWheel = (e: WheelEvent) => {
+      if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return; // trackpad sideways swipes work natively
+      if (el.scrollWidth <= el.clientWidth) return;
+      e.preventDefault();
+      el.scrollLeft += e.deltaY;
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => { ro.disconnect(); el.removeEventListener("wheel", onWheel); };
+  }, []);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el) el.scrollLeft = el.scrollWidth;
+  }, [cols.length, colW]);
   const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   
   const columnMonths: string[] = [];
@@ -403,7 +471,8 @@ function StreakCalendar({ wordsPerDay, currentStreak, longestStreak }: { wordsPe
   const daysOfWeek = ["S", "M", "T", "W", "T", "F", "S"];
 
   return (
-    <div className="glass-panel dashboard-streak-panel" style={{ display: "flex", flexDirection: "column", gap: 8, minHeight: 185 }}>
+    <div ref={panelRef} className="glass-panel dashboard-streak-panel" style={{ position: "relative", display: "flex", flexDirection: "column", gap: 8, minHeight: 185 }}>
+      {tip && <div className="streak-tip" style={{ left: tip.x, top: tip.y }}>{tip.text}</div>}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 2 }}>
         <span className="row-title" style={{ fontSize: 13, fontWeight: 600, color: "var(--label)" }}>Activity Streak</span>
         <span className="stat-footnote" style={{ fontSize: 11 }}>
@@ -411,17 +480,22 @@ function StreakCalendar({ wordsPerDay, currentStreak, longestStreak }: { wordsPe
         </span>
       </div>
 
-      <div className="streak-grid">
-        {/* top-left spacer, then a month label per week column */}
+      <div className="streak-body">
+      {/* Day labels stay put; only the weeks scroll. */}
+      <div className="streak-days">
         <div className="streak-corner" />
+        {daysOfWeek.map((d, i) => <div key={i} className="streak-daylabel">{d}</div>)}
+      </div>
+      <div className="streak-scroll" ref={scrollRef} onMouseOver={showTip} onMouseLeave={() => setTip(null)} onScroll={() => setTip(null)}>
+      <div className="streak-grid" style={{ gridTemplateColumns: `repeat(${cols.length}, ${colW}px)` }}>
+        {/* a month label per week column */}
         {columnMonths.map((m, idx) => (
           <div key={`m${idx}`} className="streak-month">{m}</div>
         ))}
 
-        {/* one row per weekday: day label + a cell per week */}
+        {/* one row per weekday, a cell per week */}
         {[0, 1, 2, 3, 4, 5, 6].map((rowIdx) => (
           <Fragment key={rowIdx}>
-            <div className="streak-daylabel">{daysOfWeek[rowIdx]}</div>
             {cols.map((col, colIdx) => {
               const day = col[rowIdx];
               let bgColor = "transparent";
@@ -456,7 +530,9 @@ function StreakCalendar({ wordsPerDay, currentStreak, longestStreak }: { wordsPe
           </Fragment>
         ))}
       </div>
-      
+      </div>
+      </div>
+
       <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 4, fontSize: 8, color: "var(--secondary)", marginTop: 2 }}>
         <span>Less</span>
         <div style={{ width: 7, height: 7, borderRadius: 1, border: "1px solid var(--separator-soft)" }} />
@@ -469,6 +545,38 @@ function StreakCalendar({ wordsPerDay, currentStreak, longestStreak }: { wordsPe
   );
 }
 
+/** Where the last dictation went: app icon + "Pasted into Claude" (or why it wasn't). */
+function PasteTarget({ t }: { t: LastTranscript | null }) {
+  if (!t) return null;
+  const raw = t.appName && t.appName !== "Unknown" ? t.appName : null;
+  const name = raw ? cleanAppName(raw) : null;
+  const self = name === "LocalFlow";
+  const state = t.pasted === undefined ? "pending" : t.pasted ? "ok" : "fail";
+  const label =
+    state === "pending" ? (name ? `Pasting into ${name}` : "Pasting")
+    : state === "ok" ? (self ? "Typed in LocalFlow" : name ? `Pasted into ${name}` : "Pasted")
+    : "No text box · shown to copy";
+  return (
+    <span
+      className={`paste-target is-${state}`}
+      title={state === "fail" ? "No text box was selected, so the words were shown in a card with a Copy button." : undefined}
+    >
+      {name && state !== "fail" ? <AppBadge name={raw!} exe={t.appExe || ""} size={16} /> : null}
+      <span>{label}</span>
+      <span className="paste-target-mark" aria-hidden="true">
+        {state === "ok" ? <Check size={11} strokeWidth={3} /> : state === "fail" ? <X size={11} strokeWidth={3} /> : <span className="paste-target-dot" />}
+      </span>
+    </span>
+  );
+}
+
+/** Green when cool, amber when warm, red when hot. */
+function tempColor(c: number | null | undefined, state: string | null | undefined): string {
+  if (state === "Hot" || state === "Critical" || (c ?? 0) >= 90) return "var(--danger)";
+  if (state === "Warm" || (c ?? 0) >= 75) return "var(--warning)";
+  return "var(--label)";
+}
+
 export default function Dashboard() {
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [loading, setLoading] = useState(true);
@@ -479,6 +587,9 @@ export default function Dashboard() {
   const [keybindKeyboardName, setKeybindKeyboardName] = useState("Ctrl+Q");
   const [keybindMouseToggle, setKeybindMouseToggle] = useState("none");
   const [keybindMouseInstant, setKeybindMouseInstant] = useState("none");
+  const [fnOn, setFnOn] = useState(false);
+  // Which triggers are switched on in Shortcuts (missing = on).
+  const [triggerOn, setTriggerOn] = useState<Record<string, boolean>>({});
   const [period, setPeriod] = useState<Period>("today");
   const [grain, setGrain] = useState<Grain>("daily");
   const { isRecording, isProcessing, lastTranscript, startRecording, stopRecording } = useAppStore();
@@ -499,6 +610,11 @@ export default function Dashboard() {
     getSetting("keybind_mouse_instant").then((val) => {
       if (val) setKeybindMouseInstant(val);
     });
+    getSetting("fn_quick_toggle").then((val) => setFnOn(val === "true"));
+    const keys = ["shortcut_toggle_enabled", "keybind_instant_enabled", "keybind_mouse_toggle_enabled", "keybind_mouse_instant_enabled"];
+    Promise.all(keys.map((k) => getSetting(k))).then((vals) =>
+      setTriggerOn(Object.fromEntries(keys.map((k, i) => [k, vals[i] !== "false"]))),
+    );
   }, []);
 
   // Friendly label for a stored mouse-button value, or null when unset ("none").
@@ -614,32 +730,19 @@ export default function Dashboard() {
           <h2 className="page-title">Your dictation dashboard</h2>
           <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, marginTop: 10 }}>
             {[
-              { label: "Toggle", keys: shortcutToggle.split("+") },
-              { label: "Instant", keys: keybindKeyboardName.split("+") },
-              ...(mouseLabel(keybindMouseToggle) ? [{ label: "Mouse", keys: [mouseLabel(keybindMouseToggle)!] }] : []),
-              ...(mouseLabel(keybindMouseInstant) ? [{ label: "Mouse hold", keys: [mouseLabel(keybindMouseInstant)!] }] : []),
-            ].map(({ label, keys }) => (
-              <span
-                key={label}
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 6,
-                  padding: "3px 8px 3px 11px",
-                  background: "var(--control)",
-                  border: "1px solid var(--separator-soft)",
-                  borderRadius: 999,
-                  fontSize: 11,
-                  fontWeight: 500,
-                  color: "var(--secondary)",
-                }}
-              >
-                {label}
-                <span style={{ display: "inline-flex", gap: 3 }}>
+              ...(IS_MAC && fnOn ? [{ label: "Talk", keys: ["Fn"] }] : []),
+              ...(triggerOn.shortcut_toggle_enabled !== false ? [{ label: "Toggle", keys: shortcutToggle.split("+") }] : []),
+              ...(triggerOn.keybind_instant_enabled !== false ? [{ label: "Hold", keys: keybindKeyboardName.split("+") }] : []),
+              ...(mouseLabel(keybindMouseToggle) && triggerOn.keybind_mouse_toggle_enabled !== false ? [{ label: "Toggle", keys: [mouseLabel(keybindMouseToggle)!] }] : []),
+              ...(mouseLabel(keybindMouseInstant) && triggerOn.keybind_mouse_instant_enabled !== false ? [{ label: "Hold", keys: [mouseLabel(keybindMouseInstant)!] }] : []),
+            ].map(({ label, keys }, i) => (
+              <span key={i} className="shortcut-chip">
+                <span className="keycap-row">
                   {keys.map((key, idx) => (
-                    <span key={idx} className="keycap" style={{ fontSize: 10, minHeight: 17, padding: "0 6px", textTransform: "none" }}>{keyLabel(key)}</span>
+                    <span key={idx} className="keycap">{keyLabel(key)}</span>
                   ))}
                 </span>
+                {label}
               </span>
             ))}
             <LocalOnlyTyping />
@@ -660,7 +763,10 @@ export default function Dashboard() {
 
       {displayTranscript && (
         <section className="glass-panel dashboard-last-transcript" style={{ marginBottom: 12 }}>
-          <div className="section-label">Last transcription</div>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+            <div className="section-label">Last transcription</div>
+            <PasteTarget t={lastTranscript} />
+          </div>
           <p style={{ margin: 0, color: "var(--label)", fontSize: 14, lineHeight: "20px", fontWeight: 500 }}>
             {displayTranscript}
           </p>
@@ -672,18 +778,10 @@ export default function Dashboard() {
           <InfoCircleIcon size={16} color="var(--accent)" loop />
         </span>
         <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--label)" }}>Keeps working in the background</span>
-          {IS_MAC ? (
-            <p style={{ margin: 0, fontSize: 12.5, lineHeight: "17px", color: "var(--secondary)" }}>
-              You don't need to keep this window open. Dictation still works after you close it. Closing the window just hides it; the app keeps running, and you can reopen it anytime by clicking the LocalFlow icon in the Dock.
-              To quit completely, right-click the floating mic icon and choose <strong style={{ color: "var(--danger)" }}>Quit App</strong>.
-            </p>
-          ) : (
-            <p style={{ margin: 0, fontSize: 12.5, lineHeight: "17px", color: "var(--secondary)" }}>
-              You don't need to keep this window open. Dictation still works after you close it. Closing the window keeps the app running in the background.
-              To quit completely, right-click the floating mic icon and click <strong style={{ color: "var(--danger)" }}>Quit App</strong>.
-            </p>
-          )}
+          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--label)" }}>Keeps working when this window is closed</span>
+          <p style={{ margin: 0, fontSize: 12.5, lineHeight: "17px", color: "var(--secondary)" }}>
+            To quit, right-click the orb → <strong style={{ color: "var(--danger)" }}>Quit App</strong>.
+          </p>
         </div>
       </div>
 
@@ -691,7 +789,8 @@ export default function Dashboard() {
       <div className="grid cols-3 dashboard-primary-grid" style={{ marginBottom: 12, gap: 12 }}>
         {/* WPM percentiles */}
         <WpmGauge
-          wpm={displayStats?.avg_wpm_7d ?? 0}
+          recent={displayStats?.wpm_recent}
+          fallback={displayStats?.avg_wpm_7d ?? 0}
         />
 
         {/* Streak calendar */}
@@ -785,7 +884,10 @@ export default function Dashboard() {
                       interval="preserveStartEnd"
                       minTickGap={12}
                     />
-                    <YAxis type="number" hide domain={[0, "dataMax + 40"]} />
+                    {/* Own scale per line: dictations (tens) would be a flat line on the words (thousands) scale. */}
+                    <YAxis yAxisId="words" type="number" hide domain={[0, (max: number) => Math.max(1, max) * 1.15]} />
+                    <YAxis yAxisId="dict" type="number" hide domain={[0, (max: number) => Math.max(1, max) * 1.15]} />
+                    <YAxis yAxisId="wpm" type="number" hide domain={[0, (max: number) => Math.max(1, max) * 1.15]} />
                     <Tooltip
                       contentStyle={{
                         backgroundColor: "var(--panel-solid)",
@@ -796,12 +898,13 @@ export default function Dashboard() {
                       }}
                       formatter={(value, name) => {
                         const n = Number(value) || 0;
-                        return name === "Words"
-                          ? [`${n.toLocaleString()} words · ${formatMinutes(n / TYPING_WPM)} saved`, "Words"]
-                          : [n.toLocaleString(), String(name)];
+                        if (name === "Words") return [`${n.toLocaleString()} words · ${formatMinutes(n / TYPING_WPM)} saved`, "Words"];
+                        if (name === "WPM") return [`${n} wpm`, "Speed"];
+                        return [n.toLocaleString(), String(name)];
                       }}
                     />
                     <Line
+                      yAxisId="words"
                       type="monotone"
                       dataKey="words"
                       name="Words"
@@ -810,13 +913,24 @@ export default function Dashboard() {
                       dot={{ r: 2, fill: "var(--accent)", strokeWidth: 0 }}
                     />
                     <Line
+                      yAxisId="dict"
                       type="monotone"
                       dataKey="dictations"
                       name="Dictations"
-                      stroke="var(--success)"
+                      stroke="var(--label)"
+                      strokeOpacity={0.45}
                       strokeWidth={1.5}
                       strokeDasharray="4 3"
                       dot={false}
+                    />
+                    <Line
+                      yAxisId="wpm"
+                      type="monotone"
+                      dataKey="wpm"
+                      name="WPM"
+                      stroke="#2e9e5b"
+                      strokeWidth={2}
+                      dot={{ r: 2, fill: "#2e9e5b", strokeWidth: 0 }}
                     />
                   </LineChart>
                 </ResponsiveContainer>
@@ -826,76 +940,75 @@ export default function Dashboard() {
                 </div>
               )}
             </div>
+              <span className="chart-legend chart-legend-below" aria-hidden="true">
+                <span><i style={{ background: "var(--accent)" }} />Words</span>
+                <span><i className="dashed" />Dictations</span>
+                <span><i style={{ background: "#2e9e5b" }} />WPM</span>
+              </span>
           </div>
         </div>
 
-        {/* Top apps usage & toggles */}
-        <div className="glass-panel dashboard-targets-panel" style={{ display: "flex", flexDirection: "column", justifyContent: "space-between", gap: 8 }}>
-          <div>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-              <span className="section-label">Top Dictation Targets</span>
-              <button
-                type="button"
-                className={`switch ${trackApps ? "on" : ""}`}
-                role="switch"
-                aria-checked={trackApps}
-                aria-label="Toggle active window tracking"
-                title="Toggle active window tracking"
-                onClick={() => handleToggleTrackApps(!trackApps)}
-              >
-                <span />
-              </button>
-            </div>
-            
-            <div style={{ height: 100, width: "100%" }}>
-              {!trackApps ? (
-                <div style={{ height: "100%", display: "grid", placeItems: "center", textAlign: "center", padding: 10 }}>
-                  <div>
-                    <span style={{ fontSize: 11, color: "var(--secondary)", fontWeight: 500 }}>App Tracking Disabled</span>
-                    <span style={{ fontSize: 9, color: "var(--tertiary)", display: "block", marginTop: 2 }}>
-                      Future dictation statistics will not store foreground application logs.
-                    </span>
+        {/* Top apps: donut + ranked list */}
+        <div className="glass-panel dashboard-targets-panel">
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span className="section-label" style={{ margin: 0 }}>Top apps</span>
+            <button
+              type="button"
+              className={`switch ${trackApps ? "on" : ""}`}
+              role="switch"
+              aria-checked={trackApps}
+              aria-label="Track which app you dictate into"
+              title="Track which app you dictate into (stays on this computer)"
+              onClick={() => handleToggleTrackApps(!trackApps)}
+            >
+              <span />
+            </button>
+          </div>
+          {(() => {
+            if (!trackApps) return <div className="targets-empty">App tracking is off</div>;
+            const apps = (displayStats?.top_apps ?? []).filter((a) => a.word_count > 0);
+            if (apps.length === 0) return <div className="targets-empty">No apps yet</div>;
+            const top = apps.slice(0, 5);
+            const rest = apps.slice(5).reduce((n, a) => n + a.word_count, 0);
+            const slices = [
+              ...top.map((a) => ({ name: cleanAppName(a.app_name), raw: a.app_name, value: a.word_count })),
+              ...(rest > 0 ? [{ name: "Other", raw: "", value: rest }] : []),
+            ];
+            const total = slices.reduce((n, x) => n + x.value, 0);
+            const lead = slices[0];
+            return (
+              <div className="targets-body">
+                <div className="targets-donut">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie data={slices} dataKey="value" nameKey="name" innerRadius="68%" outerRadius="100%"
+                        paddingAngle={2} cornerRadius={4} stroke="none" startAngle={90} endAngle={-270} isAnimationActive={false}>
+                        {slices.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
+                      </Pie>
+                      <Tooltip
+                        contentStyle={{ backgroundColor: "var(--panel-solid)", borderColor: "var(--separator)", borderRadius: 8, fontSize: 11, color: "var(--label)" }}
+                        formatter={(v) => [`${Number(v).toLocaleString()} words`, ""]}
+                      />
+                    </PieChart>
+                  </ResponsiveContainer>
+                  <div className="targets-center">
+                    <strong>{Math.round((lead.value / total) * 100)}%</strong>
+                    <span>{lead.name}</span>
                   </div>
                 </div>
-              ) : displayStats && displayStats.top_apps && displayStats.top_apps.length > 0 ? (
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={displayStats.top_apps.slice(0, 5)} layout="vertical" barSize={10}>
-                    <XAxis type="number" hide />
-                    <YAxis
-                      type="category"
-                      dataKey="app_name"
-                      tick={{ fontSize: 10, fill: "var(--secondary)" }}
-                      axisLine={false}
-                      tickLine={false}
-                      interval={0}
-                      width={90}
-                    />
-                    <Tooltip
-                      contentStyle={{
-                        backgroundColor: "var(--panel-solid)",
-                        borderColor: "var(--separator)",
-                        borderRadius: 6,
-                        fontSize: 10,
-                        color: "var(--label)",
-                      }}
-                    />
-                    <Bar dataKey="word_count" radius={[0, 3, 3, 0]}>
-                      {displayStats.top_apps.slice(0, 5).map((_, index) => (
-                        <Cell key={index} fill={CHART_COLORS[index % CHART_COLORS.length]} />
-                      ))}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-              ) : (
-                <div style={{ height: "100%", display: "grid", placeItems: "center", fontSize: 11, color: "var(--tertiary)" }}>
-                  No app logs recorded yet
-                </div>
-              )}
-            </div>
-          </div>
-          <div style={{ fontSize: 9, color: "var(--tertiary)", borderTop: "1px solid var(--separator-soft)", paddingTop: 4 }}>
-            App information is logged fully locally and only while dictating.
-          </div>
+                <ul className="targets-list">
+                  {slices.map((x, i) => (
+                    <li key={x.name}>
+                      <span className="targets-swatch" style={{ background: CHART_COLORS[i % CHART_COLORS.length] }} />
+                      {x.raw ? <AppBadge name={x.raw} size={16} /> : <span style={{ width: 16 }} />}
+                      <span className="targets-name">{x.name}</span>
+                      <span className="targets-pct">{Math.round((x.value / total) * 100)}%</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            );
+          })()}
         </div>
       </div>
 
@@ -917,7 +1030,7 @@ export default function Dashboard() {
           </div>
         </div>
 
-        <div className="grid cols-4" style={{ gap: 10 }}>
+        <div className="diag-grid">
           {/* CPU Stats */}
           <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
             <div style={{ fontSize: 10, color: "var(--secondary)", textTransform: "uppercase", letterSpacing: "0.2px" }}>CPU Load</div>
@@ -942,6 +1055,26 @@ export default function Dashboard() {
             </div>
           </div>
 
+          {/* Temperature */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+            <div style={{ fontSize: 10, color: "var(--secondary)", textTransform: "uppercase", letterSpacing: "0.2px", display: "flex", alignItems: "center", gap: 4 }}>
+              <Thermometer size={10} color={tempColor(sysStats?.cpu_temp_c, sysStats?.thermal_state)} /> Temperature
+            </div>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 4 }}>
+              {sysStats?.cpu_temp_c != null ? (
+                <>
+                  <span style={{ fontSize: 18, fontWeight: 700, color: tempColor(sysStats.cpu_temp_c, sysStats.thermal_state) }}>{Math.round(sysStats.cpu_temp_c)}</span>
+                  <span style={{ fontSize: 10, fontWeight: 600, color: "var(--secondary)" }}>°C</span>
+                </>
+              ) : (
+                <span style={{ fontSize: 18, fontWeight: 700 }}>{sysStats?.thermal_state ?? "—"}</span>
+              )}
+            </div>
+            <div style={{ fontSize: 9, color: "var(--tertiary)" }}>
+              {sysStats?.cpu_temp_c != null && sysStats?.thermal_state ? `CPU · ${sysStats.thermal_state}` : "CPU"}
+            </div>
+          </div>
+
           {/* Power Consumption */}
           <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
             <div style={{ fontSize: 10, color: "var(--secondary)", textTransform: "uppercase", letterSpacing: "0.2px", display: "flex", alignItems: "center", gap: 4 }}>
@@ -952,7 +1085,7 @@ export default function Dashboard() {
               <span style={{ fontSize: 10, color: "var(--warning)", fontWeight: 600 }}>Watts</span>
             </div>
             <div style={{ fontSize: 9, color: "var(--tertiary)" }}>
-              Power used while turning speech into text
+              While transcribing
             </div>
           </div>
 
@@ -965,7 +1098,7 @@ export default function Dashboard() {
               <span style={{ fontSize: 14, fontWeight: 700, color: "var(--success)" }}>All good</span>
             </div>
             <div style={{ fontSize: 9, color: "var(--tertiary)" }}>
-              Everything runs on your computer
+              Runs on this computer
             </div>
           </div>
         </div>
@@ -977,29 +1110,16 @@ export default function Dashboard() {
         */}
         <div className="dashboard-limits">
           <div className="dashboard-limit-note">
-            <Scissors size={12} color="var(--warning)" />
-            <p>
-              <strong>One recording holds up to 10 minutes.</strong> If you keep talking past that,
-              the oldest audio is dropped to make room — so on a very long take it's the{" "}
-              <em>beginning</em> that gets cut off, not the end.
-            </p>
+            <span className="limit-icon" style={{ "--tone": "#e0662a" } as React.CSSProperties}><Scissors size={14} strokeWidth={2.4} /></span>
+            <p><strong>10 min max per recording.</strong> Keep talking past that and only the last 10 minutes are kept.</p>
           </div>
           <div className="dashboard-limit-note">
-            <Hourglass size={12} color="var(--accent)" />
-            <p>
-              <strong>Longer recordings take longer to transcribe.</strong> The wait after you stop
-              scales with how long you spoke, so a 10-minute take takes noticeably longer to come
-              back than a short one.
-            </p>
+            <span className="limit-icon" style={{ "--tone": "#c9891a" } as React.CSSProperties}><Hourglass size={14} strokeWidth={2.4} /></span>
+            <p><strong>Longer talk, longer wait.</strong> Text appears after you stop, so long recordings take a bit longer.</p>
           </div>
           <div className="dashboard-limit-note">
-            <MemoryStick size={12} color="var(--success)" />
-            <p>
-              <strong>Memory used drops about 90 seconds after you stop.</strong> The speech model is
-              nearly all of the figure above, and it stays loaded for a minute and a half so a
-              follow-up dictation starts instantly instead of reloading. Once you leave it alone past
-              that it's released and the number falls sharply — dictating again loads it back.
-            </p>
+            <span className="limit-icon" style={{ "--tone": "#2e9e5b" } as React.CSSProperties}><MemoryStick size={14} strokeWidth={2.4} /></span>
+            <p><strong>Memory frees itself.</strong> The model unloads 90 s after you stop to keep your Mac light.</p>
           </div>
         </div>
       </section>

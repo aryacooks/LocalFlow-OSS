@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Globe, Keyboard, Mic, MonitorCheck, Shield, History, Circle, Volume2, Music, Move, Check, CircleAlert, ExternalLink, Accessibility, RotateCcw, Power, Minus, Plus, PanelTop } from "lucide-react";
-import { listAudioDevices, setAudioDevice, setSetting, getSetting, setBubbleSize, BUBBLE_SCALE_MIN, BUBBLE_SCALE_MAX, BUBBLE_SCALE_STEP, setBubbleVisible, setEarconsEnabled, setSoundSet, setBubbleMode, getBubblePlacement, setBubblePlacement, getPermissionStatus, requestAccessibilityPermission, requestMicrophonePermission, openPrivacySettings, type PermissionStatus } from "../lib/ipc";
+import { listAudioDevices, setAudioDevice, setSetting, getSetting, setBubbleSize, BUBBLE_SCALE_MIN, BUBBLE_SCALE_MAX, BUBBLE_SCALE_STEP, setBubbleVisible, setEarconsEnabled, setSoundSet, setBubbleMode, getBubblePlacement, setBubblePlacement, getNudgeRange, getPermissionStatus, requestAccessibilityPermission, requestMicrophonePermission, openPrivacySettings, type PermissionStatus, type BubbleMode } from "../lib/ipc";
 import { enable as enableAutostart, disable as disableAutostart, isEnabled as isAutostartEnabled } from "@tauri-apps/plugin-autostart";
 import { shortcutLabel } from "../lib/utils";
 import { emit, listen } from "@tauri-apps/api/event";
@@ -209,7 +209,8 @@ const ORB_SPOTS: { id: string; x: number; y: number; label: string }[] = [
   { id: "bc", x: 0.5, y: 1, label: "Bottom centre" },
   { id: "br", x: 1, y: 1, label: "Bottom right" },
 ];
-const NUDGE_RANGE = 300;
+// Fallback slider limits until the real ones (from the screen size) arrive.
+const NUDGE_FALLBACK: [number, number, number, number, number, number] = [-300, 300, -300, 300, 1440, 900];
 
 function OrbPlacer({
   spot,
@@ -223,9 +224,19 @@ function OrbPlacer({
   onChange: (spot: string, nudge: number, nudgeY: number) => void;
 }) {
   const W = 176, H = 110, PAD = 11;
+  // How far the orb can actually go from this spot before it hits a screen edge.
+  const [range, setRange] = useState(NUDGE_FALLBACK);
+  useEffect(() => {
+    let live = true;
+    getNudgeRange(spot).then((r) => { if (live && r) setRange(r); }).catch(() => {});
+    return () => { live = false; };
+  }, [spot]);
+  const [minX, maxX, minY, maxY, screenW, screenH] = range;
   const slider = (
     label: [string, string],
     value: number,
+    lo: number,
+    hi: number,
     set: (v: number) => void,
     title: string,
   ) => (
@@ -233,10 +244,10 @@ function OrbPlacer({
       <span style={{ width: 30, fontSize: 10, fontWeight: 600, color: "var(--tertiary)", textAlign: "right" }}>{label[0]}</span>
       <input
         type="range"
-        min={-NUDGE_RANGE}
-        max={NUDGE_RANGE}
-        step={2}
-        value={value}
+        min={lo}
+        max={hi}
+        step={1}
+        value={Math.min(Math.max(value, lo), hi)}
         onChange={(e) => set(Number(e.target.value))}
         title={title}
         style={{ flex: 1, accentColor: "var(--label)" }}
@@ -268,8 +279,8 @@ function OrbPlacer({
       >
         {ORB_SPOTS.map((p) => {
           const on = p.id === spot;
-          const cx = PAD + p.x * (W - 2 * PAD) + (on ? (nudge / NUDGE_RANGE) * 22 : 0);
-          const cy = PAD + p.y * (H - 2 * PAD) + (on ? (nudgeY / NUDGE_RANGE) * 16 : 0);
+          const cx = PAD + p.x * (W - 2 * PAD) + (on ? (nudge / screenW) * (W - 2 * PAD) : 0);
+          const cy = PAD + p.y * (H - 2 * PAD) + (on ? (nudgeY / screenH) * (H - 2 * PAD) : 0);
           return (
             <button
               key={p.id}
@@ -280,7 +291,7 @@ function OrbPlacer({
               onClick={() => onChange(p.id, 0, 0)}
               style={{
                 position: "absolute",
-                left: Math.min(Math.max(cx, 9), W - 9) - 9, top: Math.min(Math.max(cy, 9), H - 9) - 9,
+                left: Math.min(Math.max(cx, 2), W - 2) - 9, top: Math.min(Math.max(cy, 2), H - 2) - 9,
                 width: 18, height: 18, borderRadius: "50%", padding: 0, cursor: "pointer",
                 border: on ? "none" : "1.5px dashed var(--tertiary)",
                 background: on ? "var(--label)" : "transparent",
@@ -291,8 +302,8 @@ function OrbPlacer({
           );
         })}
       </div>
-      {slider(["Left", "Right"], nudge, (v) => onChange(spot, v, nudgeY), "Shift left or right")}
-      {slider(["Up", "Down"], nudgeY, (v) => onChange(spot, nudge, v), "Shift up or down")}
+      {slider(["Left", "Right"], nudge, minX, maxX, (v) => onChange(spot, v, nudgeY), "Shift left or right")}
+      {slider(["Up", "Down"], nudgeY, minY, maxY, (v) => onChange(spot, nudge, v), "Shift up or down")}
     </div>
   );
 }
@@ -385,7 +396,6 @@ export default function SettingsPage() {
   const [autostart, setAutostart] = useState(false);
   const [fnEnabled, setFnEnabled] = useState(false);
   const [isMac, setIsMac] = useState(false);
-  const showBanner = true;
   
   // Custom Dynamic Shortcuts Settings State
   const [shortcutToggle, setShortcutToggle] = useState("Ctrl+Alt");
@@ -533,21 +543,6 @@ export default function SettingsPage() {
 
   return (
     <div className="page settings-page" style={{ position: "relative" }}>
-      {showBanner && (
-        <div className="banner-card settings-banner" style={{ backgroundImage: "url('/redish.png')" }}>
-          <div className="banner-content">
-            <h2 className="banner-title">Configured for <em>your</em> workflow.</h2>
-            <p className="banner-desc">
-              Tune your microphone, language, privacy, and the keys that trigger dictation. Everything stays on your machine, with no account, no sync, and absolutely no one reading over your shoulder.
-            </p>
-            <div className="banner-actions">
-              <span className="banner-tag">Privacy first</span>
-              <span className="banner-tag">Lives on your disk</span>
-              <span className="banner-tag">Zero telemetry</span>
-            </div>
-          </div>
-        </div>
-      )}
 
       <div className="page-header settings-page-header">
         <div>
@@ -602,21 +597,35 @@ export default function SettingsPage() {
             ? "What shows while you dictate: a small orb on screen, an island that grows out of the notch, or nothing at all."
             : "What shows while you dictate: a small orb on screen, or nothing at all."}
         >
-          <select
-            className="select"
-            style={{ width: 260 }}
-            value={!showBubble ? "off" : bubbleStyle === "notch" && isMac ? "notch" : "screen"}
-            onChange={(e) => {
-              const v = e.target.value === "notch" ? "notch" : e.target.value === "off" ? "off" : "screen";
-              setShowBubble(v !== "off");
-              if (v !== "off") setBubbleStyleState(v === "notch" ? "notch" : "classic");
-              setBubbleMode(v).catch(console.error);
-            }}
-          >
-            <option value="screen">On screen</option>
-            {isMac && <option value="notch">Notch</option>}
-            <option value="off">Off</option>
-          </select>
+          {(() => {
+            const mode = !showBubble ? "off" : bubbleStyle === "notch" && isMac ? "notch" : "screen";
+            const options: { id: BubbleMode; label: string }[] = [
+              { id: "screen" as BubbleMode, label: "On screen" },
+              ...(isMac ? [{ id: "notch" as BubbleMode, label: "Notch" }] : []),
+              { id: "off" as BubbleMode, label: "Off" },
+            ];
+            return (
+              <div className="segmented segmented-lg" role="radiogroup" aria-label="Animation">
+                {options.map((o) => (
+                  <button
+                    key={o.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={mode === o.id}
+                    className={`segmented-option ${mode === o.id ? "is-active" : ""}`}
+                    onClick={() => {
+                      const v = o.id;
+                      setShowBubble(v !== "off");
+                      if (v !== "off") setBubbleStyleState(v === "notch" ? "notch" : "classic");
+                      setBubbleMode(v).catch(console.error);
+                    }}
+                  >
+                    {o.label}
+                  </button>
+                ))}
+              </div>
+            );
+          })()}
         </SettingRow>
         {showBubble && (bubbleStyle === "classic" || !isMac) && (<>
         <SettingRow

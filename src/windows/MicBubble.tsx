@@ -29,6 +29,16 @@ function bubbleSizeToScale(size: string | null): number | null {
  * Done  → Logo slides further to the left (208px from the right),
  *          and the transcribed text fades in next to it.
  */
+/** A few words for the error pill next to the orb (the full text is its tooltip). */
+function shortError(text: string): string {
+  const t = text.replace(/^Error:\s*/, "").trim();
+  if (/no audio/i.test(t)) return "No audio";
+  if (/no speech/i.test(t)) return "No speech heard";
+  if (/microphone|mic\b|device/i.test(t)) return "Mic problem";
+  if (/model/i.test(t)) return "Model missing";
+  return t.length > 18 ? "Didn't Work" : t || "Error";
+}
+
 export default function MicBubble() {
   const [status, setStatus] = useState<"idle" | "recording" | "processing" | "command" | "done">("idle");
   const [bars, setBars] = useState<number[]>(Array(8).fill(0.1));
@@ -149,14 +159,16 @@ export default function MicBubble() {
     if (menuOpen) {
       width = 200; height = 264;
     } else if (status === "done" && isError) {
-      width = 240; height = 120; // room for the error message above the orb
+      // Room for the short label beside the orb (above/below it in the centre column).
+      if ((spot[1] ?? "r") === "c") { width = 160; height = ORB_BOX + 30; }
+      else { width = ORB_BOX + 150; height = ORB_BOX; }
     } else {
       width = ORB_BOX; height = ORB_BOX; // same box idle and active, so the orb never jumps
     }
     // In notch mode Rust keeps the window at the notch and ignores the size.
     if (mode === "notch") return;
     invoke("resize_bubble", { width, height }).catch(() => {});
-  }, [status, menuOpen, isError, uiScale, mode]);
+  }, [status, menuOpen, isError, uiScale, mode, spot]);
 
   // Done auto-collapse sequence
   useEffect(() => {
@@ -514,37 +526,35 @@ export default function MicBubble() {
         </div>
       )}
 
-      {/* ─── Full Error Message Callout (Displayed on Top) ─── */}
-      {status === "done" && isError && (
-        <div
-          style={{
-            position: "absolute",
-            right: s(8),
-            left: s(8),
-            ...(row === "t" ? { top: s(ORB_BOX - 4) } : { bottom: s(ORB_BOX - 4) }),
-            background: "rgba(22, 12, 12, 0.92)",
-            border: "1px solid rgba(239, 68, 68, 0.45)",
-            borderRadius: s(6),
-            padding: `${s(6)} ${s(10)}`,
-            boxShadow: "0 4px 16px rgba(0, 0, 0, 0.55)",
-            animation: "fadeInUp 0.3s cubic-bezier(0.16, 1, 0.3, 1)",
-            pointerEvents: "auto",
-            display: "flex",
-            flexDirection: "column",
-            zIndex: 10,
-          }}
-        >
-          <span style={{
-            color: "#fca5a5",
-            fontSize: s(10),
-            lineHeight: s(14),
-            fontWeight: 500,
-            wordBreak: "break-word",
-          }}>
-            {transcribedText}
-          </span>
-        </div>
-      )}
+      {/* ─── Error label: a short red pill beside the orb, on the side with room ─── */}
+      {status === "done" && isError && (() => {
+        const msg = shortError(transcribedText);
+        const side: React.CSSProperties =
+          col === "c"
+            ? { left: "50%", transform: "translateX(-50%)", ...(row === "t" ? { top: s(ORB_BOX - 8) } : { bottom: s(ORB_BOX - 8) }) }
+            : {
+                ...(col === "r" ? { right: s(ORB_BOX / 2 + 22) } : { left: s(ORB_BOX / 2 + 22) }),
+                ...(row === "t" ? { top: s(ORB_BOX / 2), transform: "translateY(-50%)" } : { bottom: s(ORB_BOX / 2), transform: "translateY(50%)" }),
+              };
+        return (
+          <div style={{ position: "absolute", ...side, pointerEvents: "none" }}>
+            <div
+              title={transcribedText}
+              style={{
+                maxWidth: s(140), whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                padding: `${s(5)} ${s(11)}`, borderRadius: 999,
+                background: darkOrb ? "#b3261e" : "#ff453a", color: "#fff",
+                border: `1px solid ${darkOrb ? "rgba(255,255,255,.35)" : "rgba(0,0,0,.3)"}`,
+                boxShadow: "0 3px 12px rgba(0,0,0,.3)",
+                fontSize: s(11.5), fontWeight: 700, letterSpacing: "0.01em",
+                animation: `errIn${col === "c" ? "V" : col === "r" ? "L" : "R"} 0.32s cubic-bezier(0.16, 1, 0.3, 1) both`,
+              }}
+            >
+              {msg}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Dynamic Keyframes */}
       <style>{`
@@ -557,6 +567,9 @@ export default function MicBubble() {
         .bubble-menu-action:hover, .bubble-menu-action:focus-visible {
           background: rgba(255,255,255,0.08);
         }
+        @keyframes errInL { from { opacity: 0; translate: 10px 0; } to { opacity: 1; translate: 0 0; } }
+        @keyframes errInR { from { opacity: 0; translate: -10px 0; } to { opacity: 1; translate: 0 0; } }
+        @keyframes errInV { from { opacity: 0; translate: 0 ${row === "t" ? "-6px" : "6px"}; } to { opacity: 1; translate: 0 0; } }
         @keyframes fadeInUp {
           from { opacity: 0; transform: translateY(6px); }
           to { opacity: 1; transform: translateY(0); }

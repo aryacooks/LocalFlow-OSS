@@ -136,8 +136,10 @@ fn handle_mouse(event: u32, hook_struct: &MSLLHOOKSTRUCT) -> bool {
     let is_recording = *audio.is_recording.lock().unwrap();
     let is_processing = *pipeline.is_processing.lock().unwrap();
 
-    let mouse_toggle = get_db_setting("keybind_mouse_toggle", "none");
-    let mouse_instant = get_db_setting("keybind_mouse_instant", "none");
+    // Switched off in Settings → Shortcuts → treat as unset.
+    let on = |k: &str| get_db_setting(k, "true") != "false";
+    let mouse_toggle = if on("keybind_mouse_toggle_enabled") { get_db_setting("keybind_mouse_toggle", "none") } else { "none".to_string() };
+    let mouse_instant = if on("keybind_mouse_instant_enabled") { get_db_setting("keybind_mouse_instant", "none") } else { "none".to_string() };
 
     let matches_bind = |bind: &str| -> (bool, bool) {
         match bind {
@@ -291,7 +293,7 @@ fn handle_key(vk_code: u32, is_key_down: bool, is_key_up: bool) -> bool {
     let is_processing = *pipeline.is_processing.lock().unwrap();
 
     // 1. ESCAPE key (VK_ESCAPE = 0x1B)
-    if vk_code == 0x1B {
+    if vk_code == 0x1B && get_db_setting("cancel_esc_enabled", "true") != "false" {
         if is_key_down && is_recording {
             cancel_recording(app, audio, pipeline);
             return true; // Consume Escape key so it doesn't propagate to active app
@@ -370,7 +372,9 @@ fn handle_key(vk_code: u32, is_key_down: bool, is_key_up: bool) -> bool {
         }
     }
 
-    if vk_code == kb_vk {
+    // Instant (hold) key switched off in Settings → Shortcuts.
+    let instant_on = get_db_setting("keybind_instant_enabled", "true") != "false";
+    if instant_on && vk_code == kb_vk {
         if is_key_down {
             println!(
                 "Hook DBG: target keydown, modifiers_match={}",
