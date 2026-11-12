@@ -580,7 +580,6 @@ function tempColor(c: number | null | undefined, state: string | null | undefine
 export default function Dashboard() {
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [loading, setLoading] = useState(true);
-  const showBanner = true;
   const [trackApps, setTrackApps] = useState(true);
   const [sysStats, setSysStats] = useState<SystemStats | null>(null);
   const [shortcutToggle, setShortcutToggle] = useState("Ctrl+Alt");
@@ -707,22 +706,6 @@ export default function Dashboard() {
           to { opacity: 1; transform: scale(1.1); }
         }
       `}</style>
-
-      {showBanner && (
-        <div className="banner-card dashboard-banner" style={{ backgroundImage: "url('/red extra.png')" }}>
-          <div className="banner-content">
-            <h2 className="banner-title">Writes the way <em>you</em> think.</h2>
-            <p className="banner-desc">
-              Just talk, and your words come out clean and ready to use. LocalFlow clears the "um"s and "uh"s, fixes the bits you say twice, and matches the tone of whatever app you're writing in.
-            </p>
-            <div className="banner-actions">
-              <span className="banner-tag">More accurate than Whisper</span>
-              <span className="banner-tag">Works fully offline</span>
-              <span className="banner-tag">We never track you</span>
-            </div>
-          </div>
-        </div>
-      )}
 
       <div className="page-header dashboard-header">
         <div>

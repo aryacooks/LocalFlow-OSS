@@ -659,7 +659,7 @@ fn get_top_apps(conn: &Connection) -> Result<Vec<AppUsage>, String> {
 pub fn get_dictionary(db: State<'_, DbState>) -> Result<Vec<DictionaryEntry>, String> {
     let conn = db.0.lock().unwrap();
     let mut stmt = conn
-        .prepare("SELECT id, term, pronunciation, replacement FROM dictionary ORDER BY term ASC")
+        .prepare("SELECT id, term, pronunciation, replacement FROM dictionary ORDER BY created_at ASC, id ASC")
         .map_err(|e| e.to_string())?;
 
     let entries = stmt
@@ -705,21 +705,7 @@ pub fn delete_dictionary_entry(db: State<'_, DbState>, id: i64) -> Result<(), St
 #[tauri::command]
 pub fn get_dictionary_prompt(db: State<'_, DbState>) -> String {
     let conn = db.0.lock().unwrap();
-    let mut stmt = match conn.prepare("SELECT term FROM dictionary ORDER BY term ASC") {
-        Ok(s) => s,
-        Err(_) => return String::new(),
-    };
-
-    let terms: Vec<String> = match stmt.query_map([], |row| row.get::<_, String>(0)) {
-        Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
-        Err(_) => Vec::new(),
-    };
-
-    if terms.is_empty() {
-        String::new()
-    } else {
-        format!("Vocabulary: {}. ", terms.join(", "))
-    }
+    crate::vocab::whisper_prompt(&crate::vocab::load(&conn))
 }
 
 // ─── Settings ─────────────────────────────────────────────────────────────────

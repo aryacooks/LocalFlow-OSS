@@ -12,6 +12,8 @@
           var el = document.documentElement;
           el.classList.remove("dark", "light");
           el.classList.add(t);
+          el.dataset.sky = t;
+          if (localStorage.getItem("localflow-look") === "oil") el.classList.add("oil");
         } catch (e) {}
       })();
     </script>
@@ -19,6 +21,7 @@
     <meta name="description" content="100% local voice-to-text for Windows. Dictate anywhere with AI cleanup, no cloud required." />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Mona+Sans:wdth,wght@75..125,400..900&family=Martian+Mono:wdth,wght@75..100,400..700&display=swap" rel="stylesheet" />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
   </head>
 

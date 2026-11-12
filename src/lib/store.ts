@@ -19,12 +19,42 @@ function applyTheme(t: Theme) {
   const el = document.documentElement;
   el.classList.remove("dark", "light");
   el.classList.add(t);
+  el.dataset.sky = t;
   try {
     localStorage.setItem(THEME_KEY, t);
   } catch {
     /* ignore */
   }
 }
+
+export type Look = "normal" | "oil";
+const LOOK_KEY = "localflow-look";
+
+function readStoredLook(): Look {
+  try {
+    return localStorage.getItem(LOOK_KEY) === "oil" ? "oil" : "normal";
+  } catch {
+    return "normal";
+  }
+}
+
+// The "oil" look (painted textures, sunrise/dusk palette) is a class layered on top of
+// light/dark: `html.oil` and `html.oil.dark` in globals.css.
+function applyLook(l: Look) {
+  document.documentElement.classList.toggle("oil", l === "oil");
+  try {
+    localStorage.setItem(LOOK_KEY, l);
+  } catch {
+    /* ignore */
+  }
+}
+
+/** The current window colour, read before a switch so the dissolve shows the old look. */
+function currentWindowBg(): string {
+  return getComputedStyle(document.documentElement).getPropertyValue("--window").trim();
+}
+
+const oilTimers: { swap?: number; done?: number } = {};
 
 function prefersReducedMotion(): boolean {
   return (
@@ -81,7 +111,8 @@ interface AppState {
   amplitude: { rms: number; bars: number[] };
   theme: Theme;
   // When set, an overlay of `from`-theme pixels dissolves to reveal the new theme.
-  themeTransition: { from: Theme; id: number } | null;
+  themeTransition: { from: Theme; bg: string; id: number } | null;
+  look: Look;
   // Active Whisper-model downloads: id → percent. Lives here (not in the Models page)
   // so progress survives navigating away — the backend keeps downloading regardless.
   modelDownloads: Record<string, number>;
@@ -97,6 +128,7 @@ interface AppState {
   setTheme: (t: Theme) => void;
   toggleTheme: () => void;
   initTheme: () => void;
+  toggleLook: () => void;
   endThemeTransition: () => void;
 
   startModelDownload: (id: string) => Promise<void>;
@@ -120,6 +152,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   amplitude: { rms: 0, bars: Array(8).fill(0.1) },
   theme: readStoredTheme(),
   themeTransition: null,
+  look: readStoredLook(),
   modelDownloads: {},
 
   setIsRecording: (v) => set({ isRecording: v }),
@@ -150,9 +183,28 @@ export const useAppStore = create<AppState>((set, get) => ({
       return;
     }
 
+    // Oil look: the sun sets / the moon rises in the sidebar sky (driven by
+    // data-sky), and the palette fades across once the sun is behind the hills.
+    if (get().look === "oil") {
+      const root = document.documentElement;
+      window.clearTimeout(oilTimers.swap);
+      window.clearTimeout(oilTimers.done);
+      root.classList.remove("oil-switching");
+      void root.offsetWidth; // restart the dim animation
+      root.classList.add("oil-switching");
+      root.dataset.sky = next;
+      oilTimers.swap = window.setTimeout(() => {
+        applyTheme(next);
+        set({ theme: next });
+      }, 430);
+      oilTimers.done = window.setTimeout(() => root.classList.remove("oil-switching"), 1400);
+      return;
+    }
+
     // Show the dissolve overlay (old-theme pixels) over the still-current theme, then
     // swap the underlying theme on the next frame so there's no flash before it covers.
-    set((s) => ({ themeTransition: { from, id: (s.themeTransition?.id ?? 0) + 1 } }));
+    const bg = currentWindowBg();
+    set((s) => ({ themeTransition: { from, bg, id: (s.themeTransition?.id ?? 0) + 1 } }));
     requestAnimationFrame(() => {
       applyTheme(next);
       set({ theme: next });
@@ -160,6 +212,21 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   initTheme: () => {
     applyTheme(get().theme);
+    applyLook(get().look);
+  },
+  toggleLook: () => {
+    const next: Look = get().look === "oil" ? "normal" : "oil";
+    if (prefersReducedMotion()) {
+      applyLook(next);
+      set({ look: next });
+      return;
+    }
+    const bg = currentWindowBg();
+    set((s) => ({ themeTransition: { from: s.theme, bg, id: (s.themeTransition?.id ?? 0) + 1 } }));
+    requestAnimationFrame(() => {
+      applyLook(next);
+      set({ look: next });
+    });
   },
   endThemeTransition: () => set({ themeTransition: null }),
 

@@ -121,7 +121,10 @@ type-matching + intent classification above is a language-understanding task.
 
 ## The two-tier approach
 
-### Tier 1 — regex (safe, conservative, always on)
+### Tier 1 — regex (safe, conservative; runs only when cleanup is on)
+Runs when "Tidy up my dictation" is on but the LLM isn't installed or fails. With cleanup
+off, dictation is left as Whisper heard it (only spoken commands such as "scratch that"
+still apply, in `apply_spoken_commands`).
 Lives in [`src-tauri/src/cleanup.rs`](../src-tauri/src/cleanup.rs). Only the unambiguous
 cases. Must never rewrite an insertion or a hedge.
 

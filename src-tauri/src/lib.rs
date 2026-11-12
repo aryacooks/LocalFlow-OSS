@@ -21,6 +21,7 @@ mod placer;
 mod pastecard;
 mod appicon;
 mod thermal;
+mod vocab;
 mod tint;
 mod pipeline;
 mod translit;
@@ -330,6 +331,7 @@ pub fn run() {
             inject::inject_text,
             inject::inject_text_clipboard,
             inject::get_foreground_app,
+            inject::set_text_focus,
             // macOS permissions (onboarding wizard)
             mac_permissions::get_permission_status,
             mac_permissions::request_accessibility_permission,
@@ -745,26 +747,10 @@ pub async fn run_pipeline(
 
     let (app_name, app_exe) = inject::get_foreground_app();
 
-    // Get dictionary prompt from DB
-    let dict_prompt = {
-        if let Some(db_state) = app.try_state::<DbState>() {
-            let conn = db_state.0.lock().unwrap();
-            let mut stmt = conn
-                .prepare("SELECT term FROM dictionary ORDER BY term ASC")
-                .unwrap_or_else(|_| conn.prepare("SELECT 1 WHERE 0").unwrap());
-            let terms: Vec<String> = stmt
-                .query_map([], |row| row.get::<_, String>(0))
-                .map(|rows| rows.filter_map(|r| r.ok()).collect())
-                .unwrap_or_default();
-            if terms.is_empty() {
-                String::new()
-            } else {
-                format!("Vocabulary: {}. ", terms.join(", "))
-            }
-        } else {
-            String::new()
-        }
-    };
+    // The user's dictionary: biases Whisper, fixes "sounds like" spellings, and
+    // reaches the AI cleanup (see vocab.rs).
+    let vocab_terms = vocab::load_from_app(app);
+    let dict_prompt = vocab::whisper_prompt(&vocab_terms);
 
     let language = pipeline.current_language.lock().unwrap().clone();
     let romanize = *pipeline.romanize.lock().unwrap();
@@ -862,11 +848,24 @@ pub async fn run_pipeline(
         return;
     }
 
-    let cleaned = match cleanup::cleanup_text(app.clone(), raw.clone(), app_exe.clone()) {
+    // Whisper sometimes answers silence by reading its prompt (the dictionary) back.
+    if vocab::only_repeats_prompt(&raw, &vocab_terms) {
+        app.emit(
+            "processing-done",
+            serde_json::json!({"error": "No speech detected"}),
+        )
+        .ok();
+        return;
+    }
+
+    // The user's own spelling rules apply whether or not cleanup is on.
+    let heard = vocab::apply(&raw, &vocab_terms);
+
+    let cleaned = match cleanup::cleanup_text(app.clone(), heard.clone(), app_exe.clone()) {
         Ok(t) => t,
         Err(e) => {
             eprintln!("Cleanup error: {}, falling back to regex", e);
-            cleanup::regex_cleanup(&raw)
+            cleanup::regex_cleanup(&heard)
         }
     };
 
@@ -957,10 +956,16 @@ pub async fn run_pipeline(
     // (or the paste failed), show the card with a Copy button so the words aren't lost.
     let pasted = inject::inject_text_clipboard(text_to_inject.clone()).await;
     // Checked after the paste so it never delays typing; the paste doesn't move focus.
-    let accepts_text = tauri::async_runtime::spawn_blocking(inject::focused_accepts_text)
-        .await
-        .ok()
-        .flatten();
+    // Dictating into LocalFlow's own window: the OS can't see into our webview, so use
+    // what the window reported (a text box focused or not).
+    let accepts_text = if inject::foreground_is_self() {
+        Some(inject::self_text_focused())
+    } else {
+        tauri::async_runtime::spawn_blocking(inject::focused_accepts_text)
+            .await
+            .ok()
+            .flatten()
+    };
     if let Err(e) = &pasted {
         eprintln!("Injection failed: {}", e);
     }

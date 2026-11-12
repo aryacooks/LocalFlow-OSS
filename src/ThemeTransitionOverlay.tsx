@@ -38,7 +38,7 @@ function jitterColor(rgb: number[]): string {
 export default function ThemeTransitionOverlay() {
   const transition = useAppStore((s) => s.themeTransition);
   if (!transition) return null;
-  return <PixelFall key={transition.id} from={transition.from} />;
+  return <PixelFall key={transition.id} from={transition.from} bg={transition.bg} />;
 }
 
 interface Tile {
@@ -50,7 +50,7 @@ interface Tile {
   sc: number; // end scale
 }
 
-function PixelFall({ from }: { from: "dark" | "light" }) {
+function PixelFall({ from, bg }: { from: "dark" | "light"; bg: string }) {
   const endThemeTransition = useAppStore((s) => s.endThemeTransition);
 
   // Build the grid (and all per-square randomness) once for this run.
@@ -59,7 +59,7 @@ function PixelFall({ from }: { from: "dark" | "light" }) {
     const rows = Math.ceil(window.innerHeight / SIZE);
     const maxDist = cols - 1 + (rows - 1);
     const step = maxDist > 0 ? (TOTAL - SQUARE_DUR) / maxDist : 0;
-    const rgb = hexToRgb(THEME_BG[from]);
+    const rgb = hexToRgb(/^#[0-9a-f]{6}$/i.test(bg) ? bg : THEME_BG[from]);
 
     const tiles: Tile[] = [];
     for (let i = 0; i < cols * rows; i++) {
@@ -79,7 +79,7 @@ function PixelFall({ from }: { from: "dark" | "light" }) {
       });
     }
     return { cols, tiles };
-  }, [from]);
+  }, [from, bg]);
 
   useEffect(() => {
     const t = setTimeout(endThemeTransition, TOTAL + SQUARE_DUR + 120);

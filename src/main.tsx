@@ -7,6 +7,7 @@ import Placer from "./windows/Placer";
 import PasteCard from "./windows/PasteCard";
 import "@fontsource-variable/geist";
 import "./styles/globals.css";
+import "./styles/oil.css";
 
 if (window.location.pathname === "/bubble" || window.location.pathname === "/placer" || window.location.pathname === "/card") {
   document.documentElement.classList.add("bubble-document");

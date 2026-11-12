@@ -701,7 +701,7 @@ fn finalize_dictation(text: &str) -> String {
 }
 
 /// Build the LLM cleanup prompt
-pub fn build_cleanup_prompt(raw_text: &str, app_exe: &str, style_note: &str) -> String {
+pub fn build_cleanup_prompt(raw_text: &str, app_exe: &str, style_note: &str, vocabulary: &str) -> String {
     let context = app_context(app_exe);
     let context_hint = match context {
         "casual" => "casual chat style (Slack/Discord/WhatsApp). Keep it concise, lowercase is fine, use contractions.",
@@ -721,7 +721,7 @@ pub fn build_cleanup_prompt(raw_text: &str, app_exe: &str, style_note: &str) -> 
         r#"You are an expert voice dictation post-processor.
 Task: Clean up the raw voice transcript to make it clean, natural, and readable.
 Target App Context: {context_hint}
-{style}
+{style}{vocabulary}
 Rules:
 - Remove filler words (um, uh, you know, i mean, etc.) ONLY where they carry no meaning.
 - NEVER delete a word that is doing real work. "right" in "right now" or "that's right", "like" in "I like it", "so" in "so that it works", "well" in "well done", "kind of" in "what kind of person" must all stay. When in doubt, keep the word.
@@ -765,13 +765,15 @@ Input: "{raw_text}"
 Output: "#,
         context_hint = context_hint,
         style = style,
+        vocabulary = vocabulary,
         raw_text = raw_text,
     )
 }
 
 use tauri::{AppHandle, Manager};
 
-/// Main cleanup command — uses LLM if enabled, otherwise falls back to regex
+/// Main cleanup command. Off: raw text (+ spoken commands). On: the LLM, or the
+/// regex tidy-up while the LLM isn't installed or fails.
 #[tauri::command]
 pub fn cleanup_text(app: AppHandle, raw_text: String, app_exe: String) -> Result<String, String> {
     let llm_enabled = {
@@ -788,7 +790,14 @@ pub fn cleanup_text(app: AppHandle, raw_text: String, app_exe: String) -> Result
         }
     };
 
-    if llm_enabled && crate::llm::is_llama_cli_installed(app.clone()) {
+    // Cleanup off = the user's words as Whisper heard them. Only explicit spoken
+    // commands ("new line", "comma", "scratch that", emoji) still apply, because the
+    // user asked for those out loud. Fillers and self-corrections are left alone.
+    if !llm_enabled {
+        return Ok(finalize_dictation(&raw_text));
+    }
+
+    if crate::llm::is_llama_cli_installed(app.clone()) {
         let system_prompt = {
             if let Some(db_state) = app.try_state::<crate::db::DbState>() {
                 let conn = db_state.0.lock().unwrap();
@@ -803,7 +812,8 @@ pub fn cleanup_text(app: AppHandle, raw_text: String, app_exe: String) -> Result
             }
         };
 
-        let prompt = build_cleanup_prompt(&raw_text, &app_exe, &system_prompt);
+        let vocabulary = crate::vocab::llm_lines(&crate::vocab::load_from_app(&app));
+        let prompt = build_cleanup_prompt(&raw_text, &app_exe, &system_prompt, &vocabulary);
         match crate::llm::run_inference(&app, &prompt) {
             Ok(result) => return Ok(finalize_dictation(&result)),
             Err(e) => {

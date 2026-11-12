@@ -1,133 +1,225 @@
-import { useEffect, useState } from "react";
-import { BookOpen, Plus, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ArrowLeft, Ear, Pencil, Plus, Sparkles, Trash2, Wand2, X } from "lucide-react";
 import { addDictionaryEntry, deleteDictionaryEntry, DictionaryEntry, getDictionary } from "../lib/ipc";
 
-export default function DictionaryPage() {
-  const [entries, setEntries] = useState<DictionaryEntry[]>([]);
-  const [term, setTerm] = useState("");
-  const [pronunciation, setPronunciation] = useState("");
-  const [replacement, setReplacement] = useState("");
-  const [adding, setAdding] = useState(false);
-  const [showForm, setShowForm] = useState(false);
-  const showBanner = true;
+/** Mirrors vocab.rs: the speech model reads "Term, Term, …" up to 500 characters. */
+const PROMPT_BUDGET = 500;
 
-  const load = async () => setEntries(await getDictionary());
+function splitSpellings(field: string): string[] {
+  return field.split(/[,;\n]/).map((s) => s.trim()).filter(Boolean);
+}
+
+function termsRead(entries: DictionaryEntry[]): number {
+  let len = 0;
+  let n = 0;
+  for (const e of entries) {
+    const piece = (n === 0 ? 0 : 2) + e.term.length;
+    if (len + piece + 1 > PROMPT_BUDGET) break;
+    len += piece;
+    n++;
+  }
+  return n;
+}
+
+/** The dictionary editor. `embedded` drops the page chrome so it can live inside
+ *  Formatting options as a section. */
+export default function DictionaryPage({ embedded = false }: { embedded?: boolean }) {
+  const [entries, setEntries] = useState<DictionaryEntry[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [term, setTerm] = useState("");
+  const [soundsLike, setSoundsLike] = useState("");
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [confirmId, setConfirmId] = useState<number | null>(null);
+  const [error, setError] = useState("");
+  const termRef = useRef<HTMLInputElement>(null);
+
+  const load = async () => {
+    try {
+      setEntries(await getDictionary());
+    } finally {
+      setLoaded(true);
+    }
+  };
 
   useEffect(() => {
     load().catch(console.error);
   }, []);
 
-  const handleAdd = async () => {
-    if (!term.trim()) return;
-    setAdding(true);
+  const reset = () => {
+    setTerm("");
+    setSoundsLike("");
+    setEditingId(null);
+    setError("");
+  };
+
+  const handleSave = async () => {
+    const t = term.trim();
+    if (!t) return termRef.current?.focus();
+    setSaving(true);
+    setError("");
     try {
-      await addDictionaryEntry(term.trim(), pronunciation.trim(), replacement.trim());
-      setTerm("");
-      setPronunciation("");
-      setReplacement("");
-      setShowForm(false);
+      // Editing a term's spelling: drop the old row first (terms are unique by spelling).
+      const old = entries.find((e) => e.id === editingId);
+      if (old && old.term !== t) await deleteDictionaryEntry(old.id);
+      await addDictionaryEntry(t, splitSpellings(soundsLike).join(", "), "");
+      reset();
       await load();
+      termRef.current?.focus();
+    } catch (e) {
+      setError(String(e));
     } finally {
-      setAdding(false);
+      setSaving(false);
     }
   };
 
-  const handleDelete = async (id: number) => {
-    await deleteDictionaryEntry(id);
-    setEntries((prev) => prev.filter((entry) => entry.id !== id));
+  const handleEdit = (e: DictionaryEntry) => {
+    setEditingId(e.id);
+    setTerm(e.term);
+    setSoundsLike(e.pronunciation);
+    setError("");
+    termRef.current?.focus();
   };
 
+  // Two-click delete (native confirm() is unreliable in the Tauri webview).
+  const handleDelete = async (id: number) => {
+    if (confirmId !== id) {
+      setConfirmId(id);
+      setTimeout(() => setConfirmId((cur) => (cur === id ? null : cur)), 3500);
+      return;
+    }
+    setConfirmId(null);
+    await deleteDictionaryEntry(id);
+    if (editingId === id) reset();
+    setEntries((prev) => prev.filter((e) => e.id !== id));
+  };
+
+  const read = useMemo(() => termsRead(entries), [entries]);
+  const onKey = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter") handleSave();
+    if (e.key === "Escape") reset();
+  };
+
+  const wrapClass = embedded ? "dict-page dict-embedded" : "page dict-page";
+  if (!loaded) return <div className={wrapClass} />;
+
   return (
-    <div className="page">
-      {showBanner && (
-        <div className="banner-card" style={{ backgroundImage: "url('/orangish.png')" }}>
-          <div className="banner-content">
-            <h2 className="banner-title">Teach the app your <em>words</em>.</h2>
-            <p className="banner-desc">
-              Add names, short forms, and special words so the app spells them right when you say them.
-            </p>
-            <div className="banner-actions">
-              <span className="banner-tag">Your words</span>
-              <span className="banner-tag">Hindi + English</span>
-              <span className="banner-tag">Fewer mistakes</span>
-            </div>
+    <div className={wrapClass}>
+      {embedded ? (
+        <div className="fmt-section-head">
+          <span className="section-label" style={{ margin: 0 }}>Dictionary</span>
+          <span className="fmt-section-count">{entries.length === 1 ? "1 word" : `${entries.length} words`}</span>
+        </div>
+      ) : (
+        <div className="page-header">
+          <div>
+            <p className="page-kicker">{entries.length === 1 ? "1 word" : `${entries.length} words`}</p>
+            <h2 className="page-title">Dictionary</h2>
           </div>
         </div>
       )}
 
-      <div className="page-header">
-        <div>
-          <p className="page-kicker">{entries.length} vocabulary hints</p>
-          <h2 className="page-title">Dictionary</h2>
+      {/* How the list is used */}
+      <section className="dict-uses">
+        <div className="dict-use">
+          <span className="dict-use-icon" style={{ "--tone": "#e0662a" } as React.CSSProperties}><Ear size={15} /></span>
+          <div><b>Heard right</b><span>The speech model listens for these words</span></div>
         </div>
-        <button className="button primary" onClick={() => setShowForm((v) => !v)}>
-          <Plus size={14} />
-          Add term
-        </button>
-      </div>
-
-      <section className="glass-panel" style={{ display: "flex", gap: 12, marginBottom: 14 }}>
-        <BookOpen size={17} color="var(--accent)" style={{ marginTop: 2, flexShrink: 0 }} />
-        <p className="row-desc" style={{ margin: 0 }}>
-          Add words the app often gets wrong, like names, brands, or Hindi-English words, so it spells them correctly when you speak.
-        </p>
+        <div className="dict-use">
+          <span className="dict-use-icon" style={{ "--tone": "#2e9e5b" } as React.CSSProperties}><Wand2 size={15} /></span>
+          <div><b>Fixed every time</b><span>"Sounds like" mistakes are swapped, even with cleanup off</span></div>
+        </div>
+        <div className="dict-use">
+          <span className="dict-use-icon" style={{ "--tone": "#c9891a" } as React.CSSProperties}><Sparkles size={15} /></span>
+          <div><b>Spelled by the AI</b><span>Cleanup gets the list and catches near-misses</span></div>
+        </div>
       </section>
 
-      {showForm && (
-        <section className="glass-panel" style={{ marginBottom: 14 }}>
-          <div className="section-label">New entry</div>
-          <div className="grid cols-3">
-            <input className="field" placeholder="Term" value={term} onChange={(e) => setTerm(e.target.value)} />
-            <input
-              className="field"
-              placeholder="Pronunciation hint"
-              value={pronunciation}
-              onChange={(e) => setPronunciation(e.target.value)}
-            />
-            <input
-              className="field"
-              placeholder="Replacement text"
-              value={replacement}
-              onChange={(e) => setReplacement(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleAdd()}
-            />
-          </div>
-          <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-            <button className="button primary" disabled={!term.trim() || adding} onClick={handleAdd}>
-              {adding ? "Adding" : "Add entry"}
+      {/* Add / edit */}
+      <section className={`glass-panel dict-form ${editingId !== null ? "is-editing" : ""}`}>
+        <label className="dict-field">
+          <span>Word</span>
+          <input
+            ref={termRef}
+            value={term}
+            onChange={(e) => setTerm(e.target.value)}
+            onKeyDown={onKey}
+            placeholder="kubectl, Siobhán, LocalFlow…"
+            maxLength={64}
+            autoFocus={!embedded}
+          />
+        </label>
+        <ArrowLeft size={16} className="dict-form-arrow" aria-hidden="true" />
+        <label className="dict-field grow">
+          <span>Sounds like <em>optional</em></span>
+          <input
+            value={soundsLike}
+            onChange={(e) => setSoundsLike(e.target.value)}
+            onKeyDown={onKey}
+            placeholder="How it gets misheard: cube control, cube cuddle"
+          />
+        </label>
+        <div className="dict-form-actions">
+          {editingId !== null && (
+            <button className="button" onClick={reset} title="Cancel editing">
+              <X size={14} />
             </button>
-            <button className="button" onClick={() => setShowForm(false)}>
-              Cancel
-            </button>
-          </div>
-        </section>
-      )}
+          )}
+          <button className="button primary" onClick={handleSave} disabled={saving || !term.trim()}>
+            {editingId !== null ? "Save" : <><Plus size={14} /> Add</>}
+          </button>
+        </div>
+      </section>
+      {error && <p className="dict-error">{error}</p>}
 
+      {/* The list */}
       {entries.length === 0 ? (
-        <section className="empty-state">
-          <BookOpen size={40} />
-          <h3>Dictionary is empty</h3>
-          <p>Add your name, company, product names, technical terms, or acronyms.</p>
+        <section className="glass-panel dict-empty">
+          <b>No words yet</b>
+          <span>Add names, product words and jargon the app keeps getting wrong.</span>
         </section>
       ) : (
-        <section className="table-panel">
-          <div className="table-row table-head" style={{ gridTemplateColumns: "1fr 1fr 1fr 32px" }}>
-            <span>Term</span>
-            <span>Pronunciation</span>
-            <span>Replacement</span>
-            <span />
-          </div>
-          {entries.map((entry) => (
-            <div key={entry.id} className="table-row" style={{ gridTemplateColumns: "1fr 1fr 1fr 32px" }}>
-              <span className="row-title truncate">{entry.term}</span>
-              <span className="row-desc truncate">{entry.pronunciation || "None"}</span>
-              <span className="row-desc truncate">{entry.replacement || "None"}</span>
-              <button className="button icon borderless danger" onClick={() => handleDelete(entry.id)} aria-label="Delete term">
-                <Trash2 size={14} />
-              </button>
-            </div>
-          ))}
-        </section>
+        <>
+          <section className="glass-panel dict-list">
+            {entries.map((e) => {
+              const spellings = splitSpellings(e.pronunciation);
+              return (
+                <div key={e.id} className={`dict-row ${editingId === e.id ? "is-editing" : ""}`}>
+                  <span className="dict-term">{e.term}</span>
+                  <div className="dict-spellings">
+                    {spellings.length > 0 ? (
+                      <>
+                        <span className="dict-from">fixes</span>
+                        {spellings.map((s) => <span key={s} className="dict-chip">{s}</span>)}
+                      </>
+                    ) : (
+                      <span className="dict-from">listens for it</span>
+                    )}
+                  </div>
+                  <div className="dict-row-actions">
+                    <button className="icon-button" onClick={() => handleEdit(e)} title={`Edit ${e.term}`} aria-label={`Edit ${e.term}`}>
+                      <Pencil size={14} />
+                    </button>
+                    <button
+                      className={`icon-button danger ${confirmId === e.id ? "confirm" : ""}`}
+                      onClick={() => handleDelete(e.id)}
+                      title={confirmId === e.id ? "Click again to delete" : `Delete ${e.term}`}
+                      aria-label={`Delete ${e.term}`}
+                    >
+                      <Trash2 size={14} />
+                      {confirmId === e.id && <span>Delete?</span>}
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </section>
+          {read < entries.length && (
+            <p className="dict-note">
+              The speech model reads the first {read} of {entries.length} words. All of them are still fixed and sent to cleanup.
+            </p>
+          )}
+        </>
       )}
     </div>
   );

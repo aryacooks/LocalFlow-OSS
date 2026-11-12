@@ -1,9 +1,11 @@
-import { Routes, Route, NavLink, Link, useLocation } from "react-router-dom";
+import { Routes, Route, NavLink, Link, Navigate } from "react-router-dom";
 import {
   Download,
   CircleAlert,
   Keyboard,
+  Lightbulb,
   Moon,
+  Palette,
   Shield,
   Sparkles,
   Sun,
@@ -39,6 +41,7 @@ import ModelsPage from "./routes/Models";
 import SettingsPage from "./routes/Settings";
 import ShortcutsPage from "./routes/Shortcuts";
 import LLMSettingsPage from "./routes/LLMSettings";
+import TipsPage from "./routes/Tips";
 
 const BUG_REPORT_URL = "https://localflow.aryab.in/contact";
 
@@ -51,19 +54,10 @@ const navItems = [
   { to: "/shortcuts", icon: Keyboard, label: "Shortcuts" },
   { to: "/models", animated: DownloadIcon, label: "Language Model" },
   { to: "/llm", animated: SparklesIcon, label: "Formatting options" },
+  { to: "/tips", icon: Lightbulb, label: "Tips" },
   { to: "/settings", animated: GearIcon, label: "Settings" },
   { to: "/about", animated: InfoCircleIcon, label: "About" },
 ] as const;
-
-function titleForPath(pathname: string) {
-  if (pathname.startsWith("/history")) return ["History", "Everything you've dictated recently"];
-  if (pathname.startsWith("/shortcuts")) return ["Shortcuts", "Choose the keys that start and stop talking"];
-  if (pathname.startsWith("/models")) return ["Language Model", "Choose how your speech is turned into text"];
-  if (pathname.startsWith("/llm")) return ["Formatting options", "Automatically tidy up what you say"];
-  if (pathname.startsWith("/settings")) return ["Settings", "Make the app work the way you like"];
-  if (pathname.startsWith("/about")) return ["About", "Private voice-to-text that stays on your computer"];
-  return ["Dashboard", "Your dictation at a glance"];
-}
 
 /** Sidebar setup reminders — one square box per incomplete step, shown below About.
  *  Each disappears on its own once that step is done (polled in App). */
@@ -104,9 +98,7 @@ function SetupReminders({
 }
 
 export default function App() {
-  const location = useLocation();
-  const { isRecording, isProcessing, privacyMode, togglePrivacy, initListeners, loadLanguage, theme, toggleTheme, initTheme, lastError, clearLastError } = useAppStore();
-  const [title, subtitle] = titleForPath(location.pathname);
+  const { isRecording, isProcessing, privacyMode, togglePrivacy, initListeners, loadLanguage, theme, toggleTheme, initTheme, look, toggleLook, lastError, clearLastError } = useAppStore();
   const plugRef = useRef<AnimatedIconHandle>(null);
   const ghostRef = useRef<AnimatedIconHandle>(null);
   const bugRef = useRef<AnimatedIconHandle>(null);
@@ -121,12 +113,34 @@ export default function App() {
 
   useEffect(() => {
     initTheme();
+
+    // Tell the backend whether a text box has focus in this window, so a dictation
+    // made while LocalFlow is in front only counts as pasted if it had somewhere to go.
+    const isTextTarget = (el: Element | null) => {
+      if (!el) return false;
+      if (el instanceof HTMLTextAreaElement) return !el.readOnly && !el.disabled;
+      if (el instanceof HTMLInputElement) {
+        const textual = ["text", "search", "email", "url", "tel", "password", "number", ""];
+        return textual.includes(el.type) && !el.readOnly && !el.disabled;
+      }
+      return (el as HTMLElement).isContentEditable === true;
+    };
+    const reportFocus = () =>
+      invoke("set_text_focus", { focused: isTextTarget(document.activeElement) }).catch(() => {});
+    const onFocusOut = () => setTimeout(reportFocus, 0);
+    document.addEventListener("focusin", reportFocus);
+    document.addEventListener("focusout", onFocusOut);
+    reportFocus();
     let cleanup: (() => void) | null = null;
     initListeners().then((fn) => {
       cleanup = fn;
     });
     loadLanguage();
-    return () => cleanup?.();
+    return () => {
+      cleanup?.();
+      document.removeEventListener("focusin", reportFocus);
+      document.removeEventListener("focusout", onFocusOut);
+    };
   }, [initListeners, loadLanguage, initTheme]);
 
   // While incognito is on, keep the ghost gently jumping on a loop. The icon's own
@@ -229,6 +243,17 @@ export default function App() {
   return (
     <div className="mac-window">
       <aside className="mac-sidebar">
+        {/* Oil theme only: painted sky behind the sidebar. The sun sets on the right and
+            the moon rises on the left when switching light/dark (see oil.css). */}
+        <div className="oil-scene" aria-hidden="true">
+          <div className="oil-sky day" />
+          <div className="oil-sky night" />
+          <div className="oil-sun" />
+          <div className="oil-moon" />
+          <div className="oil-hills day" />
+          <div className="oil-hills night" />
+          <div className="oil-grain" />
+        </div>
 
 
         <div className="brand-lockup">
@@ -308,6 +333,21 @@ export default function App() {
           </button>
           <button
             type="button"
+            className={`theme-toggle look-toggle ${look === "oil" ? "is-oil" : ""}`}
+            onClick={toggleLook}
+            title={look === "oil" ? "Switch to the normal theme" : "Switch to the oil-paint theme"}
+            aria-label="Toggle oil-paint theme"
+            aria-pressed={look === "oil"}
+          >
+            <Palette size={15} />
+            <span>Theme</span>
+            <span className="look-switch" aria-hidden="true">
+              <span className={look === "normal" ? "on" : ""}>Normal</span>
+              <span className={look === "oil" ? "on" : ""}>Oil</span>
+            </span>
+          </button>
+          <button
+            type="button"
             className="theme-toggle"
             onClick={toggleTheme}
             title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
@@ -351,13 +391,6 @@ export default function App() {
       </aside>
 
       <section className="mac-main">
-        <header className="mac-titlebar">
-          <div className="titlebar-title">
-            <h1>{title}</h1>
-            <p>{subtitle}</p>
-          </div>
-        </header>
-
         {lastError && (
           <div className="app-error-banner" role="alert">
             <CircleAlert size={16} />
@@ -376,6 +409,9 @@ export default function App() {
             <Route path="/" element={<Dashboard />} />
             <Route path="/history" element={<HistoryPage />} />
             <Route path="/shortcuts" element={<ShortcutsPage />} />
+            {/* The dictionary now lives in Formatting options. */}
+            <Route path="/dictionary" element={<Navigate to="/llm" replace />} />
+            <Route path="/tips" element={<TipsPage />} />
             <Route path="/models" element={<ModelsPage />} />
             <Route path="/llm" element={<LLMSettingsPage />} />
             <Route path="/settings" element={<SettingsPage />} />

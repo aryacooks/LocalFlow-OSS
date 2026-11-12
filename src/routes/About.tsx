@@ -197,6 +197,21 @@ export default function AboutPage() {
           ))}
         </div>
       </section>
+
+      {/* Closing banner */}
+        <div className="banner-card about-banner" style={{ backgroundImage: "url('/red extra.png')" }}>
+          <div className="banner-content">
+            <h2 className="banner-title">Writes the way <em>you</em> think.</h2>
+            <p className="banner-desc">
+              Just talk, and your words come out clean and ready to use. LocalFlow clears the "um"s and "uh"s, fixes the bits you say twice, and matches the tone of whatever app you're writing in.
+            </p>
+            <div className="banner-actions">
+              <span className="banner-tag">More accurate than Whisper</span>
+              <span className="banner-tag">Works fully offline</span>
+              <span className="banner-tag">We never track you</span>
+            </div>
+          </div>
+        </div>
     </div>
   );
 }

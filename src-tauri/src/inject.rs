@@ -312,6 +312,52 @@ fn exe_to_friendly_name(exe: &str) -> String {
     .to_string()
 }
 
+/// Whether a text box has focus inside LocalFlow's own main window. macOS can't see
+/// into our webview reliably, so the window reports it (`set_text_focus`).
+static SELF_TEXT_FOCUS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[tauri::command]
+pub fn set_text_focus(focused: bool) {
+    SELF_TEXT_FOCUS.store(focused, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn self_text_focused() -> bool {
+    SELF_TEXT_FOCUS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// True when LocalFlow itself is the frontmost app (dictating "into" our own window).
+pub fn foreground_is_self() -> bool {
+    let me = std::process::id();
+    #[cfg(target_os = "macos")]
+    unsafe {
+        use objc::runtime::Object;
+        use objc::{class, msg_send, sel, sel_impl};
+        let workspace: *mut Object = msg_send![class!(NSWorkspace), sharedWorkspace];
+        let frontmost: *mut Object = msg_send![workspace, frontmostApplication];
+        if frontmost.is_null() {
+            return false;
+        }
+        let pid: i32 = msg_send![frontmost, processIdentifier];
+        return pid as u32 == me;
+    }
+    #[cfg(windows)]
+    unsafe {
+        use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+        let hwnd = GetForegroundWindow();
+        if hwnd.0.is_null() {
+            return false;
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        return pid == me;
+    }
+    #[allow(unreachable_code)]
+    {
+        let _ = me;
+        false
+    }
+}
+
 /// Copy text to the clipboard (and leave it there) — the "Copy" button on the
 /// nothing-was-pasted card.
 #[tauri::command]
