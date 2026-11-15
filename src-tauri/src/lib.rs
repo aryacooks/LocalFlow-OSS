@@ -25,6 +25,7 @@ mod thermal;
 mod vocab;
 mod pipeline;
 mod translit;
+mod update;
 mod dravidian;
 mod whisper;
 
@@ -294,6 +295,7 @@ pub fn run() {
         })
         .manage(audio_state.clone())
         .manage(pipeline_state.clone())
+        .manage(update::PendingUpdate::default())
         .invoke_handler(tauri::generate_handler![
             // Audio
             audio::list_audio_devices,
@@ -304,6 +306,8 @@ pub fn run() {
             audio::set_audio_device,
             // Primary key capture (Shortcuts)
             hook::capture_trigger_key,
+            update::check_update,
+            update::install_update,
             hook::cancel_trigger_capture,
             // Whisper
             whisper::list_models,

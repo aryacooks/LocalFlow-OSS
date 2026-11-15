@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "build:demo": "vite build --config vite.demo.config.ts && rm -rf \"../../localflow website/public/app-demo\" && cp -R dist-demo \"../../localflow website/public/app-demo\" && mv \"../../localflow website/public/app-demo/demo.html\" \"../../localflow website/public/app-demo/index.html\""
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.2.9",
@@ -18,7 +19,6 @@
     "@tauri-apps/plugin-global-shortcut": "^2.3.1",
     "@tauri-apps/plugin-opener": "^2",
     "@tauri-apps/plugin-process": "^2.4.0",
-    "@tauri-apps/plugin-updater": "^2.14.1",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^1.16.0",

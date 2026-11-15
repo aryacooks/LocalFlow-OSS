@@ -65,7 +65,7 @@
       "minimumSystemVersion": "11.0",
       "entitlements": "entitlements.plist",
       "dmg": {
-        "background": "icons/dmg-background.png",
+        "background": "icons/dmg-background.tiff",
         "windowSize": {
           "width": 660,
           "height": 400

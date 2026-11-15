@@ -10,7 +10,8 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { Mic, Timer, TrendingUp, Cpu, Zap, Activity, Scissors, Hourglass, MemoryStick, Thermometer, Check, X } from "lucide-react";
+import { Mic, Timer, TrendingUp, Cpu, Zap, Activity, Thermometer, Check, X } from "lucide-react";
+import { FreeIcon, TrimIcon, WaitIcon } from "../components/LimitIcons";
 import { AppBadge, cleanAppName } from "../components/AppBadge";
 import InfoCircleIcon from "../components/ui/info-circle-icon";
 import { DashboardStats, getDashboardStats, getSystemStats, SystemStats, getSetting, setSetting, WordsPerDay } from "../lib/ipc";
@@ -1093,15 +1094,15 @@ export default function Dashboard() {
         */}
         <div className="dashboard-limits">
           <div className="dashboard-limit-note">
-            <span className="limit-icon" style={{ "--tone": "#e0662a" } as React.CSSProperties}><Scissors size={14} strokeWidth={2.4} /></span>
+            <span className="limit-icon"><TrimIcon /></span>
             <p><strong>10 min max per recording.</strong> Keep talking past that and only the last 10 minutes are kept.</p>
           </div>
           <div className="dashboard-limit-note">
-            <span className="limit-icon" style={{ "--tone": "#c9891a" } as React.CSSProperties}><Hourglass size={14} strokeWidth={2.4} /></span>
+            <span className="limit-icon"><WaitIcon /></span>
             <p><strong>Longer talk, longer wait.</strong> Text appears after you stop, so long recordings take a bit longer.</p>
           </div>
           <div className="dashboard-limit-note">
-            <span className="limit-icon" style={{ "--tone": "#2e9e5b" } as React.CSSProperties}><MemoryStick size={14} strokeWidth={2.4} /></span>
+            <span className="limit-icon"><FreeIcon /></span>
             <p><strong>Memory frees itself.</strong> The model unloads 90 s after you stop to keep your Mac light.</p>
           </div>
         </div>

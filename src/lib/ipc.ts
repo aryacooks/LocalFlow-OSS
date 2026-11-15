@@ -351,3 +351,17 @@ export async function setLanguages(languages: string[]) {
   return invoke<void>("set_languages", { languages });
 }
 
+
+// ── Updates (src-tauri/src/update.rs) ──
+export interface UpdateStatus {
+  /** Version running now. */
+  current: string;
+  /** Newest published version, if the check could read it. */
+  latest: string | null;
+  /** True when `latest` is newer than `current`. */
+  available: boolean;
+  notes: string | null;
+}
+export const checkUpdate = () => invoke<UpdateStatus>("check_update");
+/** Downloads, verifies and installs; listen to "update-progress" for [downloaded, total|null]. */
+export const installUpdate = () => invoke<void>("install_update");

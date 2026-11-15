@@ -1798,12 +1798,12 @@ textarea {
   font-weight: 700;
 }
 .limit-icon {
-  width: 28px; height: 28px; flex-shrink: 0; border-radius: 8px;
+  width: 30px; height: 30px; flex-shrink: 0; border-radius: 9px;
   display: grid; place-items: center;
-  color: var(--tone);
-  background: color-mix(in srgb, var(--tone) 16%, transparent);
-  border: 1.5px solid color-mix(in srgb, var(--tone) 45%, transparent);
+  background: var(--accent); color: var(--accent-text);
+  border: 2px solid var(--separator); box-shadow: 2px 2px 0 var(--separator);
 }
+html.dark .limit-icon { color: #151914; }
 .limit-icon svg { margin-top: 0 !important; }
 
 .dashboard-limit-note em {
@@ -3372,6 +3372,22 @@ html.dark .dict-head-icon { color: #151914; }
 .orb-pick-label { font-size: 12.5px; font-weight: 700; display: inline-flex; align-items: center; gap: 4px; }
 .orb-pick.is-active .orb-pick-label::before { content: "✓"; font-weight: 900; }
 
+/* Limit icons (components/LimitIcons.tsx) */
+.li-trim .li-old { opacity: .38; }
+.li-trim .li-bar { stroke-dasharray: 1; stroke-dashoffset: 0; animation: fi-draw .45s ease-out both; }
+.li-trim .li-bar-2 { animation-delay: .12s; }
+.li-trim .li-bar-3 { animation-delay: .24s; }
+.li-trim .li-cut { transition: transform .25s ease; }
+.limit-icon:hover .li-cut { transform: translateX(-1.5px); }
+.li-wait .li-dot { animation: li-dot 1.6s ease-in-out infinite both; }
+.li-wait .li-dot-2 { animation-delay: .2s; }
+.li-wait .li-dot-3 { animation-delay: .4s; }
+@keyframes li-dot { 0%, 15% { opacity: 0; } 35%, 75% { opacity: 1; } 100% { opacity: 0; } }
+.li-free .li-lift { transition: transform .3s ease; animation: li-lift .6s ease-out both; }
+.limit-icon:hover .li-lift { transform: translateY(-2px); }
+@keyframes li-lift { from { transform: translateY(4px); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .li-trim .li-bar, .li-wait .li-dot, .li-free .li-lift { animation: none; } }
+
 /* Dictionary icon (components/DictionaryIcon.tsx) */
 .dict-icon .di-word, .dict-icon .di-tick { stroke-dasharray: 1; stroke-dashoffset: 0; }
 .dict-icon .di-word { animation: fi-draw .5s ease-out both; }
@@ -3397,3 +3413,12 @@ html.dark .dict-head-icon { color: #151914; }
 .setup-reminder.is-update { background: var(--warning); color: var(--warning-text); }
 .update-progress.is-indeterminate > span { width: 35%; animation: update-slide 1.1s ease-in-out infinite; }
 @keyframes update-slide { from { transform: translateX(-100%); } to { transform: translateX(300%); } }
+.update-error-detail { margin-top: 4px; font: 500 11px/1.4 var(--mono, ui-monospace); opacity: .6; user-select: text; overflow-wrap: anywhere; }
+.update-card-side { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+.update-versions { display: flex; gap: 6px; margin: 0; }
+.update-versions > div { display: grid; gap: 1px; min-width: 76px; padding: 7px 12px; border: 2px solid var(--separator); border-radius: 10px; background: var(--control); }
+.update-versions dt { font-size: 9.5px; font-weight: 900; letter-spacing: .1em; text-transform: uppercase; color: var(--tertiary); }
+.update-versions dd { margin: 0; font: 800 15px/1.2 var(--mono, ui-monospace, monospace); font-variant-numeric: tabular-nums; }
+.update-card.has-update .update-versions > div { border-color: currentColor; background: transparent; }
+.update-card.has-update .update-versions dt { color: inherit; opacity: .7; }
+.update-card.is-current h3 svg { color: var(--success, #2f8f4e); }

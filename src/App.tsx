@@ -26,8 +26,7 @@ import PlugConnectedIcon from "./components/ui/plug-connected-icon";
 import BugIcon from "./components/ui/bug-icon";
 import type { AnimatedIconHandle } from "./components/ui/types";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { listModels, listAudioDevices, getSetting, isLlamaCliInstalled, listLlmModels, getPermissionStatus } from "./lib/ipc";
-import { check as checkUpdate } from "@tauri-apps/plugin-updater";
+import { listModels, listAudioDevices, getSetting, isLlamaCliInstalled, listLlmModels, getPermissionStatus, checkUpdate } from "./lib/ipc";
 
 import ThemeTransitionOverlay from "./ThemeTransitionOverlay";
 import OnboardingWizard from "./components/OnboardingWizard";
@@ -195,7 +194,7 @@ export default function App() {
   // Newer version on the website: checked at launch and every 6 hours.
   const [updateVersion, setUpdateVersion] = useState<string | null>(null);
   useEffect(() => {
-    const check = () => checkUpdate().then((u) => setUpdateVersion(u ? u.version : null)).catch(() => {});
+    const check = () => checkUpdate().then((u) => setUpdateVersion(u.available ? u.latest : null)).catch(() => {});
     const first = setTimeout(check, 8000);
     const every = setInterval(check, 6 * 60 * 60 * 1000);
     return () => { clearTimeout(first); clearInterval(every); };
