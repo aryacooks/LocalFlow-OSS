@@ -245,6 +245,14 @@ export default function MicBubble() {
     };
   }, []);
 
+  // Diameter (in orb units) of the clickable circle. Idle: the dot (hover radius 8).
+  // Transcribing / done: the settled disc (radius ~15). Listening: the full orb with
+  // room for loud syllables (radius ~22).
+  const hitSize =
+    status === "recording" || status === "command" ? 46
+    : status === "processing" || status === "done" ? 34
+    : 18;
+
   /* ── Actions ────────────────────────────────────────────────── */
   // Drag the orb anywhere; on release it snaps to the nearest of the 8 spots (Rust).
   // macOS keeps sending moves to this window while the button is held, even when the
@@ -374,7 +382,10 @@ export default function MicBubble() {
           signal={signal}
         />
       </div>
-      {/* Hit target: the orb's middle. Click = start/stop, drag = move, right-click = menu. */}
+      {/* Hit target: exactly the orb as drawn, so clicks near it go to the app below.
+          It grows with the orb: the idle dot is small, the listening orb is big (sizes
+          from OrbBubble.tsx: radii × GROW). Click = start/stop, drag = move,
+          right-click = menu. */}
       <div
         ref={logoRef}
         onClick={handleClick}
@@ -387,10 +398,11 @@ export default function MicBubble() {
         onMouseLeave={() => setLogoHovered(false)}
         style={{
           position: "absolute",
-          ...hAnchor((ORB_BOX - 40) / 2),
-          ...vAnchor((ORB_BOX - 40) / 2),
-          width: s(40),
-          height: s(40),
+          ...hAnchor((ORB_BOX - hitSize) / 2),
+          ...vAnchor((ORB_BOX - hitSize) / 2),
+          width: s(hitSize),
+          height: s(hitSize),
+          transition: "width .2s ease, height .2s ease, left .2s ease, right .2s ease, top .2s ease, bottom .2s ease",
           borderRadius: "50%",
           pointerEvents: "auto",
           cursor: drag.current?.moved ? "grabbing" : "pointer",
