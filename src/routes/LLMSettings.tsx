@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import DictionaryPage from "./Dictionary";
+import FormatIcon from "../components/FormatIcon";
 import { Download, CheckCircle, Check, ArrowRight, Play, Trash2, AlertCircle, Sparkles } from "lucide-react";
 import {
   listLlmModels,
@@ -12,8 +13,28 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "../lib/store";
 
+// One row per kind of formatting. `key` is the setting; all are on unless switched off.
+// Only `fmt_ai` needs a download, everything else is built in.
+type OptKey = "fmt_fillers" | "fmt_corrections" | "fmt_capitals" | "fmt_commands" | "fmt_emoji" | "fmt_ai";
+const BUILT_IN: { key: OptKey; title: string; desc: string; say: string; get: string }[] = [
+  { key: "fmt_fillers", title: "Remove filler words", desc: "Drops \u201cum\u201d, \u201cuh\u201d and \u201cyou know\u201d.",
+    say: "um so we should uh ship it", get: "so we should ship it" },
+  { key: "fmt_corrections", title: "Follow my corrections", desc: "When you change your mind mid-sentence, only the final version is typed.",
+    say: "send it to bob no wait to jim", get: "send it to jim" },
+  { key: "fmt_capitals", title: "Capital letters", desc: "Starts each sentence with a capital and leaves off the full stop at the very end.",
+    say: "sounds good. see you then.", get: "Sounds good. See you then" },
+  { key: "fmt_commands", title: "Spoken punctuation", desc: "Say \u201ccomma\u201d, \u201cquestion mark\u201d, \u201cnew line\u201d or \u201cscratch that\u201d.",
+    say: "are you free comma today question mark", get: "are you free, today?" },
+  { key: "fmt_emoji", title: "Spoken emoji", desc: "Say the name of an emoji followed by \u201cemoji\u201d.",
+    say: "nice work thumbs up emoji", get: "nice work \ud83d\udc4d" },
+];
+const ALL_KEYS: OptKey[] = [...BUILT_IN.map((o) => o.key), "fmt_ai"];
+
 export default function LLMSettingsPage() {
   const [enabled, setEnabled] = useState(false);
+  const [opts, setOpts] = useState<Record<OptKey, boolean>>(
+    () => Object.fromEntries(ALL_KEYS.map((k) => [k, true])) as Record<OptKey, boolean>
+  );
   const [cliInstalled, setCliInstalled] = useState(false);
   const [models, setModels] = useState<LlmModelInfo[]>([]);
   const [activeModel, setActiveModel] = useState("Llama-3.2-1B-Instruct-Q4_K_M.gguf");
@@ -28,7 +49,6 @@ export default function LLMSettingsPage() {
   const startLlmCliDownload = useAppStore((s) => s.startLlmCliDownload);
   const cliProgress = modelDownloads["llama-cli"];
   const downloadingCli = cliProgress !== undefined;
-  const anyDownloading = Object.keys(modelDownloads).length > 0;
   
   // Test states
   const [testInput, setTestInput] = useState(
@@ -48,12 +68,18 @@ export default function LLMSettingsPage() {
       const dbEnabled = await getSetting("llm_enabled");
       setEnabled(dbEnabled === "true");
 
-      const active = list.find((m) => m.is_active);
-      if (active) {
-        setActiveModel(active.filename);
+      const values = await Promise.all(ALL_KEYS.map((k) => getSetting(k).catch(() => null)));
+      setOpts(Object.fromEntries(ALL_KEYS.map((k, i) => [k, values[i] !== "false"])) as Record<OptKey, boolean>);
+
+      // The model in use is simply the downloaded one. If the saved choice isn't on
+      // disk (never picked, or removed), fall over to one that is.
+      const saved = (await getSetting("llm_active_model")) ?? "";
+      const usable = list.find((m) => m.filename === saved && m.downloaded) ?? list.find((m) => m.downloaded);
+      if (usable) {
+        setActiveModel(usable.filename);
+        if (usable.filename !== saved) await setSetting("llm_active_model", usable.filename);
       } else {
-        const dbActive = await getSetting("llm_active_model");
-        if (dbActive) setActiveModel(dbActive);
+        setActiveModel(saved || list[0]?.filename || "");
       }
     } catch (e) {
       console.error("Failed to load LLM settings:", e);
@@ -77,12 +103,15 @@ export default function LLMSettingsPage() {
   const handleToggle = async () => {
     const nextVal = !enabled;
     setEnabled(nextVal);
+    setTestOutput("");
     await setSetting("llm_enabled", nextVal ? "true" : "false");
-    setStatusMessage(
-      nextVal
-        ? "Cleanup is on."
-        : "Cleanup is off. Your words are typed exactly as spoken."
-    );
+  };
+
+  const toggleOpt = async (key: OptKey) => {
+    const next = !opts[key];
+    setOpts((o) => ({ ...o, [key]: next }));
+    setTestOutput("");
+    await setSetting(key, next ? "true" : "false");
   };
 
   const handleDownloadCli = () => {
@@ -100,14 +129,6 @@ export default function LLMSettingsPage() {
     setStatusMessage("");
   };
 
-  // Clear the active model but keep cleanup.LF installed. With no model selected,
-  // dictation gets basic tidying (spacing + capitalization) instead of AI cleanup.
-  const handleUnselectModel = async () => {
-    setActiveModel("");
-    await setSetting("llm_active_model", "");
-    setStatusMessage("No model in use. You get basic tidying only.");
-  };
-
   // Two-click confirm (native confirm() is unreliable in the Tauri webview).
   const handleDeleteModel = async (model: LlmModelInfo) => {
     if (confirmDelete !== model.id) {
@@ -120,7 +141,7 @@ export default function LLMSettingsPage() {
     setConfirmDelete(null);
     try {
       await deleteLlmModel(model.id);
-      setStatusMessage(`Deleted ${model.name}.`);
+      setStatusMessage(`Removed ${model.name.replace(/\s*\(Recommended\)/, "")}.`);
       await loadData();
     } catch (e) {
       setStatusMessage(`Delete failed: ${e}`);
@@ -149,13 +170,8 @@ export default function LLMSettingsPage() {
   const activeModelDownloaded = !!activeModelInfo?.downloaded;
   const setupReady = cliInstalled && activeModelDownloaded;
 
-  const anyModelDownloaded = models.some((m) => m.downloaded);
-  const readyCount = [cliInstalled, anyModelDownloaded].filter(Boolean).length;
-  const setupLabel = setupReady
-    ? "All set"
-    : readyCount === 2
-      ? "Pick a model to use"
-      : `${readyCount} of 2 installed`;
+  const downloadMb = 15 + (activeModelInfo?.size_mb ?? models[0]?.size_mb ?? 0);
+  const anyOn = ALL_KEYS.some((k) => opts[k]);
 
   if (!loaded) return <div className="page fmt-page" />;
 
@@ -163,7 +179,7 @@ export default function LLMSettingsPage() {
     <div className="page fmt-page">
       <div className="page-header">
         <div>
-          <p className="page-kicker">Automatic cleanup</p>
+          <p className="page-kicker">Automatic formatting</p>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <h2 className="page-title">Formatting options</h2>
             <span className="beta-tag">Beta</span>
@@ -171,123 +187,152 @@ export default function LLMSettingsPage() {
         </div>
       </div>
 
-      {/* 1 — What it does */}
-      <section className={`glass-panel fmt-hero ${enabled ? "" : "is-off"}`}>
+      {/* 1 — Master switch */}
+      <section className="glass-panel fmt-hero">
         <div className="fmt-hero-top">
-          <div className="fmt-hero-icon"><Sparkles size={20} /></div>
+          <div className="fmt-hero-icon"><FormatIcon /></div>
           <div className="fmt-hero-text">
-            <h3>Tidy up my dictation</h3>
-            <p>A small AI on your Mac cleans what you said before it's typed. Nothing goes online. When off, your words are typed exactly as spoken.</p>
+            <h3>Format my dictation</h3>
+            <p>
+              {enabled
+                ? "Your words are formatted before they're typed, using the choices below. Everything runs on your Mac."
+                : "Off. Your words are typed exactly as heard. Turn this on, then choose what to format below."}
+            </p>
           </div>
           <button
             className={`switch ${enabled ? "on" : ""}`}
             onClick={handleToggle}
             aria-pressed={enabled}
-            aria-label="Tidy up my dictation"
+            aria-label="Format my dictation"
+          >
+            <span />
+          </button>
+        </div>
+      </section>
+
+      {/* 2 — What to format */}
+      <div className="fmt-section-head">
+        <span className="section-label" style={{ margin: 0 }}>What to format</span>
+        {!enabled && <span className="fmt-count">Turn on formatting to use these</span>}
+      </div>
+      <section className={`glass-panel fmt-opts ${enabled ? "" : "is-off"}`}>
+        {BUILT_IN.map((o) => (
+          <div key={o.key} className="fmt-opt">
+            <div className="fmt-opt-body">
+              <div className="fmt-opt-title">{o.title} <span className="fmt-badge">Built in</span></div>
+              <div className="fmt-opt-desc">{o.desc}</div>
+              <div className="fmt-opt-ex"><span>{o.say}</span><ArrowRight size={12} /><b>{o.get}</b></div>
+            </div>
+            <button
+              className={`switch ${opts[o.key] ? "on" : ""}`}
+              disabled={!enabled}
+              onClick={() => toggleOpt(o.key)}
+              aria-pressed={opts[o.key]}
+              aria-label={o.title}
+            >
+              <span />
+            </button>
+          </div>
+        ))}
+
+        <div className="fmt-opt">
+          <div className="fmt-opt-body">
+            <div className="fmt-opt-title">
+              Grammar &amp; punctuation
+              {setupReady
+                ? <span className="fmt-badge ok"><Check size={11} strokeWidth={3} /> Installed</span>
+                : <span className="fmt-badge need"><Download size={11} /> Needs a {formatSize(downloadMb)} download</span>}
+            </div>
+            <div className="fmt-opt-desc">
+              A small AI on your Mac rewrites each dictation: adds commas and full stops, fixes grammar and apostrophes. It also makes the choices above smarter. Nothing goes online.
+            </div>
+            <div className="fmt-opt-ex"><span>i dont think their coming today</span><ArrowRight size={12} /><b>I don't think they're coming today</b></div>
+          </div>
+          <button
+            className={`switch ${opts.fmt_ai ? "on" : ""}`}
+            disabled={!enabled}
+            onClick={() => toggleOpt("fmt_ai")}
+            aria-pressed={opts.fmt_ai}
+            aria-label="Grammar and punctuation"
           >
             <span />
           </button>
         </div>
 
-        <div className="fmt-example">
-          <div className="fmt-ex say">
-            <span className="fmt-ex-tag">You say</span>
-            <p>um so like we should ship it friday no wait monday cause the the tests aren't done</p>
+        {/* What the AI option needs on disk */}
+        <div className="fmt-installs">
+          <div className="fmt-installs-head">
+            {setupReady ? "Downloaded for Grammar & punctuation" : "Grammar & punctuation needs these two downloads"}
           </div>
-          <ArrowRight size={18} className="fmt-ex-arrow" />
-          <div className="fmt-ex get">
-            <span className="fmt-ex-tag">You get</span>
-            <p>We should ship it Monday, because the tests aren't done.</p>
+          <div className={`fmt-need ${cliInstalled ? "done" : ""}`}>
+            <span className="fmt-need-mark">{cliInstalled ? <Check size={14} strokeWidth={3} /> : "1"}</span>
+            <div className="fmt-need-body">
+              <div className="fmt-need-title">AI engine</div>
+              <div className="fmt-need-desc">Runs the AI on your Mac · 15 MB</div>
+            </div>
+            {cliInstalled ? (
+              <span className="fmt-ready"><CheckCircle size={15} /> Installed</span>
+            ) : (
+              <button className="button primary" disabled={downloadingCli} onClick={handleDownloadCli}>
+                <Download size={14} />
+                {downloadingCli ? `${cliProgress}%` : "Install"}
+              </button>
+            )}
+            {downloadingCli && <span className="fmt-progress" style={{ width: `${cliProgress}%` }} />}
           </div>
-        </div>
 
-        <ul className="fmt-fixes">
-          <li><Check size={13} /> Drops "um", "uh", "like"</li>
-          <li><Check size={13} /> Fixes punctuation &amp; capitals</li>
-          <li><Check size={13} /> Follows "no wait" corrections</li>
-        </ul>
-      </section>
-
-      {/* 2 — What you need */}
-      <div className="fmt-section-head">
-        <span className="section-label" style={{ margin: 0 }}>What you need</span>
-        <span className={`fmt-count ${setupReady ? "done" : ""}`}>
-          {setupLabel}
-        </span>
-      </div>
-      <section className="glass-panel fmt-needs">
-        <div className={`fmt-need ${cliInstalled ? "done" : ""}`}>
-          <span className="fmt-need-mark">{cliInstalled ? <Check size={14} strokeWidth={3} /> : "1"}</span>
-          <div className="fmt-need-body">
-            <div className="fmt-need-title">Cleanup engine</div>
-            <div className="fmt-need-desc">Runs the AI on your Mac · one-time, 15 MB</div>
-          </div>
-          {cliInstalled ? (
-            <span className="fmt-ready"><CheckCircle size={15} /> Installed</span>
-          ) : (
-            <button className="button primary" disabled={anyDownloading} onClick={handleDownloadCli}>
-              <Download size={14} />
-              {downloadingCli ? `${cliProgress}%` : "Install"}
-            </button>
-          )}
-          {downloadingCli && <span className="fmt-progress" style={{ width: `${cliProgress}%` }} />}
-        </div>
-
-        {models.map((model, i) => {
-          const isActive = activeModel === model.filename;
-          const progress = modelDownloads[model.id];
-          const isDownloading = progress !== undefined;
-          const ready = model.downloaded && isActive;
-          return (
-            <div key={model.id} className={`fmt-need ${ready ? "done" : ""}`}>
-              <span className="fmt-need-mark">{ready ? <Check size={14} strokeWidth={3} /> : String(i + 2)}</span>
-              <div className="fmt-need-body">
-                <div className="fmt-need-title">
-                  Cleanup model <span className="fmt-need-name">{model.name.replace(/\s*\(Recommended\)/, "")}</span>
+          {models.map((model, i) => {
+            const isActive = activeModel === model.filename;
+            const progress = modelDownloads[model.id];
+            const isDownloading = progress !== undefined;
+            return (
+              <div key={model.id} className={`fmt-need ${model.downloaded ? "done" : ""}`}>
+                <span className="fmt-need-mark">{model.downloaded ? <Check size={14} strokeWidth={3} /> : String(i + 2)}</span>
+                <div className="fmt-need-body">
+                  <div className="fmt-need-title">
+                    AI model
+                    {models.length > 1 && <span className="fmt-need-name">{model.name.replace(/\s*\(Recommended\)/, "")}</span>}
+                  </div>
+                  <div className="fmt-need-desc">The AI that rewrites your text · {formatSize(model.size_mb)}</div>
                 </div>
-                <div className="fmt-need-desc">
-                  The AI that rewrites your text · {formatSize(model.size_mb)}
-                  {model.downloaded && !isActive && <b className="fmt-need-flag"> · Downloaded, tap Use to turn it on</b>}
-                </div>
-              </div>
-              {model.downloaded ? (
-                <div className="fmt-need-actions">
-                  {isActive ? (
-                    <span className="fmt-ready"><CheckCircle size={15} /> In use</span>
-                  ) : (
-                    <button className="button" onClick={() => handleSetActiveModel(model.filename)}>Use</button>
-                  )}
-                  {isActive ? (
-                    <button className="button" onClick={handleUnselectModel}>Stop using</button>
-                  ) : (
+                {model.downloaded ? (
+                  <div className="fmt-need-actions">
+                    {isActive || models.filter((m) => m.downloaded).length === 1 ? (
+                      <span className="fmt-ready"><CheckCircle size={15} /> Installed</span>
+                    ) : (
+                      <button className="button" onClick={() => handleSetActiveModel(model.filename)}>Use this one</button>
+                    )}
                     <button
                       className="button danger"
                       onClick={() => handleDeleteModel(model)}
-                      title={`Delete ${model.name}`}
+                      title="Remove the download to free up space"
                     >
                       <Trash2 size={14} />
-                      {confirmDelete === model.id ? "Confirm" : ""}
+                      {confirmDelete === model.id ? "Confirm remove" : ""}
                     </button>
-                  )}
-                </div>
-              ) : (
-                <button
-                  className="button primary"
-                  disabled={isDownloading || anyDownloading}
-                  onClick={() => handleDownloadModel(model)}
-                >
-                  <Download size={14} />
-                  {isDownloading ? `${progress}%` : "Download"}
-                </button>
-              )}
-              {isDownloading && <span className="fmt-progress" style={{ width: `${progress}%` }} />}
-            </div>
-          );
-        })}
+                  </div>
+                ) : (
+                  <button
+                    className="button primary"
+                    disabled={isDownloading}
+                    onClick={() => handleDownloadModel(model)}
+                  >
+                    <Download size={14} />
+                    {isDownloading ? `${progress}%` : "Download"}
+                  </button>
+                )}
+                {isDownloading && <span className="fmt-progress" style={{ width: `${progress}%` }} />}
+              </div>
+            );
+          })}
+        </div>
       </section>
 
-      {enabled && !setupReady && (
-        <p className="fmt-note"><AlertCircle size={14} /> Until both are ready, you get basic tidying only (spacing and capitals).</p>
+      {enabled && opts.fmt_ai && !setupReady && (
+        <p className="fmt-note"><AlertCircle size={14} /> Grammar &amp; punctuation is skipped until both downloads finish. Your other choices still work.</p>
+      )}
+      {enabled && !anyOn && (
+        <p className="fmt-note"><AlertCircle size={14} /> Nothing is selected, so your words are typed as heard.</p>
       )}
       {statusMessage && <p className="fmt-note accent"><Sparkles size={14} /> {statusMessage}</p>}
 
@@ -301,24 +346,24 @@ export default function LLMSettingsPage() {
             className="fmt-try-box"
             value={testInput}
             onChange={(e) => setTestInput(e.target.value)}
-            aria-label="Messy text"
+            aria-label="Text to format"
           />
           <ArrowRight size={18} className="fmt-ex-arrow" />
           <div className={`fmt-try-box out ${testOutput ? "" : "empty"}`}>
-            {testOutput || "Cleaned text shows up here"}
+            {testOutput || "Formatted text shows up here"}
           </div>
         </div>
         <div className="fmt-try-foot">
           <span className="fmt-try-hint">
-            {!enabled ? "Turn on cleanup above first." : !setupReady ? "Finish the setup above first." : "Edit the text, then run."}
+            {!enabled ? "Turn on formatting above first." : "Edit the text, then run it with your choices above."}
           </span>
           <button
             className="button primary"
-            disabled={testingInference || !enabled || !setupReady}
+            disabled={testingInference || !enabled}
             onClick={handleTestInference}
           >
             <Play size={13} />
-            {testingInference ? "Cleaning…" : "Clean it up"}
+            {testingInference ? "Formatting…" : "Format it"}
           </button>
         </div>
       </section>

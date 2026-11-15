@@ -561,3 +561,40 @@ html.oil-switching .page-scroll {
 @media (prefers-reduced-motion: reduce) {
   .oil-sun, .oil-moon, .oil-sky, .oil-hills { transition: none !important; }
 }
+
+/* Creator card fire (About page) */
+.creator-card {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+html.oil .creator-card,
+html.oil.dark .creator-card {
+  background: var(--oil-gold) !important;
+}
+
+.oil-fire {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  width: 100%;
+  height: 58%;
+  pointer-events: none;
+  z-index: 0;
+  -webkit-mask-image: linear-gradient(to top, #000 55%, transparent);
+  mask-image: linear-gradient(to top, #000 55%, transparent);
+}
+
+/* ── Wordmark ─────────────────────────────────────────────────────────────── */
+/* "LocalFlow" is always set in Inter Bold, in every theme, like the logo. */
+:root .wordmark.wordmark.wordmark {
+  font-family: "Inter Variable", "Inter", -apple-system, sans-serif !important;
+  font-weight: 700 !important;
+  font-stretch: normal;
+  font-style: normal;
+  text-transform: none !important;
+  letter-spacing: -0.02em !important;
+}
+

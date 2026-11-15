@@ -16,15 +16,16 @@ mod inject;
 mod llm;
 mod mac_permissions;
 mod notch;
+mod parakeet;
 mod placement;
 mod placer;
 mod pastecard;
 mod appicon;
 mod thermal;
 mod vocab;
-mod tint;
 mod pipeline;
 mod translit;
+mod dravidian;
 mod whisper;
 
 use std::sync::Arc;
@@ -58,6 +59,10 @@ pub fn run() {
             }
         }))
         .plugin(tauri_plugin_opener::init())
+        // Over-the-air updates: checks localflow.aryab.in/downloads/latest.json, and
+        // only installs builds signed with LocalFlow's update key (pubkey in tauri.conf.json).
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
@@ -132,12 +137,23 @@ pub fn run() {
                             *pipeline_state.current_language.lock().unwrap() = lang;
                         }
                     }
+                    // Off unless turned on (key renamed so the new default applies).
                     if let Ok(rom) = conn.query_row(
-                        "SELECT value FROM settings WHERE key = 'auto_romanize'",
+                        "SELECT value FROM settings WHERE key = 'romanize_hindi'",
                         [],
                         |r| r.get::<_, String>(0),
                     ) {
-                        *pipeline_state.romanize.lock().unwrap() = rom != "false";
+                        *pipeline_state.romanize.lock().unwrap() = rom == "true";
+                    }
+                    if let Ok(langs) = conn.query_row(
+                        "SELECT value FROM settings WHERE key = 'languages'",
+                        [],
+                        |r| r.get::<_, String>(0),
+                    ) {
+                        let list = pipeline::parse_languages(&langs);
+                        if !list.is_empty() {
+                            *pipeline_state.languages.lock().unwrap() = list;
+                        }
                     }
                 }
 
@@ -183,14 +199,6 @@ pub fn run() {
                 notch::init();
                 placer::create(app.handle());
                 pastecard::create(app.handle());
-                // The orb samples the screen behind it to pick black or white; macOS
-                // asks for Screen Recording once (a no-op after that).
-                let adaptive = adaptive_tint_wanted(app.handle());
-                if adaptive {
-                    tint::request_access();
-                }
-                tint::set_enabled(adaptive);
-                tint::start(app.handle().clone());
                 // Show the bubble window on startup
                 show_bubble_window(app.handle());
                 // Notch island: keep it pinned if anything moves the window.
@@ -294,6 +302,9 @@ pub fn run() {
             audio::get_amplitude,
             audio::is_recording,
             audio::set_audio_device,
+            // Primary key capture (Shortcuts)
+            hook::capture_trigger_key,
+            hook::cancel_trigger_capture,
             // Whisper
             whisper::list_models,
             whisper::download_model,
@@ -345,6 +356,7 @@ pub fn run() {
             pipeline::get_privacy_mode,
             pipeline::set_language,
             pipeline::set_romanize,
+            pipeline::set_languages,
             pipeline::get_pipeline_status,
             // Frontend-callable
             start_recording_cmd,
@@ -700,7 +712,6 @@ pub async fn run_pipeline(
     audio: &Arc<audio::AudioState>,
     pipeline: &Arc<PipelineState>,
 ) {
-    use whisper_rs::{FullParams, SamplingStrategy};
 
     // Held for the whole function: clears `is_processing` on every exit path (return or
     // panic), so the flag can never get stuck and lock out the next dictation toggle.
@@ -754,6 +765,7 @@ pub async fn run_pipeline(
 
     let language = pipeline.current_language.lock().unwrap().clone();
     let romanize = *pipeline.romanize.lock().unwrap();
+    let allowed_langs = pipeline.languages.lock().unwrap().clone();
 
     let model_path = match whisper::get_active_model_path(app) {
         Ok(p) => p,
@@ -786,37 +798,17 @@ pub async fn run_pipeline(
     let model_str = model_path.to_str().unwrap_or("").to_string();
     let lang = language.clone();
     let prompt = dict_prompt.clone();
-    let multilingual = whisper::is_multilingual_model(&model_str);
 
     let local = tauri::async_runtime::spawn_blocking(move || {
         // Reuses the already-loaded model; only the first dictation after a launch or a
         // model switch pays the disk read.
-        let ctx = whisper::context_for(&model_str)?;
-        let mut state = ctx
-            .create_state()
-            .map_err(|e| format!("Whisper state: {}", e))?;
-        // Constrain to English/Hindi only (auto picks the higher-scoring of the two).
-        let chosen_lang = whisper::resolve_language(&mut state, &audio_data, &lang, multilingual);
-        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-        params.set_language(Some(&chosen_lang));
-        params.set_print_progress(false);
-        params.set_print_realtime(false);
-        params.set_print_special(false);
-        params.set_print_timestamps(false);
-        // Non-speech suppression + the anti-repetition guards, shared with `transcribe`.
-        whisper::apply_decoder_guards(&mut params);
-        if !prompt.is_empty() {
-            params.set_initial_prompt(&prompt);
-        }
-        state.full(params, &audio_data).map_err(|e| e.to_string())?;
-        let text = whisper::collect_segments(&state, &audio_data);
-        Ok::<String, String>(whisper::strip_non_speech(&whisper::collapse_repetitions(
-            &text,
-        )))
+        whisper::transcribe_with_model(&model_str, &audio_data, &lang, &allowed_langs, &prompt)
     })
     .await;
     let raw_text = match local {
         Ok(Ok(text)) => Ok(text),
+        // "Sounded like Tamil. Add it in Language Model..." is advice, shown as it is.
+        Ok(Err(error)) if whisper::is_language_hint(&error) => Err(error),
         Ok(Err(error)) => Err(format!("Transcription error: {}", error)),
         Err(error) => Err(format!("Task join error: {}", error)),
     };
@@ -861,11 +853,12 @@ pub async fn run_pipeline(
     // The user's own spelling rules apply whether or not cleanup is on.
     let heard = vocab::apply(&raw, &vocab_terms);
 
+    let formatted = cleanup::formatting_enabled(&app);
     let cleaned = match cleanup::cleanup_text(app.clone(), heard.clone(), app_exe.clone()) {
         Ok(t) => t,
         Err(e) => {
-            eprintln!("Cleanup error: {}, falling back to regex", e);
-            cleanup::regex_cleanup(&heard)
+            eprintln!("Cleanup error: {}", e);
+            heard.clone()
         }
     };
 
@@ -935,8 +928,8 @@ pub async fn run_pipeline(
             };
 
             let _ = conn.execute(
-                "INSERT INTO dictation_history (app_name, app_exe, raw_text, cleaned_text, word_count, duration_secs, language) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                rusqlite::params![final_app_name, final_app_exe, final_raw, final_cleaned, word_count, duration_secs, language],
+                "INSERT INTO dictation_history (app_name, app_exe, raw_text, cleaned_text, word_count, duration_secs, language, formatted) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                rusqlite::params![final_app_name, final_app_exe, final_raw, final_cleaned, word_count, duration_secs, language, formatted],
             );
         }
     }
@@ -1008,6 +1001,14 @@ pub(crate) fn hook_start_recording(app: &tauri::AppHandle, audio: &Arc<audio::Au
     show_bubble_window(app);
 }
 
+/// Keep the mic open a moment longer so the last word isn't clipped, then stop. The
+/// stop sound plays after the mic closes, so it is never recorded into the dictation.
+pub(crate) async fn stop_after_tail(audio: &Arc<audio::AudioState>) {
+    tokio::time::sleep(std::time::Duration::from_millis(audio::TAIL_MS)).await;
+    audio::stop_capture_internal(audio);
+    earcon::play_stop_sound();
+}
+
 pub(crate) fn hook_stop_and_transcribe(
     app: &tauri::AppHandle,
     audio: &Arc<audio::AudioState>,
@@ -1016,12 +1017,11 @@ pub(crate) fn hook_stop_and_transcribe(
     if !*audio.is_recording.lock().unwrap() {
         return;
     }
-    crate::earcon::play_stop_sound();
     let ah = app.clone();
     let audio_h = audio.clone();
     let pipeline_h = pipeline.clone();
     tauri::async_runtime::spawn(async move {
-        crate::audio::stop_capture_internal(&audio_h);
+        stop_after_tail(&audio_h).await;
         run_pipeline(&ah, &audio_h, &pipeline_h).await;
     });
 }
@@ -1074,8 +1074,7 @@ async fn stop_and_transcribe_cmd(
     if !*audio.is_recording.lock().unwrap() {
         return Ok(serde_json::json!({"status": "not_recording"}));
     }
-    crate::earcon::play_stop_sound();
-    audio::stop_capture_internal(audio.inner());
+    stop_after_tail(audio.inner()).await;
 
     let audio_arc = audio.inner().clone();
     let pipeline_arc = pipeline.inner().clone();
@@ -1431,9 +1430,8 @@ pub fn register_global_toggle_shortcut(app: &tauri::AppHandle) -> Result<(), Str
                 let ah = app.clone();
                 let audio_h = audio.inner().clone();
                 let pipeline_h = pipeline.inner().clone();
-                crate::earcon::play_stop_sound();
                 tauri::async_runtime::spawn(async move {
-                    crate::audio::stop_capture_internal(&audio_h);
+                    crate::stop_after_tail(&audio_h).await;
                     crate::run_pipeline(&ah, &audio_h, &pipeline_h).await;
                 });
             } else {
@@ -1521,12 +1519,11 @@ pub fn register_global_toggle_shortcut(app: &tauri::AppHandle) -> Result<(), Str
                             if !*audio.is_recording.lock().unwrap() {
                                 return;
                             }
-                            crate::earcon::play_stop_sound();
                             let ah = app.clone();
                             let audio_h = audio.inner().clone();
                             let pipeline_h = pipeline.inner().clone();
                             tauri::async_runtime::spawn(async move {
-                                crate::audio::stop_capture_internal(&audio_h);
+                                crate::stop_after_tail(&audio_h).await;
                                 crate::run_pipeline(&ah, &audio_h, &pipeline_h).await;
                             });
                         }
@@ -1637,17 +1634,7 @@ fn set_bubble_mode(app: tauri::AppHandle, mode: String) -> Result<(), String> {
         "off" => set_bubble_visible(app.clone(), false)?,
         _ => return Err(format!("Unknown bubble mode: {mode}")),
     }
-    let adaptive = adaptive_tint_wanted(&app);
-    if adaptive {
-        tint::request_access();
-    }
-    tint::set_enabled(adaptive);
     Ok(())
-}
-
-/// The on-screen orb always adapts its colour; the notch island is always black.
-fn adaptive_tint_wanted(app: &tauri::AppHandle) -> bool {
-    !bubble_is_notch(app) && !bubble_hidden(app)
 }
 
 

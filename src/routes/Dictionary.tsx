@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, Ear, Pencil, Plus, Sparkles, Trash2, Wand2, X } from "lucide-react";
+import DictionaryIcon from "../components/DictionaryIcon";
+import { ArrowLeft, Pencil, Plus, Trash2, X } from "lucide-react";
 import { addDictionaryEntry, deleteDictionaryEntry, DictionaryEntry, getDictionary } from "../lib/ipc";
 
 /** Mirrors vocab.rs: the speech model reads "Term, Term, …" up to 500 characters. */
@@ -23,6 +24,9 @@ function termsRead(entries: DictionaryEntry[]): number {
 
 /** The dictionary editor. `embedded` drops the page chrome so it can live inside
  *  Formatting options as a section. */
+const DICT_INTRO =
+  "LocalFlow won't get every word right. Add the names and words you use a lot, plus how they get misheard, and it will type them correctly every time.";
+
 export default function DictionaryPage({ embedded = false }: { embedded?: boolean }) {
   const [entries, setEntries] = useState<DictionaryEntry[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -106,34 +110,23 @@ export default function DictionaryPage({ embedded = false }: { embedded?: boolea
   return (
     <div className={wrapClass}>
       {embedded ? (
-        <div className="fmt-section-head">
-          <span className="section-label" style={{ margin: 0 }}>Dictionary</span>
-          <span className="fmt-section-count">{entries.length === 1 ? "1 word" : `${entries.length} words`}</span>
+        <div className="dict-head">
+          <span className="dict-head-icon"><DictionaryIcon /></span>
+          <div className="dict-head-text">
+            <h3>Dictionary</h3>
+            <p>{DICT_INTRO}</p>
+          </div>
+          <span className="dict-head-count">{entries.length === 1 ? "1 word" : `${entries.length} words`}</span>
         </div>
       ) : (
         <div className="page-header">
           <div>
             <p className="page-kicker">{entries.length === 1 ? "1 word" : `${entries.length} words`}</p>
             <h2 className="page-title">Dictionary</h2>
+            <p className="dict-intro">{DICT_INTRO}</p>
           </div>
         </div>
       )}
-
-      {/* How the list is used */}
-      <section className="dict-uses">
-        <div className="dict-use">
-          <span className="dict-use-icon" style={{ "--tone": "#e0662a" } as React.CSSProperties}><Ear size={15} /></span>
-          <div><b>Heard right</b><span>The speech model listens for these words</span></div>
-        </div>
-        <div className="dict-use">
-          <span className="dict-use-icon" style={{ "--tone": "#2e9e5b" } as React.CSSProperties}><Wand2 size={15} /></span>
-          <div><b>Fixed every time</b><span>"Sounds like" mistakes are swapped, even with cleanup off</span></div>
-        </div>
-        <div className="dict-use">
-          <span className="dict-use-icon" style={{ "--tone": "#c9891a" } as React.CSSProperties}><Sparkles size={15} /></span>
-          <div><b>Spelled by the AI</b><span>Cleanup gets the list and catches near-misses</span></div>
-        </div>
-      </section>
 
       {/* Add / edit */}
       <section className={`glass-panel dict-form ${editingId !== null ? "is-editing" : ""}`}>
@@ -216,7 +209,7 @@ export default function DictionaryPage({ embedded = false }: { embedded?: boolea
           </section>
           {read < entries.length && (
             <p className="dict-note">
-              The speech model reads the first {read} of {entries.length} words. All of them are still fixed and sent to cleanup.
+              The speech model reads the first {read} of {entries.length} words. All of them are still fixed and sent to the AI.
             </p>
           )}
         </>

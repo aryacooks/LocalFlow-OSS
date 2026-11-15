@@ -18,7 +18,7 @@
 /// Input Monitoring / Accessibility permission; without it the tap fails to create
 /// and we degrade gracefully (keyboard shortcuts keep working).
 use once_cell::sync::Lazy;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Manager};
 
@@ -31,6 +31,73 @@ use tauri::{AppHandle, Manager};
 static MOUSE_BINDS: Lazy<Mutex<(String, String)>> =
     Lazy::new(|| Mutex::new(("none".to_string(), "none".to_string())));
 static FN_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// The primary hold / double-tap key. Fn by default; the user can record any key in
+/// Shortcuts. The setting `fn_trigger_key` is `key:<macOS virtual keycode>`, or one of
+/// the older names below. Modifier keys arrive as raw `FlagsChanged` events (keycode +
+/// flag bit); every other key arrives as `KeyDown` / `KeyUp` and is swallowed so it
+/// doesn't also type. Only raw keycodes are used, never keyboard-name lookups (see the
+/// note on `rdev` above).
+const NAMED_KEYS: &[(&str, i64)] = &[
+    ("fn", 63),
+    ("ropt", 61),
+    ("rcmd", 54),
+    ("rctrl", 62),
+    ("lopt", 58),
+    ("lctrl", 59),
+];
+const FN_KEYCODE: i64 = 63;
+/// Caps Lock only reports when it toggles, never on release, so it can't be held.
+const CAPS_LOCK_KEYCODE: i64 = 57;
+
+/// The CGEventFlags bit a modifier key sets, or None for an ordinary key.
+fn modifier_flag(keycode: i64) -> Option<u64> {
+    match keycode {
+        63 => Some(0x0080_0000),      // Fn / Globe — kCGEventFlagMaskSecondaryFn
+        54 | 55 => Some(0x0010_0000), // Command
+        56 | 60 => Some(0x0002_0000), // Shift
+        58 | 61 => Some(0x0008_0000), // Option
+        59 | 62 => Some(0x0004_0000), // Control
+        _ => None,
+    }
+}
+
+/// Keycode named by a `fn_trigger_key` setting; Fn when unset or unreadable.
+fn trigger_keycode(setting: &str) -> i64 {
+    if let Some(code) = setting.strip_prefix("key:").and_then(|c| c.parse::<i64>().ok()) {
+        if (0..=127).contains(&code) && code != CAPS_LOCK_KEYCODE {
+            return code;
+        }
+    }
+    NAMED_KEYS.iter().find(|k| k.0 == setting).map(|k| k.1).unwrap_or(FN_KEYCODE)
+}
+
+static TRIGGER_KEYCODE: AtomicI64 = AtomicI64::new(FN_KEYCODE);
+static TRIGGER_FLAG: AtomicU64 = AtomicU64::new(0x0080_0000);
+/// When set, the next key pressed anywhere is reported to the Shortcuts page (event
+/// `trigger-key-captured`) instead of doing anything else.
+static CAPTURING: AtomicBool = AtomicBool::new(false);
+
+/// Start listening for the next key press, so the user can pick their primary key by
+/// pressing it. Needs Input Monitoring, like the primary key itself.
+#[tauri::command]
+pub fn capture_trigger_key() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    if !crate::mac_permissions::input_monitoring_granted() {
+        crate::mac_permissions::prompt_input_monitoring();
+        return Err("LocalFlow needs Input Monitoring to see which key you press.".into());
+    }
+    CAPTURING.store(true, Ordering::Relaxed);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn cancel_trigger_capture() {
+    CAPTURING.store(false, Ordering::Relaxed);
+}
+/// Whether the trigger key is currently held. The flag bit alone can't say: with both
+/// Option keys down, letting go of one leaves the Option flag set.
+static TRIGGER_DOWN: AtomicBool = AtomicBool::new(false);
 
 /// Reload the cached mouse binds from the settings DB. Cheap and safe to call anytime;
 /// call it at startup and after the user changes a mouse trigger. Falls back to "none".
@@ -53,8 +120,15 @@ pub fn refresh_mouse_binds(app: &AppHandle) {
     let toggle = if crate::trigger_enabled(app, "keybind_mouse_toggle_enabled") { read("keybind_mouse_toggle") } else { "none".into() };
     let fn_enabled = read("fn_quick_toggle") == "true";
     let was_enabled = FN_ENABLED.swap(fn_enabled, Ordering::Relaxed);
+    let wanted = read("fn_trigger_key");
+    let keycode = trigger_keycode(&wanted);
+    let key_changed = TRIGGER_KEYCODE.swap(keycode, Ordering::Relaxed) != keycode;
+    TRIGGER_FLAG.store(modifier_flag(keycode).unwrap_or(0), Ordering::Relaxed);
+    if key_changed {
+        TRIGGER_DOWN.store(false, Ordering::Relaxed);
+    }
     #[cfg(target_os = "macos")]
-    if was_enabled && !fn_enabled {
+    if was_enabled && (!fn_enabled || key_changed) {
         let a = app.clone();
         let _ = app.run_on_main_thread(move || macos_mouse::disable_fn(&a));
     }
@@ -228,6 +302,8 @@ mod macos_mouse {
                             CGEventType::RightMouseDown,
                             CGEventType::RightMouseUp,
                             CGEventType::FlagsChanged,
+                            CGEventType::KeyDown,
+                            CGEventType::KeyUp,
                         ],
                         move |_proxy, etype, event| {
                             // macOS disabled the tap (timeout or during user input) — re-arm
@@ -253,19 +329,40 @@ mod macos_mouse {
                             // down; handle_mouse also recovers poisoned locks so it won't panic.
                             let handled =
                                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                    if matches!(etype, CGEventType::FlagsChanged) {
-                                        if event.get_integer_value_field(
+                                    let is_key = matches!(
+                                        etype,
+                                        CGEventType::KeyDown | CGEventType::KeyUp
+                                    );
+                                    if is_key || matches!(etype, CGEventType::FlagsChanged) {
+                                        let keycode = event.get_integer_value_field(
                                             EventField::KEYBOARD_EVENT_KEYCODE,
-                                        ) == 63
+                                        );
+                                        if super::CAPTURING.load(super::Ordering::Relaxed) {
+                                            return capture_key(&cb_app, etype, &event, keycode);
+                                        }
+                                        if is_key {
+                                            return handle_plain_trigger(&cb_app, etype, &event, keycode);
+                                        }
+                                        if keycode == super::TRIGGER_KEYCODE.load(super::Ordering::Relaxed)
+                                            && super::TRIGGER_FLAG.load(super::Ordering::Relaxed) != 0
                                             && super::FN_ENABLED.load(super::Ordering::Relaxed)
                                         {
-                                            let down = event
-                                                .get_flags()
-                                                .contains(CGEventFlags::CGEventFlagSecondaryFn);
+                                            let flag = CGEventFlags::from_bits_truncate(
+                                                super::TRIGGER_FLAG.load(super::Ordering::Relaxed),
+                                            );
+                                            // A second event for the key we already hold
+                                            // is its release, whatever the flag says.
+                                            let down = event.get_flags().contains(flag)
+                                                && !super::TRIGGER_DOWN.load(super::Ordering::Relaxed);
+                                            super::TRIGGER_DOWN.store(down, super::Ordering::Relaxed);
                                             let a = cb_app.clone();
-                                            return cb_app
+                                            let sent = cb_app
                                                 .run_on_main_thread(move || handle_fn(&a, down))
                                                 .is_ok();
+                                            // Only Fn is swallowed (else macOS opens the
+                                            // emoji picker). Other modifiers pass through
+                                            // so they still work in key combinations.
+                                            return sent && keycode == super::FN_KEYCODE;
                                         }
                                         return false;
                                     }
@@ -323,6 +420,64 @@ mod macos_mouse {
                 CFRunLoop::run_current(); // blocks this thread for the tap's lifetime
             }
         });
+    }
+
+    /// Recording the primary key: report the first key pressed and swallow it so it
+    /// doesn't type. Returns whether to drop the event.
+    fn capture_key(app: &AppHandle, etype: CGEventType, event: &core_graphics::event::CGEvent, keycode: i64) -> bool {
+        use tauri::Emitter;
+        let pressed = match etype {
+            CGEventType::KeyDown => {
+                event.get_integer_value_field(EventField::KEYBOARD_EVENT_AUTOREPEAT) == 0
+            }
+            CGEventType::FlagsChanged => match super::modifier_flag(keycode) {
+                Some(f) => event.get_flags().contains(CGEventFlags::from_bits_truncate(f)),
+                // Caps Lock: report it so the page can say it can't be held.
+                None => keycode == super::CAPS_LOCK_KEYCODE,
+            },
+            _ => false,
+        };
+        if !pressed {
+            return matches!(etype, CGEventType::KeyDown);
+        }
+        super::CAPTURING.store(false, super::Ordering::Relaxed);
+        let _ = app.emit("trigger-key-captured", keycode);
+        // Drop ordinary keys so they don't type; let modifier changes through so the
+        // system's modifier state stays correct.
+        matches!(etype, CGEventType::KeyDown)
+    }
+
+    /// The primary key when it's an ordinary key (not a modifier): KeyDown is a press,
+    /// KeyUp a release, and both are swallowed so the key doesn't type while it's the
+    /// trigger. With ⌘ / ⌃ / ⌥ held it's left alone, so combos using it still work.
+    fn handle_plain_trigger(app: &AppHandle, etype: CGEventType, event: &core_graphics::event::CGEvent, keycode: i64) -> bool {
+        use super::{Ordering::Relaxed, FN_ENABLED, TRIGGER_DOWN, TRIGGER_FLAG, TRIGGER_KEYCODE};
+        if keycode != TRIGGER_KEYCODE.load(Relaxed)
+            || TRIGGER_FLAG.load(Relaxed) != 0
+            || !FN_ENABLED.load(Relaxed)
+        {
+            return false;
+        }
+        let held = TRIGGER_DOWN.load(Relaxed);
+        let down = match etype {
+            CGEventType::KeyDown => {
+                if held || event.get_integer_value_field(EventField::KEYBOARD_EVENT_AUTOREPEAT) != 0 {
+                    return held; // key repeat while held: swallow, nothing new
+                }
+                let combo = CGEventFlags::CGEventFlagCommand
+                    | CGEventFlags::CGEventFlagControl
+                    | CGEventFlags::CGEventFlagAlternate;
+                if event.get_flags().intersects(combo) {
+                    return false;
+                }
+                true
+            }
+            CGEventType::KeyUp if held => false,
+            _ => return false,
+        };
+        TRIGGER_DOWN.store(down, Relaxed);
+        let a = app.clone();
+        app.run_on_main_thread(move || handle_fn(&a, down)).is_ok()
     }
 
     pub(super) fn disable_fn(app: &AppHandle) {

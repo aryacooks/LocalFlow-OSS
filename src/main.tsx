@@ -6,6 +6,7 @@ import MicBubble from "./windows/MicBubble";
 import Placer from "./windows/Placer";
 import PasteCard from "./windows/PasteCard";
 import "@fontsource-variable/geist";
+import "@fontsource-variable/inter";
 import "./styles/globals.css";
 import "./styles/oil.css";
 

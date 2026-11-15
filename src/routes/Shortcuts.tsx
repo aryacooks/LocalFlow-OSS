@@ -2,6 +2,9 @@ import { useEffect, useState } from "react";
 import { AlertTriangle, Check, ExternalLink, X } from "lucide-react";
 import { getSetting, setSetting, reloadGlobalShortcut, getPermissionStatus, requestInputMonitoringPermission, openPrivacySettings, type PermissionStatus } from "../lib/ipc";
 import { keyLabel } from "../lib/utils";
+import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
+import { CAPS_LOCK_KEYCODE, ESC_KEYCODE, FN_KEYCODE, isModifierKey, macKey, triggerKeycode } from "../lib/macKeys";
 import ShieldCheck from "../components/ui/shield-check";
 
 function getWindowsVkCode(code: string, keyCode: number): number {
@@ -60,6 +63,11 @@ export default function ShortcutsPage() {
   const [mouseToggle, setMouseToggle] = useState("none");
   const [mouseInstant, setMouseInstant] = useState("none");
   const [fnEnabled, setFnEnabled] = useState(false);
+  // Primary key as a macOS keycode (setting "fn_trigger_key" = "key:<code>").
+  const [primaryKey, setPrimaryKey] = useState(FN_KEYCODE);
+  const pk = macKey(primaryKey);
+  const [capturingKey, setCapturingKey] = useState(false);
+  const [keyNote, setKeyNote] = useState("");
   // Per-trigger on/off (Settings keys "<trigger>_enabled"; missing = on).
   const [enabled, setEnabled] = useState<Record<TriggerKey, boolean>>({
     shortcut_toggle_enabled: true,
@@ -94,6 +102,7 @@ export default function ShortcutsPage() {
     if (mInstant) setMouseInstant(mInstant);
 
     setFnEnabled((await getSetting("fn_quick_toggle")) === "true");
+    setPrimaryKey(triggerKeycode(await getSetting("fn_trigger_key")));
 
     const flags = await Promise.all(TRIGGER_KEYS.map((k) => getSetting(k)));
     setEnabled(Object.fromEntries(TRIGGER_KEYS.map((k, i) => [k, flags[i] !== "false"])) as Record<TriggerKey, boolean>);
@@ -125,6 +134,52 @@ export default function ShortcutsPage() {
       console.error(error);
     }
   };
+
+  const changePrimaryKey = async (code: number) => {
+    const prev = primaryKey;
+    setPrimaryKey(code);
+    try {
+      await setSetting("fn_trigger_key", `key:${code}`);
+      await reloadGlobalShortcut();
+    } catch (error) {
+      console.error(error);
+      setPrimaryKey(prev);
+    }
+  };
+
+  // "Change key": the backend reports the next key pressed anywhere (raw keycode, so
+  // Fn, either-side modifiers and F-keys all work). Esc cancels.
+  const startKeyCapture = async () => {
+    setKeyNote("");
+    try {
+      await invoke("capture_trigger_key");
+      setCapturingKey(true);
+    } catch (error) {
+      setKeyNote(String(error));
+    }
+  };
+  const stopKeyCapture = () => {
+    setCapturingKey(false);
+    invoke("cancel_trigger_capture").catch(console.error);
+  };
+
+  useEffect(() => {
+    if (!capturingKey) return;
+    const off = listen<number>("trigger-key-captured", ({ payload: code }) => {
+      setCapturingKey(false);
+      if (code === ESC_KEYCODE) return;
+      if (code === CAPS_LOCK_KEYCODE) {
+        setKeyNote("Caps Lock can't be held down, so it can't be the primary key. Try another.");
+        return;
+      }
+      changePrimaryKey(code);
+    });
+    // Leaving the page mid-capture shouldn't leave the next keystroke swallowed.
+    return () => {
+      off.then((f) => f());
+      invoke("cancel_trigger_capture").catch(console.error);
+    };
+  }, [capturingKey]);
 
   useEffect(() => {
     loadSettings().catch(console.error).finally(() => setLoaded(true));
@@ -513,26 +568,47 @@ export default function ShortcutsPage() {
       )}
 
       {loaded && (<>
-      {/* PRIMARY: the Fn key (macOS) */}
+      {/* PRIMARY: hold / double-tap one key (macOS). Fn by default. */}
       {permissions?.is_macos && (
         <section className={`glass-panel fn-hero ${fnEnabled ? "" : "is-off"}`} style={{ marginBottom: 18 }}>
-          <div className="fn-hero-key" aria-hidden="true">fn</div>
+          <div className="fn-hero-key" aria-hidden="true">{pk.cap}</div>
           <div className="fn-hero-body">
             <div className="fn-hero-title">
-              Fn key <span className="fn-hero-badge">Primary</span>
+              {pk.name} <span className="fn-hero-badge">Primary</span>
             </div>
             <div className="fn-gestures">
               <div className="fn-gesture">
-                <span className="fn-gesture-keys"><kbd className="keycap">Fn</kbd></span>
+                <span className="fn-gesture-keys"><kbd className="keycap">{pk.short}</kbd></span>
                 <span><b>Hold</b> to talk, let go to type</span>
               </div>
               <div className="fn-gesture is-main">
-                <span className="fn-gesture-keys"><kbd className="keycap" aria-label="Fn twice">Fn<sup className="fn-sq">2</sup></kbd></span>
-                <span><b>Double-tap</b> to go hands-free · tap Fn again to stop</span>
+                <span className="fn-gesture-keys"><kbd className="keycap" aria-label={`${pk.short} twice`}>{pk.short}<sup className="fn-sq">2</sup></kbd></span>
+                <span><b>Double-tap</b> to go hands-free · tap {pk.short} again to stop</span>
               </div>
             </div>
+            <div className="fn-key-pick">
+              <span>Key</span>
+              {capturingKey ? (
+                <>
+                  <span className="fn-key-listen" role="status">Press any key…</span>
+                  <button type="button" className="button fn-key-btn" onClick={stopKeyCapture}>Cancel</button>
+                </>
+              ) : (
+                <>
+                  <kbd className="keycap">{pk.short}</kbd>
+                  <button type="button" className="button fn-key-btn" onClick={startKeyCapture}>Change key</button>
+                  {primaryKey !== FN_KEYCODE && (
+                    <button type="button" className="button fn-key-btn is-quiet" onClick={() => changePrimaryKey(FN_KEYCODE)}>Use Fn</button>
+                  )}
+                </>
+              )}
+              {keyNote ? <em className="is-warn">{keyNote}</em>
+                : primaryKey === FN_KEYCODE ? null
+                : isModifierKey(primaryKey) ? <em>Still works as a normal {pk.name.replace(/^(Right|Left) /, "")} key in combinations.</em>
+                : <em>{pk.name} won't type on its own while this is on. It still works with ⌘, ⌃ or ⌥ held.</em>}
+            </div>
           </div>
-          <Switch checked={fnEnabled} onChange={toggleFn} label="Fn key" />
+          <Switch checked={fnEnabled} onChange={toggleFn} label={pk.name} />
         </section>
       )}
 

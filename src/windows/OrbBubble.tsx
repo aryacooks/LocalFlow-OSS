@@ -7,15 +7,28 @@ import { useEffect, useRef } from "react";
  * Drawing happens in "points" around (0,0); 1 pt = 1 CSS px at uiScale 1. The canvas is
  * ORB_BOX pt square, centred in the window.
  */
-export type OrbVariant = "sunburst" | "blob" | "orbit" | "liquid" | "pebble" | "minibars";
+export type OrbVariant = "sunburst" | "blob" | "orbit" | "liquid" | "pebble" | "wave" | "echo" | "aperture";
 export const ORB_VARIANTS: { id: OrbVariant; label: string }[] = [
   { id: "blob", label: "Blob (default)" },
   { id: "sunburst", label: "Sunburst" },
   { id: "orbit", label: "Orbit" },
   { id: "liquid", label: "Liquid" },
   { id: "pebble", label: "Pebble" },
-  { id: "minibars", label: "Mini bars" },
+  { id: "wave", label: "Wave line" },
+  { id: "echo", label: "Echo" },
+  { id: "aperture", label: "Aperture" },
 ];
+/** Styles that draw their own transcribing look instead of the shared spinner. */
+const OWN_TRANSCRIBING = new Set<OrbVariant>(["wave", "echo", "aperture"]);
+
+/**
+ * A saved `bubble_orb` setting as a style, or null if it isn't one. "minibars" was
+ * replaced by "wave", so anyone who picked it gets the wave line.
+ */
+export function toOrbVariant(v: unknown): OrbVariant | null {
+  if (v === "minibars") return "wave";
+  return ORB_VARIANTS.some((o) => o.id === v) ? (v as OrbVariant) : null;
+}
 export const ORB_BOX = 64; // keep in sync with placement::ORB_BOX (Rust)
 /** Active orbs draw a touch larger than the design page so they read at a glance. */
 const GROW = 1.12;
@@ -136,6 +149,9 @@ function errorOrb(ctx: CanvasRenderingContext2D, s: Snap, darkOrb: boolean) {
   ctx.restore();
 }
 
+/** 0→1 over ~300 ms after transcribing starts, so a style's own look blends in. */
+const settle = (s: Snap) => (s.st === "processing" ? ease(s.sp * 3.5) : 0);
+
 type Draw = (ctx: CanvasRenderingContext2D, s: Snap, p: Pal, mem: Record<string, number>, dt: number) => boolean | void;
 
 // Each returns true when it has drawn the done state itself (else the caller does).
@@ -254,19 +270,79 @@ const DRAW: Record<OrbVariant, Draw> = {
     const ih = L ? 4 + s.pitch * 4 + s.punch * 2 : 5.2;
     ctx.beginPath(); ctx.roundRect(-iw / 2, -ih / 2, iw, ih, ih / 2); ctx.fillStyle = p.mark; ctx.fill();
   },
-  // Five bars from the voice bands, with a body that swells with loudness.
-  minibars(ctx, s, p) {
-    const L = s.st === "listening";
-    const R = 6 + 10 * s.a + (L ? s.lv * 2 + s.punch * 1.2 : 0);
+  // A line across the orb drawn from the voice bands, each band its own ripple,
+  // tapering at the edges. Transcribing smooths it into one rolling wave.
+  wave(ctx, s, p, mem, dt) {
+    const L = s.st === "listening", k = settle(s);
+    const R = 6 + 10 * s.a + (L ? s.punch * 1.2 : 0);
     shadowDisc(ctx, R, p);
     if (s.st === "done") return;
-    const map = [[6, 7], [3, 4], [0, 1], [2, 3], [5, 6]];
-    for (let i = 0; i < 5; i++) {
-      const [x0, x1] = map[i];
-      const v = L ? Math.max(s.bands[x0], s.bands[x1]) * (1 - Math.abs(i - 2) * 0.1) : 0.2 + 0.45 * Math.max(0, Math.sin(s.t * 8 - i * 0.7));
-      const h = 2.5 + v * 15 * s.a, x = (i - 2) * 4;
-      ctx.beginPath(); ctx.roundRect(x - 1.1, -h / 2, 2.2, h, 1.1); ctx.fillStyle = p.mark; ctx.fill();
+    mem.ph = (mem.ph ?? 0) + dt * (L ? 4 + s.pitch * 6 : 6);
+    const w = R - 3;
+    ctx.save(); ctx.beginPath(); ctx.arc(0, 0, R - 1.6, 0, TAU); ctx.clip();
+    ctx.strokeStyle = p.mark; ctx.lineWidth = 1.9; ctx.lineCap = "round"; ctx.lineJoin = "round";
+    ctx.globalAlpha = s.a;
+    ctx.beginPath();
+    for (let x = -w; x <= w + 0.01; x += 0.8) {
+      const env = 1 - (x / w) ** 2;
+      let yv = 0;
+      for (let i = 0; i < 8; i++) yv += s.bands[i] * Math.sin(x * (0.32 + i * 0.13) + mem.ph * (1 + i * 0.35) + i);
+      yv *= 2.2 * env;
+      const yp = Math.sin(x * 0.42 - s.t * 7) * 3.4 * env;
+      const y = (L ? yv : 0) * (1 - k) + yp * k;
+      if (x === -w) ctx.moveTo(x, y); else ctx.lineTo(x, y);
     }
+    ctx.stroke(); ctx.restore();
+  },
+  // Rings ripple out from the centre, faster and bolder as you get louder.
+  // Transcribing reverses them so they fall inward.
+  echo(ctx, s, p, mem, dt) {
+    const L = s.st === "listening", k = settle(s);
+    const R = 6 + 9 * s.a + (L ? s.lv * 2 + s.punch * 1.2 : 0) - k * 1.5;
+    shadowDisc(ctx, R, p);
+    if (s.st === "done") return;
+    mem.ph = (mem.ph ?? 0) + (L ? 0.45 + s.lv * 1.6 + s.punch : 0.9) * dt;
+    const inner = R - 3.5;
+    for (let i = 0; i < 3; i++) {
+      const f = (mem.ph + i / 3) % 1;
+      const pos = k > 0.5 ? 1 - f : f;
+      const r = 2.5 + pos * (inner - 2.5);
+      const fade = pos < 0.15 ? pos / 0.15 : 1 - (pos - 0.15) / 0.85;
+      ctx.save(); ctx.globalAlpha = s.a * fade * (L ? 0.45 + 0.55 * s.lv : 0.85);
+      ctx.strokeStyle = p.mark; ctx.lineWidth = L ? 1.3 + s.lv * 1.2 : 1.6;
+      ctx.beginPath(); ctx.arc(0, 0, r, 0, TAU); ctx.stroke(); ctx.restore();
+    }
+    disc(ctx, 2.2 + (L ? s.lv * 1.6 : 0.6 * Math.sin(s.t * 6) + 0.6), p.mark);
+  },
+  // A camera shutter that opens with loudness and twists with pitch. Transcribing
+  // half-closes it and turns it slowly, like it's focusing.
+  aperture(ctx, s, p, mem, dt) {
+    const L = s.st === "listening";
+    const R = 6 + 9.5 * s.a + (L ? s.punch : 0);
+    shadowDisc(ctx, R, p);
+    if (s.st === "done") return;
+    const ring = R - 2.6;
+    const target = L ? 1.6 + s.lv * 7 + s.punch * 1.5 : 3.6 + 1.2 * Math.sin(s.t * 3.2);
+    const prev = mem.open ?? 2;
+    mem.open = prev + (target - prev) * (1 - Math.exp(-dt / 0.06));
+    mem.rot = (mem.rot ?? 0) + dt * (L ? 0.2 + s.pitch * 0.8 : 1.6);
+    const open = Math.min(ring - 1.5, mem.open) * Math.min(1, s.a + 0.1);
+    const n = 6, rot = mem.rot + open * 0.08;
+    ctx.save(); ctx.globalAlpha = s.a;
+    disc(ctx, ring, p.mark);
+    ctx.beginPath();
+    for (let i = 0; i <= n; i++) {
+      const a = rot + (i / n) * TAU;
+      if (i) ctx.lineTo(Math.cos(a) * open, Math.sin(a) * open); else ctx.moveTo(Math.cos(a) * open, Math.sin(a) * open);
+    }
+    ctx.closePath(); ctx.fillStyle = p.body; ctx.fill();
+    // Blade edges: from each corner of the opening out to the rim.
+    ctx.strokeStyle = p.body; ctx.lineWidth = 1.1; ctx.globalAlpha = s.a * 0.75;
+    for (let i = 0; i < n; i++) {
+      const a = rot + (i / n) * TAU, a2 = a + TAU / n + 0.25;
+      ctx.beginPath(); ctx.moveTo(Math.cos(a) * open, Math.sin(a) * open); ctx.lineTo(Math.cos(a2) * ring, Math.sin(a2) * ring); ctx.stroke();
+    }
+    ctx.restore();
   },
 };
 
@@ -357,7 +433,7 @@ export default function OrbBubble({ variant, status, dark, isError, cancelled, h
         const snap: Snap = { t, st, sp: t - stateAt, lv: level, bands, a: active, pitch, punch };
         ctx.scale(GROW, GROW);
         if (st === "done" && L.isError) errorOrb(ctx, snap, L.dark);
-        else if (st === "processing") transcribing(ctx, snap, pal);
+        else if (st === "processing" && !OWN_TRANSCRIBING.has(L.variant)) transcribing(ctx, snap, pal);
         else DRAW[L.variant](ctx, snap, pal, mem, dt);
         if (st === "done" && !L.isError) doneMark(ctx, snap, pal, false, L.cancelled);
       }

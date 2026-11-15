@@ -4,8 +4,8 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getSetting, setBubbleVisible, setEarconsEnabled, getNotchGeometry, BUBBLE_SCALE_MIN, BUBBLE_SCALE_MAX } from "../lib/ipc";
 import NotchIsland from "./NotchIsland";
-import OrbBubble, { ORB_BOX, type OrbVariant, type OrbSignal } from "./OrbBubble";
-import { EyeOff, Volume2, VolumeX } from "lucide-react";
+import OrbBubble, { ORB_BOX, toOrbVariant, type OrbVariant, type OrbSignal } from "./OrbBubble";
+import OrbMenu from "./OrbMenu";
 
 
 // Manual bubble-size override → content scale. MUST stay in sync with the Rust
@@ -52,9 +52,16 @@ export default function MicBubble() {
   const drag = useRef<{ sx: number; sy: number; wx: number; wy: number; moved: boolean; raf: number } | null>(null);
   const suppressClick = useRef(false);
   const [uiScale, setUiScale] = useState(1);
-  // The orb's colour follows what's behind it: Rust samples the screen under the
-  // bubble and sends `bubble-tint` ("light" background → black orb, "dark" → white).
-  const [tint, setTint] = useState<"light" | "dark">("light");
+  // The orb's colour follows the system appearance: black in light mode, white in
+  // dark mode. (It never looks at the screen, so no Screen Recording is involved.)
+  const [tint, setTint] = useState<"light" | "dark">(() =>
+    window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+  useEffect(() => {
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const on = () => setTint(mq.matches ? "dark" : "light");
+    mq.addEventListener("change", on);
+    return () => mq.removeEventListener("change", on);
+  }, []);
   const [variant, setVariant] = useState<OrbVariant>("blob");
   const signal = useRef<OrbSignal>({ level: 0, bands: Array(8).fill(0) });
   const [privacy, setPrivacy] = useState(false);
@@ -86,12 +93,10 @@ export default function MicBubble() {
   // Load the saved bubble color and keep it in sync with the Settings page (which
   // broadcasts "bubble-style-changed" when the user flips it).
   useEffect(() => {
-    const isVariant = (v: unknown): v is OrbVariant =>
-      v === "sunburst" || v === "blob" || v === "orbit" || v === "liquid" || v === "pebble" || v === "minibars";
-    getSetting("bubble_orb").then((v) => { if (isVariant(v)) setVariant(v); }).catch(() => {});
-    const un2 = listen<string>("bubble-orb-changed", (e) => { if (isVariant(e.payload)) setVariant(e.payload); });
-    const un3 = listen<string>("bubble-tint", (e) => setTint(e.payload === "dark" ? "dark" : "light"));
-    return () => { un2.then((f) => f()); un3.then((f) => f()); };
+    const apply = (v: unknown) => { const o = toOrbVariant(v); if (o) setVariant(o); };
+    getSetting("bubble_orb").then(apply).catch(() => {});
+    const un2 = listen<string>("bubble-orb-changed", (e) => apply(e.payload));
+    return () => { un2.then((f) => f()); };
   }, []);
 
   // Bubble style + the notch's real size, kept in sync with Settings.
@@ -157,7 +162,7 @@ export default function MicBubble() {
     let width: number;
     let height: number;
     if (menuOpen) {
-      width = 200; height = 264;
+      width = 200; height = 284;
     } else if (status === "done" && isError) {
       // Room for the short label beside the orb (above/below it in the centre column).
       if ((spot[1] ?? "r") === "c") { width = 160; height = ORB_BOX + 30; }
@@ -218,7 +223,9 @@ export default function MicBubble() {
     const u4 = listen<{ raw?: string; cleaned?: string; error?: string }>("processing-done", (ev) => {
       const p = ev.payload;
       if (p.error) {
-        setTranscribedText(p.error === "Cancelled" ? "Cancelled" : `Error: ${p.error}`);
+        // Language advice ("Sounded like Tamil. Add it in Language Model...") reads as it is.
+        const plain = p.error === "Cancelled" || /Language Model|dictate in it/.test(p.error);
+        setTranscribedText(plain ? p.error : `Error: ${p.error}`);
         setIsError(p.error !== "Cancelled");
       } else if (p.cleaned) {
         setTranscribedText(p.cleaned);
@@ -394,136 +401,30 @@ export default function MicBubble() {
       {/* ─── Right-Click Context Menu ─── */}
       {/* Sits on the side of the orb that faces the middle of the screen. */}
       {menuOpen && (
-        <div
+        <OrbMenu
           ref={menuRef}
-          style={{
-            position: "absolute",
-            ...hAnchor(8),
-            ...(row === "t" ? { top: s(ORB_BOX) } : { top: s(8) }),
-            minWidth: s(136),
-            background: "rgba(24, 24, 27, 0.97)",
-            border: "1px solid rgba(255, 255, 255, 0.1)",
-            borderRadius: s(8),
-            padding: s(4),
-            boxShadow: "0 8px 24px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255,255,255,0.05)",
-            backdropFilter: "blur(12px)",
-            pointerEvents: "auto",
-            zIndex: 50,
-            animation: "menuFadeIn 0.18s cubic-bezier(0.16, 1, 0.3, 1)",
+          scale={uiScale}
+          style={{ position: "absolute", ...hAnchor(8), ...(row === "t" ? { top: s(ORB_BOX) } : { top: s(8) }) }}
+          privacy={privacy}
+          sounds={sounds}
+          onPrivacy={async () => {
+            const v = await invoke<boolean>("toggle_privacy_mode").catch(() => null);
+            if (v !== null) setPrivacy(v);
           }}
-        >
-          <button
-            onClick={async (e) => {
-              e.stopPropagation();
-              const v = await invoke<boolean>("toggle_privacy_mode").catch(() => null);
-              if (v !== null) setPrivacy(v);
-            }}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: s(8),
-              width: "100%",
-              padding: `${s(7)} ${s(10)}`,
-              background: privacy ? "rgba(167,139,250,0.12)" : "transparent",
-              border: "none",
-              borderRadius: s(5),
-              color: privacy ? "#c4b5fd" : "#e4e4e7",
-              fontSize: s(12),
-              fontWeight: 500,
-              fontFamily: "inherit",
-              cursor: "pointer",
-              textAlign: "left",
-              transition: "background 0.12s",
-            }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = privacy ? "rgba(167,139,250,0.2)" : "rgba(255,255,255,0.08)")}
-            onMouseLeave={(e) => (e.currentTarget.style.background = privacy ? "rgba(167,139,250,0.12)" : "transparent")}
-          >
-            <svg width={14 * uiScale} height={14 * uiScale} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M9.88 9.88a3 3 0 1 0 4.24 4.24" />
-              <path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1 -1.67 2.68" />
-              <path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39 -1.61" />
-              <line x1="2" y1="2" x2="22" y2="22" />
-            </svg>
-            <span style={{ flex: 1 }}>Incognito</span>
-            <span style={{ fontSize: s(10), opacity: 0.85 }}>{privacy ? "On" : "Off"}</span>
-          </button>
-          <button className="bubble-menu-action" onClick={async () => {
+          onSounds={async () => {
             try { await setEarconsEnabled(!sounds); } catch (error) { console.error(error); }
-          }}>
-            {sounds ? <Volume2 size={14 * uiScale} /> : <VolumeX size={14 * uiScale} />}
-            <span style={{ flex: 1 }}>Sounds</span>
-            <span style={{ fontSize: s(10), opacity: 0.85 }}>{sounds ? "On" : "Muted"}</span>
-          </button>
-          <button className="bubble-menu-action" onClick={async () => {
+          }}
+          onHide={async () => {
             try { await setBubbleVisible(false); setMenuOpen(false); } catch (error) { console.error(error); }
-          }}>
-            <EyeOff size={14 * uiScale} />
-            Hide bubble
-          </button>
-          <div style={{ height: "1px", background: "rgba(255,255,255,0.06)", margin: `${s(2)} ${s(6)}` }} />
-          <button
-            onClick={async () => {
-              setMenuOpen(false);
-              await invoke("open_main_window").catch(console.error);
-            }}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: s(8),
-              width: "100%",
-              padding: `${s(7)} ${s(10)}`,
-              background: "transparent",
-              border: "none",
-              borderRadius: s(5),
-              color: "#e4e4e7",
-              fontSize: s(12),
-              fontWeight: 500,
-              fontFamily: "inherit",
-              cursor: "pointer",
-              textAlign: "left",
-              transition: "background 0.12s",
-            }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(255,255,255,0.08)")}
-            onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
-          >
-            <svg width={14 * uiScale} height={14 * uiScale} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
-              <line x1="9" y1="3" x2="9" y2="21" />
-            </svg>
-            Open App
-          </button>
-          <div style={{ height: "1px", background: "rgba(255,255,255,0.06)", margin: `${s(2)} ${s(6)}` }} />
-          <button
-            onClick={async () => {
-              await invoke("quit_app").catch(console.error);
-            }}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: s(8),
-              width: "100%",
-              padding: `${s(7)} ${s(10)}`,
-              background: "transparent",
-              border: "none",
-              borderRadius: s(5),
-              color: "#fca5a5",
-              fontSize: s(12),
-              fontWeight: 500,
-              fontFamily: "inherit",
-              cursor: "pointer",
-              textAlign: "left",
-              transition: "background 0.12s",
-            }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(239,68,68,0.12)")}
-            onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
-          >
-            <svg width={14 * uiScale} height={14 * uiScale} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M18 6L6 18" />
-              <path d="M6 6l12 12" />
-            </svg>
-            Quit App
-          </button>
-        </div>
+          }}
+          onOpenApp={async () => {
+            setMenuOpen(false);
+            await invoke("open_main_window").catch(console.error);
+          }}
+          onQuit={async () => {
+            await invoke("quit_app").catch(console.error);
+          }}
+        />
       )}
 
       {/* ─── Error label: a short red pill beside the orb, on the side with room ─── */}
@@ -558,25 +459,12 @@ export default function MicBubble() {
 
       {/* Dynamic Keyframes */}
       <style>{`
-        .bubble-menu-action {
-          display: flex; align-items: center; gap: ${s(8)}; width: 100%;
-          padding: ${s(7)} ${s(10)}; background: transparent; border: none;
-          border-radius: ${s(5)}; color: #e4e4e7; font-size: ${s(12)};
-          font-weight: 500; font-family: inherit; cursor: pointer; text-align: left;
-        }
-        .bubble-menu-action:hover, .bubble-menu-action:focus-visible {
-          background: rgba(255,255,255,0.08);
-        }
         @keyframes errInL { from { opacity: 0; translate: 10px 0; } to { opacity: 1; translate: 0 0; } }
         @keyframes errInR { from { opacity: 0; translate: -10px 0; } to { opacity: 1; translate: 0 0; } }
         @keyframes errInV { from { opacity: 0; translate: 0 ${row === "t" ? "-6px" : "6px"}; } to { opacity: 1; translate: 0 0; } }
         @keyframes fadeInUp {
           from { opacity: 0; transform: translateY(6px); }
           to { opacity: 1; transform: translateY(0); }
-        }
-        @keyframes menuFadeIn {
-          from { opacity: 0; transform: translateY(4px) scale(0.95); }
-          to { opacity: 1; transform: translateY(0) scale(1); }
         }
       `}</style>
     </div>

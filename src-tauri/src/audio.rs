@@ -304,23 +304,93 @@ fn process_input(data: &[f32], channels: usize, state: &Arc<AudioState>, max_sam
     }
 }
 
-/// Linear-resample mono f32 audio from `from_rate` to 16 kHz (Whisper's required rate).
+/// Resample mono f32 audio from `from_rate` to 16 kHz (Whisper's required rate).
+///
+/// Going down from 44.1/48 kHz, everything above 8 kHz has to be filtered out first.
+/// Skipping that (plain linear interpolation) folds the hiss of "s", "f", "t" and "th"
+/// back down on top of the speech band, and Whisper then mishears or drops words.
+/// So: a windowed-sinc low-pass, evaluated only at the two input samples each output
+/// sample sits between, then linear interpolation between those.
 pub fn resample_to_16k(samples: Vec<f32>, from_rate: u32) -> Vec<f32> {
     if from_rate == SAMPLE_RATE || samples.is_empty() {
         return samples;
     }
     let ratio = SAMPLE_RATE as f64 / from_rate as f64;
     let out_len = ((samples.len() as f64) * ratio).round() as usize;
+
+    // Upsampling (rare: an 8 kHz headset) has nothing to filter out.
+    let taps: Vec<f32> = if from_rate > SAMPLE_RATE {
+        // Cutoff a little under the new Nyquist (8 kHz), as a fraction of the input rate.
+        let fc = 0.46 * SAMPLE_RATE as f64 / from_rate as f64;
+        // 8 output periods either side.
+        let half = (8.0 * from_rate as f64 / SAMPLE_RATE as f64).ceil() as isize;
+        let mut t: Vec<f32> = (-half..=half)
+            .map(|k| {
+                let x = k as f64;
+                let sinc = if k == 0 { 2.0 * fc } else { (2.0 * std::f64::consts::PI * fc * x).sin() / (std::f64::consts::PI * x) };
+                // Blackman window
+                let w = 0.42 + 0.5 * (std::f64::consts::PI * x / half as f64).cos()
+                    + 0.08 * (2.0 * std::f64::consts::PI * x / half as f64).cos();
+                (sinc * w) as f32
+            })
+            .collect();
+        let sum: f32 = t.iter().sum();
+        t.iter_mut().for_each(|v| *v /= sum);
+        t
+    } else {
+        vec![1.0]
+    };
+    let half = (taps.len() / 2) as isize;
+    let n = samples.len() as isize;
+    let filtered_at = |center: isize| -> f32 {
+        let mut acc = 0.0f32;
+        for (j, &tap) in taps.iter().enumerate() {
+            let idx = (center + j as isize - half).clamp(0, n - 1);
+            acc += samples[idx as usize] * tap;
+        }
+        acc
+    };
+
     let mut out = Vec::with_capacity(out_len);
     for i in 0..out_len {
         let src_pos = i as f64 / ratio;
-        let idx = src_pos.floor() as usize;
+        let idx = src_pos.floor() as isize;
         let frac = (src_pos - idx as f64) as f32;
-        let a = samples.get(idx).copied().unwrap_or(0.0);
-        let b = samples.get(idx + 1).copied().unwrap_or(a);
+        let a = filtered_at(idx);
+        let b = if frac > 0.0 { filtered_at(idx + 1) } else { a };
         out.push(a + (b - a) * frac);
     }
     out
+}
+
+/// How long recording keeps going after the user lets go. People release the key as
+/// they finish the last word, and without this its ending is cut off.
+pub const TAIL_MS: u64 = 220;
+
+#[cfg(test)]
+mod resample_tests {
+    use super::resample_to_16k;
+
+    fn tone(freq: f32, rate: u32) -> Vec<f32> {
+        (0..rate).map(|i| (2.0 * std::f32::consts::PI * freq * i as f32 / rate as f32).sin()).collect()
+    }
+    fn rms(x: &[f32]) -> f32 {
+        let mid = &x[x.len() / 4..3 * x.len() / 4];
+        (mid.iter().map(|v| v * v).sum::<f32>() / mid.len() as f32).sqrt()
+    }
+
+    #[test]
+    fn keeps_speech_and_removes_what_would_alias() {
+        for rate in [48_000, 44_100] {
+            let speech = resample_to_16k(tone(1_000.0, rate), rate);
+            assert_eq!(speech.len(), 16_000);
+            assert!((rms(&speech) - 0.707).abs() < 0.03, "1 kHz at {rate}: {}", rms(&speech));
+            assert!(rms(&resample_to_16k(tone(6_000.0, rate), rate)) > 0.6);
+            // 10 kHz can't exist at 16 kHz; unfiltered it would reappear as a 6 kHz tone.
+            let alias = rms(&resample_to_16k(tone(10_000.0, rate), rate));
+            assert!(alias < 0.02, "10 kHz leaked through at {rate}: {alias}");
+        }
+    }
 }
 
 // ─── Tauri Commands ───────────────────────────────────────────────────────────

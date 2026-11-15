@@ -1,26 +1,12 @@
+import { useEffect, useRef } from "react";
 import type { CSSProperties, ReactNode } from "react";
-import {
-  BookOpen,
-  Copy,
-  Ghost,
-  Hand,
-  Keyboard,
-  Mic,
-  MousePointerClick,
-  Move,
-  Palette,
-  Power,
-  Smile,
-  Sparkles,
-  Timer,
-  Type,
-  Undo2,
-} from "lucide-react";
+import TipArt from "../components/TipArt";
 
 const IS_MAC = typeof navigator !== "undefined" && /Mac/i.test(navigator.platform || navigator.userAgent);
 
 interface Tip {
-  icon: ReactNode;
+  /** Which looping scene to draw (see TipArt). */
+  art: string;
   tone: string;
   title: string;
   body: ReactNode;
@@ -34,35 +20,20 @@ interface Group {
 const K = ({ children }: { children: ReactNode }) => <kbd className="keycap tips-key">{children}</kbd>;
 const Say = ({ children }: { children: ReactNode }) => <span className="tips-say">"{children}"</span>;
 
+const GREEN = "#2e9e5b";
+const ORANGE = "#e0662a";
+const GOLD = "#c9891a";
+const VIOLET = "#6d5bd0";
+
 const GROUPS: Group[] = [
   {
     label: "The orb",
     tips: [
-      {
-        icon: <MousePointerClick size={16} />,
-        tone: "#e0662a",
-        title: "Right-click the orb",
-        body: <>Opens its menu: turn <b>Incognito</b> or <b>Sounds</b> on and off, <b>Hide</b> the orb, <b>Open</b> the app or <b>Quit</b> it.</>,
-      },
-      {
-        icon: <Mic size={16} />,
-        tone: "#2e9e5b",
-        title: "Click it while talking",
-        body: <>Finishes the dictation and types it, the same as letting go of your shortcut.</>,
-      },
-      {
-        icon: <Move size={16} />,
-        tone: "#c9891a",
-        title: "Drag it, or click to place it",
-        body: <>Drag the orb anywhere and it snaps to the nearest of 8 spots. Or click it when idle and pick a spot. <K>Esc</K> cancels.</>,
-      },
+      { art: "orbmenu", tone: ORANGE, title: "Right-click the orb", body: <>Opens its menu: <b>Incognito</b>, <b>Sounds</b>, <b>Hide</b>, <b>Open</b> the app or <b>Quit</b>.</> },
+      { art: "clicktalk", tone: GREEN, title: "Click it while talking", body: <>Finishes the dictation and types it, the same as letting go of your shortcut.</> },
+      { art: "place", tone: GOLD, title: "Drag it anywhere", body: <>It snaps to the nearest of 8 spots. Or click it when idle and pick one. <K>Esc</K> cancels.</> },
       ...(IS_MAC
-        ? [{
-            icon: <Sparkles size={16} />,
-            tone: "#6d5bd0",
-            title: "Prefer the notch?",
-            body: <>In <b>Settings</b>, switch the orb to an island that grows out of the notch, or hide it entirely.</>,
-          }]
+        ? [{ art: "notch", tone: VIOLET, title: "Prefer the notch?", body: <>In <b>Settings</b>, turn the orb into an island that grows out of the notch, or hide it.</> }]
         : []),
     ],
   },
@@ -71,115 +42,67 @@ const GROUPS: Group[] = [
     tips: [
       ...(IS_MAC
         ? [
-            {
-              icon: <Hand size={16} />,
-              tone: "#2e9e5b",
-              title: "Hold Fn to talk",
-              body: <>Hold <K>Fn</K>, speak, let go. Your words are typed wherever your cursor is.</>,
-            },
-            {
-              icon: <Keyboard size={16} />,
-              tone: "#e0662a",
-              title: "Double-tap Fn for hands-free",
-              body: <>Tap <K>Fn</K> twice and keep talking as long as you like. Tap <K>Fn</K> once more to stop.</>,
-            },
+            { art: "holdfn", tone: GREEN, title: "Hold Fn to talk", body: <>Hold <K>Fn</K>, speak, let go. Your words are typed wherever your cursor is.</> },
+            { art: "doubletap", tone: ORANGE, title: "Double-tap for hands-free", body: <>Tap <K>Fn</K> twice and talk as long as you like. Tap once more to stop.</> },
           ]
-        : [
-            {
-              icon: <Keyboard size={16} />,
-              tone: "#e0662a",
-              title: "Esc cancels",
-              body: <>Changed your mind mid-sentence? Press <K>Esc</K> and nothing gets typed.</>,
-            },
-          ]),
-      {
-        icon: <MousePointerClick size={16} />,
-        tone: "#6d5bd0",
-        title: "Your own shortcuts",
-        body: <>On <b>Shortcuts</b>, pick any key combo to toggle or hold, including the side buttons on your mouse.</>,
-      },
-      {
-        icon: <Timer size={16} />,
-        tone: "#c9891a",
-        title: "10 minutes per recording",
-        body: <>Keep talking past that and only the last 10 minutes are kept. Longer talks take a little longer to type.</>,
-      },
+        : [{ art: "esc", tone: ORANGE, title: "Esc cancels", body: <>Changed your mind mid-sentence? Press <K>Esc</K> and nothing gets typed.</> }]),
+      { art: "shortcuts", tone: VIOLET, title: "Your own shortcuts", body: <>On <b>Shortcuts</b>, pick any key combo to toggle or hold, even the side buttons on your mouse.</> },
+      { art: "timer", tone: GOLD, title: "10 minutes per recording", body: <>Talk past that and only the last 10 minutes are kept.</> },
     ],
   },
   {
     label: "Say it, and it happens",
     tips: [
-      {
-        icon: <Type size={16} />,
-        tone: "#2e9e5b",
-        title: "Punctuation and lines",
-        body: <><Say>new line</Say>, <Say>new paragraph</Say>, <Say>comma</Say>, <Say>period</Say>, <Say>question mark</Say>, <Say>exclamation mark</Say>, <Say>colon</Say>, <Say>semicolon</Say>.</>,
-      },
-      {
-        icon: <Undo2 size={16} />,
-        tone: "#e0662a",
-        title: "Take it back",
-        body: <>Say <Say>scratch that</Say> or <Say>delete that</Say> to drop what you just said. With cleanup on, <Say>no wait, Monday</Say> fixes the last bit too.</>,
-      },
-      {
-        icon: <Smile size={16} />,
-        tone: "#c9891a",
-        title: "Spoken emoji",
-        body: <>End a phrase with "emoji": <Say>laughing emoji</Say> types 😂, <Say>thumbs up emoji</Say> types 👍.</>,
-      },
+      { art: "punct", tone: GREEN, title: "Punctuation and lines", body: <>Say <Say>comma</Say>, <Say>question mark</Say>, <Say>new line</Say> or <Say>new paragraph</Say>.</> },
+      { art: "undo", tone: ORANGE, title: "Take it back", body: <><Say>scratch that</Say> drops what you just said. <Say>no wait, Monday</Say> fixes the last bit.</> },
+      { art: "emoji", tone: GOLD, title: "Spoken emoji", body: <>End a phrase with "emoji": <Say>thumbs up emoji</Say> types 👍.</> },
     ],
   },
   {
     label: "Better results",
     tips: [
-      {
-        icon: <BookOpen size={16} />,
-        tone: "#6d5bd0",
-        title: "Teach it your words",
-        body: <>Add names and jargon to the <b>Dictionary</b> in <b>Formatting options</b>, plus how they get misheard, and they're spelled right every time.</>,
-      },
-      {
-        icon: <Sparkles size={16} />,
-        tone: "#2e9e5b",
-        title: "Turn on cleanup",
-        body: <>In <b>Formatting options</b>, a small on-device AI removes "um"s, fixes repeats and matches the app you're writing in.</>,
-      },
-      {
-        icon: <Copy size={16} />,
-        tone: "#e0662a",
-        title: "Nowhere to type?",
-        body: <>If no text box was selected, a card pops up with what you said and a <b>Copy</b> button, so nothing is lost.</>,
-      },
+      { art: "dictionary", tone: VIOLET, title: "Teach it your words", body: <>Add names and jargon to the <b>Dictionary</b>, plus how they get misheard.</> },
+      { art: "formatting", tone: GREEN, title: "Turn on formatting", body: <>In <b>Formatting options</b>, pick what gets fixed before typing.</> },
+      { art: "pastecard", tone: ORANGE, title: "Nowhere to type?", body: <>A card pops up with what you said and a <b>Copy</b> button, so nothing is lost.</> },
     ],
   },
   {
     label: "Privacy and the app",
     tips: [
-      {
-        icon: <Ghost size={16} />,
-        tone: "#6d5bd0",
-        title: "Incognito",
-        body: <>Turn it on from the sidebar or the orb menu and nothing you say is saved to History.</>,
-      },
-      {
-        icon: <Power size={16} />,
-        tone: "#c9891a",
-        title: "Closing isn't quitting",
-        body: <>LocalFlow keeps listening for your shortcut when this window is closed. Quit from the orb menu or <b>Quit App</b>.</>,
-      },
-      {
-        icon: <Palette size={16} />,
-        tone: "#2e9e5b",
-        title: "Make it yours",
-        body: <>Switch <b>Theme</b> between Normal and Oil, and light or dark, at the bottom of the sidebar.</>,
-      },
+      { art: "incognito", tone: VIOLET, title: "Incognito", body: <>Turn it on from the sidebar or the orb menu and nothing is saved to History.</> },
+      { art: "quit", tone: GOLD, title: "Closing isn't quitting", body: <>LocalFlow keeps listening when this window is closed. Quit from the orb menu.</> },
+      { art: "theme", tone: GREEN, title: "Make it yours", body: <>Switch <b>Theme</b> and light or dark at the bottom of the sidebar.</> },
     ],
   },
 ];
 
+/**
+ * A grid of cards: a tinted panel with a small looping line drawing, then the title
+ * and one line of text. Cards rise in as they scroll into view, and a drawing only
+ * animates while it is on screen.
+ */
 export default function TipsPage() {
+  const pageRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const page = pageRef.current;
+    if (!page) return;
+    const root = page.closest(".page-scroll");
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          e.target.classList.toggle("is-live", e.isIntersecting);
+          if (e.isIntersecting) e.target.classList.add("is-seen");
+        }
+      },
+      { root, threshold: 0.2 },
+    );
+    page.querySelectorAll(".tip-card, .tips-chapter").forEach((el) => io.observe(el));
+    return () => io.disconnect();
+  }, []);
+
   return (
-    <div className="page tips-page">
+    <div className="page tips-page" ref={pageRef}>
       <div className="page-header">
         <div>
           <p className="page-kicker">Get more out of it</p>
@@ -187,17 +110,18 @@ export default function TipsPage() {
         </div>
       </div>
 
-      {GROUPS.map((g) => (
+      {GROUPS.map((g, gi) => (
         <section key={g.label} className="tips-group">
-          <div className="section-label">{g.label}</div>
+          <header className="tips-chapter">
+            <span className="tips-chapter-num">{String(gi + 1).padStart(2, "0")}</span>
+            <h3>{g.label}</h3>
+          </header>
           <div className="tips-grid">
-            {g.tips.map((t) => (
-              <article key={t.title} className="glass-panel tips-card">
-                <span className="tips-icon" style={{ "--tone": t.tone } as CSSProperties}>{t.icon}</span>
-                <div>
-                  <h3 className="tips-title">{t.title}</h3>
-                  <p className="tips-body">{t.body}</p>
-                </div>
+            {g.tips.map((t, i) => (
+              <article key={t.title} className="tip-card" style={{ "--tone": t.tone, "--i": i } as CSSProperties}>
+                <div className="tip-art"><TipArt name={t.art} /></div>
+                <h4 className="tips-title">{t.title}</h4>
+                <p className="tips-body">{t.body}</p>
               </article>
             ))}
           </div>

@@ -540,7 +540,41 @@ static LEADING_ORPHAN_RE: Lazy<Regex> =
 static TAIL_ORPHAN_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\n[ \t]*[.,;:!?]+\s*$").unwrap());
 
 /// Convert spoken punctuation/formatting commands into real characters.
+#[cfg(test)]
 pub fn apply_spoken_commands(input: &str) -> String {
+    spoken(input, true, true, true)
+}
+
+/// `commands`: punctuation words, line breaks, "scratch that", symbols.
+/// `emoji`: "laughing emoji" → 😂. `recap`: re-capitalize sentence starts afterwards.
+fn spoken(input: &str, commands: bool, emoji: bool, recap: bool) -> String {
+    let mut text = input.to_string();
+    if commands {
+        text = spoken_edits(&text);
+    }
+    // "laughing emoji" → 😂. Only phrases ending in the word "emoji" are touched.
+    if emoji {
+        text = crate::emoji::apply_spoken_emoji(&text);
+    }
+
+    // Tidy spacing without clobbering intentional newlines.
+    text = SPACE_BEFORE_PUNCT_RE.replace_all(&text, "$1$2").to_string();
+    text = MULTISPACE_RE.replace_all(&text, " ").to_string();
+    text = AROUND_NL_RE.replace_all(&text, "\n").to_string();
+    text = MULTI_NL_RE.replace_all(&text, "\n\n").to_string();
+    text = text.trim().to_string();
+    text = TAIL_ORPHAN_RE.replace(&text, "").trim_end().to_string();
+    text = LEADING_ORPHAN_RE
+        .replace(&text, "")
+        .trim_start()
+        .to_string();
+
+    // Re-capitalize sentence starts and the first word of each new line.
+    if recap { recapitalize(&text) } else { text }
+}
+
+/// Deletions ("scratch that"), punctuation and line-break words, notation.
+fn spoken_edits(input: &str) -> String {
     // 1. Deletions: drop everything from the previous clause boundary up to and
     //    including the "scratch that". Iterates because each edit shifts indices.
     let mut text = input.to_string();
@@ -588,23 +622,7 @@ pub fn apply_spoken_commands(input: &str) -> String {
     // 2b. Notation: named symbols, then bare operators between operands.
     text = apply_spoken_symbols(&text);
 
-    // 2c. "laughing emoji" → 😂. Only phrases ending in the word "emoji" are touched.
-    text = crate::emoji::apply_spoken_emoji(&text);
-
-    // 3. Tidy spacing without clobbering intentional newlines.
-    text = SPACE_BEFORE_PUNCT_RE.replace_all(&text, "$1$2").to_string();
-    text = MULTISPACE_RE.replace_all(&text, " ").to_string();
-    text = AROUND_NL_RE.replace_all(&text, "\n").to_string();
-    text = MULTI_NL_RE.replace_all(&text, "\n\n").to_string();
-    text = text.trim().to_string();
-    text = TAIL_ORPHAN_RE.replace(&text, "").trim_end().to_string();
-    text = LEADING_ORPHAN_RE
-        .replace(&text, "")
-        .trim_start()
-        .to_string();
-
-    // 4. Re-capitalize sentence starts and the first word of each new line.
-    recapitalize(&text)
+    text
 }
 
 /// Capitalize the first letter and sentence starts after `.`/`!`/`?` plus whitespace.
@@ -688,20 +706,126 @@ fn strip_trailing_period(text: &str) -> String {
 /// messages where a trailing full stop reads as stiff, and it is far easier to
 /// type one than to delete one. So the ending period is removed rather than
 /// added, unless the user asked for it out loud.
+#[cfg(test)]
 fn finalize_dictation(text: &str) -> String {
-    let unwrapped = trim_surrounding_quotes(text);
-    let spoken_period_ending = SPOKEN_PERIOD_TAIL_RE.is_match(unwrapped.trim_end());
-    let text = apply_spoken_commands(&unwrapped);
-    let text = TERMINAL_DUP_RE.replace_all(&text, "$1").into_owned();
+    finalize(&trim_surrounding_quotes(text), FormatOptions::ALL)
+}
+
+fn finalize(text: &str, o: FormatOptions) -> String {
+    let spoken_period_ending = o.commands && SPOKEN_PERIOD_TAIL_RE.is_match(text.trim_end());
+    let mut text = spoken(text, o.commands, o.emoji, o.capitals);
+    if o.commands {
+        text = TERMINAL_DUP_RE.replace_all(&text, "$1").into_owned();
+    }
     let text = text.trim_end();
-    if spoken_period_ending {
+    if spoken_period_ending || !o.capitals {
         return text.to_string();
     }
     strip_trailing_period(text)
 }
 
-/// Build the LLM cleanup prompt
+/// What "Formatting options" does to a dictation. `enabled` is the master switch;
+/// with it off nothing below applies and the words are typed exactly as heard.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FormatOptions {
+    pub enabled: bool,
+    /// Drop "um", "uh", "you know".
+    pub fillers: bool,
+    /// "friday no wait monday" → "monday".
+    pub corrections: bool,
+    /// Capital at sentence starts; no full stop at the very end.
+    pub capitals: bool,
+    /// "comma", "new line", "scratch that", "x equals 5".
+    pub commands: bool,
+    /// "laughing emoji" → 😂.
+    pub emoji: bool,
+    /// Rewrite with the local AI model (grammar, punctuation). Needs the download.
+    pub ai: bool,
+}
+
+impl FormatOptions {
+    #[cfg(test)]
+    pub const ALL: Self = Self {
+        enabled: true, fillers: true, corrections: true, capitals: true,
+        commands: true, emoji: true, ai: true,
+    };
+
+    /// Each choice is on unless the user switched it off; the master switch is off
+    /// until they turn it on.
+    pub fn load(app: &AppHandle) -> Self {
+        let get = |key: &str, default: bool| -> bool {
+            app.try_state::<crate::db::DbState>()
+                .and_then(|db| {
+                    db.0.lock()
+                        .unwrap()
+                        .query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| {
+                            row.get::<_, String>(0)
+                        })
+                        .ok()
+                })
+                .map_or(default, |v| v == "true")
+        };
+        Self {
+            enabled: get("llm_enabled", false),
+            fillers: get("fmt_fillers", true),
+            corrections: get("fmt_corrections", true),
+            capitals: get("fmt_capitals", true),
+            commands: get("fmt_commands", true),
+            emoji: get("fmt_emoji", true),
+            ai: get("fmt_ai", true),
+        }
+    }
+}
+
+/// The built-in (no download) part: only the pieces the user chose.
+fn builtin_format(raw: &str, o: FormatOptions) -> String {
+    let mut text = raw.to_string();
+    // Corrections first: some cues ("i mean", "actually") are also filler words.
+    if o.corrections {
+        text = resolve_corrections(&text);
+    }
+    if o.fillers {
+        text = strip_fillers(&text);
+    }
+    if o.capitals {
+        text = sentence_case(&text);
+    }
+    text
+}
+
+/// Format one dictation. `ai` runs the model on a prompt and returns None when it
+/// isn't installed or fails; the built-in rules then do what they can.
+pub fn format_dictation(
+    raw: &str,
+    o: FormatOptions,
+    ai: impl FnOnce(FormatOptions) -> Option<String>,
+) -> String {
+    if !o.enabled {
+        return raw.trim().to_string();
+    }
+    let rewritten = if o.ai { ai(o) } else { None };
+    let text = match rewritten {
+        Some(t) => trim_surrounding_quotes(&t),
+        None => builtin_format(raw, o),
+    };
+    finalize(&text, o)
+}
+
+/// Build the LLM cleanup prompt (every formatting choice on).
+#[cfg(test)]
 pub fn build_cleanup_prompt(raw_text: &str, app_exe: &str, style_note: &str, vocabulary: &str) -> String {
+    build_cleanup_prompt_for(raw_text, app_exe, style_note, vocabulary, FormatOptions::ALL)
+}
+
+/// The prompt, asking only for what the user chose. Examples that show a switched-off
+/// behaviour are left out: a small model copies its examples more than its rules.
+pub fn build_cleanup_prompt_for(
+    raw_text: &str,
+    app_exe: &str,
+    style_note: &str,
+    vocabulary: &str,
+    o: FormatOptions,
+) -> String {
     let context = app_context(app_exe);
     let context_hint = match context {
         "casual" => "casual chat style (Slack/Discord/WhatsApp). Keep it concise, lowercase is fine, use contractions.",
@@ -717,16 +841,46 @@ pub fn build_cleanup_prompt(raw_text: &str, app_exe: &str, style_note: &str, voc
         format!("Additional style constraint: {}\n", style_note)
     };
 
+    let filler_rule = if o.fillers {
+        r#"- Remove filler words (um, uh, you know, i mean, etc.) ONLY where they carry no meaning.
+- NEVER delete a word that is doing real work. "right" in "right now" or "that's right", "like" in "I like it", "so" in "so that it works", "well" in "well done", "kind of" in "what kind of person" must all stay. When in doubt, keep the word.
+"#
+    } else {
+        "- Keep every word the speaker said, including um, uh, like and you know. Do not remove anything.\n"
+    };
+    let correction_rule = if o.corrections {
+        "- Resolve self-corrections (e.g., \"went to the office no I mean the park\" -> \"went to the park\")\n"
+    } else {
+        "- Keep self-corrections exactly as spoken (\"no wait\", \"I mean\"); do not resolve them.\n"
+    };
+    // (input, output, removes fillers, resolves a correction)
+    const EXAMPLES: &[(&str, &str, bool, bool)] = &[
+        ("so um, yesterday i went to the office no i mean i went to the park and like it was raining uh you know",
+         "Yesterday I went to the park and it was raining", true, true),
+        ("first we need to buy milk wait no water and then bread", "First we need to buy water and then bread", false, true),
+        ("hey mahesh lets meet at 6pm no actually at 8pm", "Hey Mahesh, let's meet at 8pm", false, true),
+        ("send it to bob sorry to jim", "Send it to Jim", false, true),
+        ("Let's not meet tomorrow. Cancel that. Let's meet today.", "Let's meet today", false, false),
+        ("um ok right now i'm heading out", "OK, right now I'm heading out", true, false),
+        ("thats hilarious laughing emoji see you tomorrow", "That's hilarious laughing emoji. See you tomorrow", false, false),
+        ("so are you coming to the meeting question mark", "Are you coming to the meeting?", true, false),
+        ("the build is green i pushed it already lets ship in the morning",
+         "The build is green. I pushed it already. Let's ship in the morning", false, false),
+        ("i dont think their coming to the office today", "I don't think they're coming to the office today", false, false),
+    ];
+    let examples: String = EXAMPLES
+        .iter()
+        .filter(|(_, _, f, c)| (o.fillers || !f) && (o.corrections || !c))
+        .map(|(i, out, _, _)| format!("Input: \"{i}\"\nOutput: \"{out}\"\n\n"))
+        .collect();
+
     format!(
         r#"You are an expert voice dictation post-processor.
 Task: Clean up the raw voice transcript to make it clean, natural, and readable.
 Target App Context: {context_hint}
 {style}{vocabulary}
 Rules:
-- Remove filler words (um, uh, you know, i mean, etc.) ONLY where they carry no meaning.
-- NEVER delete a word that is doing real work. "right" in "right now" or "that's right", "like" in "I like it", "so" in "so that it works", "well" in "well done", "kind of" in "what kind of person" must all stay. When in doubt, keep the word.
-- Resolve self-corrections (e.g., "went to the office no I mean the park" -> "went to the park")
-- Treat "scratch that", "delete that", "cancel that", and "ignore that" as editing commands: remove the preceding clause and the command itself without leaving stray punctuation.
+{filler_rule}{correction_rule}- Treat "scratch that", "delete that", "cancel that", and "ignore that" as editing commands: remove the preceding clause and the command itself without leaving stray punctuation.
 - Fix capitalization and basic punctuation.
 - End each sentence with the punctuation that actually fits it. Questions end with "?" and exclamations with "!". Never append a full stop after a "?" or "!", and never turn a question into a statement.
 - Do NOT put a full stop at the very end of the output. Full stops BETWEEN sentences are required; the last sentence just ends. A final "?" or "!" is kept.
@@ -734,96 +888,49 @@ Rules:
 - Output ONLY the final cleaned text. Do NOT include preambles, explanations, or quotes.
 
 Examples:
-Input: "so um, yesterday i went to the office no i mean i went to the park and like it was raining uh you know"
-Output: "Yesterday I went to the park and it was raining"
-
-Input: "first we need to buy milk wait no water and then bread"
-Output: "First we need to buy water and then bread"
-
-Input: "hey mahesh lets meet at 6pm no actually at 8pm"
-Output: "Hey Mahesh, let's meet at 8pm"
-
-Input: "send it to bob sorry to jim"
-Output: "Send it to Jim"
-
-Input: "Let's not meet tomorrow. Cancel that. Let's meet today."
-Output: "Let's meet today"
-
-Input: "um ok right now i'm heading out"
-Output: "OK, right now I'm heading out"
-
-Input: "thats hilarious laughing emoji see you tomorrow"
-Output: "That's hilarious laughing emoji. See you tomorrow"
-
-Input: "so are you coming to the meeting question mark"
-Output: "Are you coming to the meeting?"
-
-Input: "the build is green i pushed it already lets ship in the morning"
-Output: "The build is green. I pushed it already. Let's ship in the morning"
-
-Input: "{raw_text}"
+{examples}Input: "{raw_text}"
 Output: "#,
         context_hint = context_hint,
         style = style,
         vocabulary = vocabulary,
         raw_text = raw_text,
+        filler_rule = filler_rule,
+        correction_rule = correction_rule,
+        examples = examples,
     )
 }
 
 use tauri::{AppHandle, Manager};
 
-/// Main cleanup command. Off: raw text (+ spoken commands). On: the LLM, or the
-/// regex tidy-up while the LLM isn't installed or fails.
+/// Is "Formatting options" switched on?
+pub fn formatting_enabled(app: &AppHandle) -> bool {
+    FormatOptions::load(app).enabled
+}
+
+/// Main cleanup command. Master switch off: the words exactly as heard. On: only the
+/// formatting the user chose; the AI rewrite is skipped while it isn't installed.
 #[tauri::command]
 pub fn cleanup_text(app: AppHandle, raw_text: String, app_exe: String) -> Result<String, String> {
-    let llm_enabled = {
-        if let Some(db_state) = app.try_state::<crate::db::DbState>() {
-            let conn = db_state.0.lock().unwrap();
-            let val: Result<String, _> = conn.query_row(
-                "SELECT value FROM settings WHERE key = 'llm_enabled'",
-                [],
-                |row| row.get(0),
-            );
-            val.unwrap_or_else(|_| "false".to_string()) == "true"
-        } else {
-            false
+    let options = FormatOptions::load(&app);
+    Ok(format_dictation(&raw_text, options, |o| {
+        if !crate::llm::is_llama_cli_installed(app.clone()) {
+            return None;
         }
-    };
-
-    // Cleanup off = the user's words as Whisper heard them. Only explicit spoken
-    // commands ("new line", "comma", "scratch that", emoji) still apply, because the
-    // user asked for those out loud. Fillers and self-corrections are left alone.
-    if !llm_enabled {
-        return Ok(finalize_dictation(&raw_text));
-    }
-
-    if crate::llm::is_llama_cli_installed(app.clone()) {
-        let system_prompt = {
-            if let Some(db_state) = app.try_state::<crate::db::DbState>() {
-                let conn = db_state.0.lock().unwrap();
-                let val: Result<String, _> = conn.query_row(
-                    "SELECT value FROM settings WHERE key = 'llm_system_prompt'",
-                    [],
-                    |row| row.get(0),
-                );
-                val.unwrap_or_else(|_| "".to_string())
-            } else {
-                "".to_string()
-            }
-        };
-
+        let style: String = app
+            .try_state::<crate::db::DbState>()
+            .and_then(|db| {
+                db.0.lock()
+                    .unwrap()
+                    .query_row("SELECT value FROM settings WHERE key = 'llm_system_prompt'", [], |row| row.get(0))
+                    .ok()
+            })
+            .unwrap_or_default();
         let vocabulary = crate::vocab::llm_lines(&crate::vocab::load_from_app(&app));
-        let prompt = build_cleanup_prompt(&raw_text, &app_exe, &system_prompt, &vocabulary);
-        match crate::llm::run_inference(&app, &prompt) {
-            Ok(result) => return Ok(finalize_dictation(&result)),
-            Err(e) => {
-                eprintln!("LLM Cleanup failed: {}. Falling back to regex.", e);
-            }
-        }
-    }
-
-    let cleaned = regex_cleanup(&raw_text);
-    Ok(finalize_dictation(&cleaned))
+        let prompt = build_cleanup_prompt_for(&raw_text, &app_exe, &style, &vocabulary, o);
+        crate::llm::run_inference(&app, &prompt)
+            .map_err(|e| eprintln!("AI rewrite failed: {e}. Using built-in formatting."))
+            .ok()
+    }))
 }
 
 /// Command mode: transform selected text with an instruction
@@ -1345,5 +1452,60 @@ mod tests {
             apply_spoken_commands("Just a normal sentence."),
             "Just a normal sentence."
         );
+    }
+}
+
+#[cfg(test)]
+mod options_tests {
+    use super::{build_cleanup_prompt_for, format_dictation, FormatOptions};
+
+    const NONE: FormatOptions = FormatOptions {
+        enabled: true, fillers: false, corrections: false, capitals: false,
+        commands: false, emoji: false, ai: false,
+    };
+    fn run(raw: &str, o: FormatOptions) -> String {
+        format_dictation(raw, o, |_| None)
+    }
+
+    #[test]
+    fn master_off_types_exactly_what_was_heard() {
+        let off = FormatOptions { enabled: false, ..FormatOptions::ALL };
+        for raw in [
+            "This is the most corrupt presidency in U.S. history.",
+            "um hello comma world laughing emoji",
+            "నా పేరు ఆరియ.",
+        ] {
+            assert_eq!(run(raw, off), raw);
+        }
+    }
+
+    #[test]
+    fn each_choice_works_alone() {
+        let raw = "um so we ship it friday no wait monday";
+        assert_eq!(run(raw, NONE), raw);
+        assert_eq!(run("um we ship it monday", FormatOptions { fillers: true, ..NONE }), "we ship it monday");
+        let fixed = run("we ship it friday no wait monday", FormatOptions { corrections: true, ..NONE });
+        assert!(fixed.ends_with("monday") && !fixed.contains("friday") && !fixed.contains("wait"), "{fixed}");
+        assert_eq!(run("we ship it. on monday.", FormatOptions { capitals: true, ..NONE }), "We ship it. On monday");
+        assert_eq!(run("hello comma world question mark", FormatOptions { commands: true, ..NONE }), "hello, world?");
+        assert_eq!(run("nice thumbs up emoji", FormatOptions { emoji: true, ..NONE }), "nice 👍");
+        assert_eq!(run("hello comma thumbs up emoji", FormatOptions { emoji: true, ..NONE }), "hello comma 👍");
+    }
+
+    #[test]
+    fn ai_is_used_only_when_chosen_and_available() {
+        let ai_on = FormatOptions { ai: true, ..NONE };
+        assert_eq!(format_dictation("i dont know", ai_on, |_| Some("\"I don't know\"".into())), "I don't know");
+        assert_eq!(format_dictation("i dont know", ai_on, |_| None), "i dont know");
+        assert_eq!(format_dictation("i dont know", NONE, |_| panic!("AI is off")), "i dont know");
+    }
+
+    #[test]
+    fn prompt_follows_the_choices() {
+        let all = build_cleanup_prompt_for("x", "", "", "", FormatOptions::ALL);
+        assert!(all.contains("Remove filler words") && all.contains("Resolve self-corrections"));
+        let keep = build_cleanup_prompt_for("x", "", "", "", FormatOptions { ai: true, ..NONE });
+        assert!(!keep.contains("Remove filler words") && !keep.contains("Resolve self-corrections"));
+        assert!(!keep.contains("so um, yesterday") && keep.contains("the build is green"));
     }
 }

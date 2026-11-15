@@ -614,3 +614,12 @@ fn stop_and_transcribe(
         crate::run_pipeline(&app, &audio, &pipeline).await;
     });
 }
+
+/// The primary-key picker is macOS-only; these keep the command list the same everywhere.
+#[tauri::command]
+pub fn capture_trigger_key() -> Result<(), String> {
+    Err("Picking the primary key is only available on macOS.".into())
+}
+
+#[tauri::command]
+pub fn cancel_trigger_capture() {}

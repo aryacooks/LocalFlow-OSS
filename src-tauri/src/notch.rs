@@ -170,8 +170,6 @@ fn apply_appkit(b: &tauri::WebviewWindow, notch: bool) {
             return;
         }
         unsafe {
-            let num: i64 = msg_send![ns, windowNumber];
-            crate::tint::set_window_id(num.max(0) as u32);
             if !notch {
                 // kCGDockWindowLevel (20) + 1: the orb can be shifted over the Dock
                 // strip, and a plain floating window would sit behind the Dock.

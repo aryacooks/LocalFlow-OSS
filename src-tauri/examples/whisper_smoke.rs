@@ -29,12 +29,20 @@ fn main() {
     let ctx = WhisperContext::new_with_params(model, WhisperContextParameters::default())
         .expect("load model");
     let mut state = ctx.create_state().expect("state");
-    let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+    // Optional third argument "beam" uses the app's beam search instead of greedy.
+    let beam = args.get(3).is_some_and(|a| a == "beam");
+    let mut params = FullParams::new(if beam {
+        SamplingStrategy::BeamSearch { beam_size: 5, patience: -1.0 }
+    } else {
+        SamplingStrategy::Greedy { best_of: 1 }
+    });
     params.set_language(Some("en"));
     params.set_print_progress(false);
     params.set_print_realtime(false);
     params.set_print_timestamps(false);
+    let t0 = std::time::Instant::now();
     state.full(params, &samples).expect("run");
+    eprintln!("decode took {:.2}s", t0.elapsed().as_secs_f32());
 
     let n = state.full_n_segments();
     print!("TRANSCRIPT:");

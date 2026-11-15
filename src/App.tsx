@@ -27,6 +27,7 @@ import BugIcon from "./components/ui/bug-icon";
 import type { AnimatedIconHandle } from "./components/ui/types";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { listModels, listAudioDevices, getSetting, isLlamaCliInstalled, listLlmModels, getPermissionStatus } from "./lib/ipc";
+import { check as checkUpdate } from "@tauri-apps/plugin-updater";
 
 import ThemeTransitionOverlay from "./ThemeTransitionOverlay";
 import OnboardingWizard from "./components/OnboardingWizard";
@@ -64,13 +65,27 @@ const navItems = [
 function SetupReminders({
   needModel,
   needFormatting,
+  updateVersion,
 }: {
   needModel: boolean;
   needFormatting: boolean;
+  /** A newer LocalFlow on the website, if there is one. */
+  updateVersion: string | null;
 }) {
-  if (!needModel && !needFormatting) return null;
+  if (!needModel && !needFormatting && !updateVersion) return null;
   return (
     <div className="setup-reminders">
+      {updateVersion && (
+        <Link to="/about" className="setup-reminder is-update">
+          <div className="setup-reminder-head">
+            <Download size={15} strokeWidth={2.4} />
+            <span className="setup-reminder-title">Update available</span>
+          </div>
+          <p className="setup-reminder-desc">
+            Version {updateVersion} is out. Open About to update in one click.
+          </p>
+        </Link>
+      )}
       {needModel && (
         <Link to="/models" className="setup-reminder">
           <div className="setup-reminder-head">
@@ -177,6 +192,14 @@ export default function App() {
   // Setup reminders (sidebar): shown until the user completes each step. Tracked
   // independently so finishing one (e.g. downloading a model) clears only that reminder.
   const [needModel, setNeedModel] = useState(false);
+  // Newer version on the website: checked at launch and every 6 hours.
+  const [updateVersion, setUpdateVersion] = useState<string | null>(null);
+  useEffect(() => {
+    const check = () => checkUpdate().then((u) => setUpdateVersion(u ? u.version : null)).catch(() => {});
+    const first = setTimeout(check, 8000);
+    const every = setInterval(check, 6 * 60 * 60 * 1000);
+    return () => { clearTimeout(first); clearInterval(every); };
+  }, []);
   const [needFormatting, setNeedFormatting] = useState(false);
   useEffect(() => {
     let active = true;
@@ -261,7 +284,7 @@ export default function App() {
             <img src={theme === "dark" ? logoWhite : logoIcon} alt="LocalFlow" style={{ width: 27, height: 27, objectFit: "contain" }} />
           </div>
           <div className="brand-title">
-            <strong>LocalFlow</strong>
+            <strong className="wordmark">LocalFlow</strong>
             <span>On device transcription</span>
           </div>
         </div>
@@ -291,7 +314,7 @@ export default function App() {
             </NavLink>
           ))}
 
-          <SetupReminders needModel={needModel} needFormatting={needFormatting} />
+          <SetupReminders needModel={needModel} needFormatting={needFormatting} updateVersion={updateVersion} />
         </nav>
 
         <div className="sidebar-footer">

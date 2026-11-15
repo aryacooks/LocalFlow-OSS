@@ -102,7 +102,7 @@ pub fn context_for(model_path: &str) -> Result<Arc<WhisperContext>, String> {
     *cache = None;
 
     let ctx = WhisperContext::new_with_params(model_path, WhisperContextParameters::default())
-        .map_err(|e| format!("Failed to load Whisper model: {}", e))?;
+        .map_err(|e| format!("Failed to load the speech model: {}", e))?;
     let ctx = Arc::new(ctx);
     *cache = Some(CachedModel {
         path: model_path.to_string(),
@@ -327,16 +327,92 @@ use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextPar
 /// an English-only build (the `.en` models and distil-large-v3). Keyed off the filename
 /// so it works regardless of which model is active.
 pub fn is_multilingual_model(filename: &str) -> bool {
-    filename.contains("large-v3-turbo")
+    // Matches turbo and the full large-v3, quantized or not. (No distil-large-v3 file
+    // is offered; it would be English-only and named `ggml-distil-...`.)
+    std::path::Path::new(filename)
+        .file_name()
+        .and_then(|f| f.to_str())
+        .is_some_and(|f| f.starts_with("ggml-large-v3"))
 }
 
-/// LocalFlow supports English + Hindi only. This picks the language code to force on
-/// Whisper for a given request:
-/// - English-only model → always `en` (it physically can't output Hindi).
-/// - Explicit `en` / `hi` → used as-is.
-/// - `auto` (or anything else) on a multilingual model → run Whisper's language
-///   detector and force whichever of English/Hindi scores higher, so a short or noisy
-///   clip never comes back as some random third language (a common whisper.cpp issue).
+/// Transcribe with whichever engine the active model belongs to.
+pub fn transcribe_with_model(
+    model_path: &str,
+    audio: &[f32],
+    requested: &str,
+    allowed: &[String],
+    prompt: &str,
+) -> Result<String, String> {
+    if crate::parakeet::is_parakeet(model_path) {
+        return crate::parakeet::transcribe(model_path, audio);
+    }
+    crate::parakeet::unload();
+    let ctx = context_for(model_path)?;
+    transcribe_samples(&ctx, audio, requested, allowed, is_multilingual_model(model_path), prompt)
+}
+
+/// What to do with a transcript after Whisper has written it down.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Finish {
+    AsIs,
+    /// Telugu speech, decoded as Kannada (see `dravidian.rs`): move it to Telugu script.
+    Telugu,
+    /// Telugu or Kannada, decoded as Kannada; the words decide which.
+    TeluguOrKannada { telugu_first: bool },
+}
+
+/// The language to force on Whisper, and how to finish its output.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LangChoice {
+    pub whisper: String,
+    pub finish: Finish,
+}
+
+impl LangChoice {
+    /// Whisper writes Telugu far better through its Kannada decoder (see `dravidian.rs`).
+    fn of(code: &str) -> Self {
+        if code == "te" {
+            Self { whisper: "kn".into(), finish: Finish::Telugu }
+        } else {
+            Self { whisper: code.into(), finish: Finish::AsIs }
+        }
+    }
+
+    /// Apply `finish` to Whisper's output.
+    pub fn finish(&self, text: &str) -> String {
+        match self.finish {
+            Finish::AsIs => text.to_string(),
+            Finish::Telugu => crate::dravidian::kannada_to_telugu(text),
+            Finish::TeluguOrKannada { telugu_first } => {
+                if crate::dravidian::looks_telugu(text, telugu_first) {
+                    crate::dravidian::kannada_to_telugu(text)
+                } else {
+                    text.to_string()
+                }
+            }
+        }
+    }
+}
+
+/// Indian languages, plus Thai, which Whisper's detector confuses with them. When one of
+/// these scores, the speech is "an Indian language" even if the code itself isn't one the
+/// user speaks.
+const INDIC: &[&str] = &["hi", "ur", "ta", "te", "kn", "ml", "mr", "gu", "bn", "pa", "si", "ne", "sa", "as", "th"];
+/// Below this share of non-Hindi Indic evidence (relative to Hindi), Indic speech is Hindi.
+/// Clear Hindi measures ~0.002; Kannada and Telugu measure 0.07 and up (Whisper scores
+/// them ~0.000 themselves and puts the mass on Tamil, Thai, Gujarati and Hindi).
+const NOT_HINDI_RATIO: f32 = 0.03;
+
+/// Picks the language to force on Whisper for a given request:
+/// - English-only model → always `en` (it physically can't output anything else).
+/// - An explicit language code → used as-is.
+/// - `auto` on a multilingual model → run Whisper's language detector and force the
+///   best-scoring language among the ones the user speaks (`allowed`), so a short or
+///   noisy clip never comes back in some unrelated language (a common whisper.cpp issue).
+///
+/// Whisper's detector barely knows Telugu or Kannada (and other Indian languages), so for
+/// those the Indian-language mass is pooled: Hindi gets it only when almost none of it
+/// points away from Hindi.
 ///
 /// `state` must be a fresh state for the model; we populate its mel here, and the later
 /// `full()` call recomputes it — so this is purely an added detection pass.
@@ -344,32 +420,355 @@ pub fn resolve_language(
     state: &mut whisper_rs::WhisperState,
     audio: &[f32],
     requested: &str,
+    allowed: &[String],
     multilingual: bool,
-) -> String {
+) -> Result<LangChoice, String> {
     if !multilingual {
-        return "en".to_string();
+        return Ok(LangChoice::of("en"));
     }
-    if requested == "en" || requested == "hi" {
-        return requested.to_string();
+    if requested != "auto" && whisper_rs::get_lang_id(requested).is_some() {
+        return Ok(LangChoice::of(requested));
     }
+    let fallback = allowed.first().cloned().unwrap_or_else(|| "en".to_string());
 
     // Only the first 30 s can influence the result — see LANG_DETECT_SAMPLES.
     let head = &audio[..audio.len().min(LANG_DETECT_SAMPLES)];
-    if state.pcm_to_mel(head, 1).is_ok() {
-        if let Ok((_, probs)) = state.lang_detect(0, 1) {
-            let prob_of = |code: &str| {
-                whisper_rs::get_lang_id(code)
-                    .and_then(|id| probs.get(id as usize).copied())
-                    .unwrap_or(0.0)
-            };
-            return if prob_of("hi") > prob_of("en") {
-                "hi".to_string()
-            } else {
-                "en".to_string()
-            };
+    let probs = match state.pcm_to_mel(head, 1).ok().and_then(|_| state.lang_detect(0, 1).ok()) {
+        Some((_, probs)) => probs,
+        None => return Ok(LangChoice::of(&fallback)), // detection unavailable → the user's first language
+    };
+    let p = |code: &str| {
+        whisper_rs::get_lang_id(code)
+            .and_then(|id| probs.get(id as usize).copied())
+            .unwrap_or(0.0)
+    };
+    // Speech in a language the user hasn't selected is reported, not guessed at.
+    let top = (0..=whisper_rs::get_lang_max_id())
+        .filter_map(|id| Some((whisper_rs::get_lang_str(id)?, probs.get(id as usize).copied()?)))
+        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(code, _)| code)
+        .unwrap_or("en");
+    if let Some(name) = not_selected(&p, allowed, top) {
+        return Err(language_hint(&name));
+    }
+    if allowed.len() == 1 {
+        return Ok(LangChoice::of(&fallback));
+    }
+    Ok(pick_language(&p, allowed))
+}
+
+/// The message shown when the speech isn't in one of the user's languages.
+pub fn language_hint(name: &str) -> String {
+    format!("Sounded like {name}. Add it in Language Model to dictate in it.")
+}
+const NO_FIT_HINT: &str = "Couldn't make that out in your languages. Speaking another? Add it in Language Model.";
+/// True for the messages above: they're advice for the user, not transcription failures.
+pub fn is_language_hint(msg: &str) -> bool {
+    msg.ends_with("Language Model.") || msg.ends_with("to dictate in it.")
+}
+
+fn lang_name(code: &str) -> String {
+    let n = whisper_rs::get_lang_id(code).and_then(whisper_rs::get_lang_str_full).unwrap_or(code);
+    let mut c = n.chars();
+    c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
+}
+
+/// If the speech is clearly in a language the user hasn't selected, its name.
+/// `top` is the detector's best guess over every language.
+fn not_selected(p: &dyn Fn(&str) -> f32, allowed: &[String], top: &str) -> Option<String> {
+    let speaks = |c: &str| allowed.iter().any(|a| a == c);
+    // (A Hindi lead can still be Telugu or Tamil in disguise, so that one is looked into.)
+    if speaks(top) && top != "hi" {
+        return None;
+    }
+    let best_selected = allowed.iter().map(|a| p(a)).fold(0.0f32, f32::max);
+    // Something else entirely (Japanese, Spanish...), heard clearly.
+    if !INDIC.contains(&top) {
+        return (p(top) >= 0.6 && best_selected < 0.15).then(|| lang_name(top));
+    }
+    // An Indian language. Telugu and Kannada show up as Tamil (or Thai), so when the user
+    // speaks either, Tamil-ish evidence belongs to them (see `pick_language`).
+    let dravidian = speaks("te") || speaks("kn");
+    let south = "a South Indian language (Tamil, Telugu, Kannada or Malayalam)".to_string();
+    match top {
+        "hi" | "ur" | "th" => {}
+        "ta" if dravidian => {}
+        "ta" if p("ta") >= 0.75 && best_selected < 0.15 => return Some(if speaks("ml") { lang_name("ta") } else { south }),
+        "ta" => {}
+        _ if p(top) >= 0.7 && best_selected < 0.15 => return Some(lang_name(top)),
+        _ => {}
+    }
+    // No other Indian language selected, yet the evidence points away from Hindi.
+    let others = allowed.iter().any(|c| INDIC.contains(&c.as_str()) && !["hi", "ur", "th"].contains(&c.as_str()));
+    if !others {
+        let hindi = p("hi") + p("ur");
+        let not_hindi: f32 = INDIC.iter().filter(|c| !["hi", "ur"].contains(c)).map(|c| p(c)).sum();
+        let rest = allowed.iter().filter(|c| c.as_str() != "hi" && c.as_str() != "ur").map(|a| p(a)).fold(0.0f32, f32::max);
+        if not_hindi >= 0.2 && not_hindi >= hindi * 0.3 && hindi + not_hindi > rest {
+            return Some(if ["ta", "te", "kn", "ml", "th", "hi"].contains(&top) { south } else { lang_name(top) });
         }
     }
-    "en".to_string() // detection unavailable → safe default
+    None
+}
+
+/// The decision half of `resolve_language`, given the detector's probabilities.
+fn pick_language(p: &dyn Fn(&str) -> f32, allowed: &[String]) -> LangChoice {
+    let speaks = |c: &str| allowed.iter().any(|a| a == c);
+    let best_of = |codes: &[&String]| {
+        codes
+            .iter()
+            .max_by(|a, b| p(a).partial_cmp(&p(b)).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|c| c.to_string())
+    };
+
+    // The Indian languages the user speaks other than Hindi/Urdu.
+    let others: Vec<&String> = allowed
+        .iter()
+        .filter(|c| INDIC.contains(&c.as_str()) && !["hi", "ur", "th"].contains(&c.as_str()))
+        .collect();
+    if others.is_empty() {
+        return LangChoice::of(&best_of(&allowed.iter().collect::<Vec<_>>()).unwrap_or_else(|| "en".into()));
+    }
+
+    // Pool the Indian-language mass. Codes the user speaks count for themselves; the rest
+    // count as evidence for whichever of the user's Indian languages it belongs to.
+    let hindi: f32 = ["hi", "ur"].iter().filter(|c| **c == "hi" || !speaks(c)).map(|c| p(c)).sum();
+    let not_hindi: f32 = INDIC
+        .iter()
+        .filter(|c| !["hi", "ur"].contains(c) && (others.iter().any(|o| o == *c) || !speaks(c)))
+        .map(|c| p(c))
+        .sum();
+    let indic = hindi + not_hindi;
+
+    // Anything else the user speaks (English, Spanish...) competes on its own score.
+    let rest: Vec<&String> = allowed.iter().filter(|c| c.as_str() != "hi" && !others.contains(c)).collect();
+    // It has to be reasonably sure of itself, though: a short Indian-language clip scatters
+    // the detector over unrelated languages and leaves English a small, misleading lead.
+    if let Some(r) = best_of(&rest) {
+        let unsure = p(&r) < 0.3 && indic >= p(&r) * 0.15;
+        if p(&r) >= indic && !unsure {
+            return LangChoice::of(&r);
+        }
+    }
+    // On faint evidence, Hindi needs less to keep the clip.
+    let ratio = if indic < 0.15 { 0.5 } else { NOT_HINDI_RATIO };
+    if speaks("hi") && not_hindi < hindi * ratio {
+        return LangChoice::of("hi");
+    }
+
+    // One of the user's other Indian languages. Telugu and Kannada are indistinguishable
+    // to the detector, so when both are on the list the transcript decides.
+    let te = others.iter().position(|c| c.as_str() == "te");
+    let kn = others.iter().position(|c| c.as_str() == "kn");
+    let mut best = best_of(&others).unwrap_or_else(|| others[0].to_string());
+    // Telugu and Kannada score as Tamil; only a very sure Tamil is Tamil.
+    if best == "ta" && p("ta") <= 0.75 {
+        if let Some(i) = te.or(kn) {
+            best = others[i].to_string();
+        }
+    }
+    match (te, kn) {
+        (Some(t), Some(k)) if best == "te" || best == "kn" => LangChoice {
+            whisper: "kn".into(),
+            finish: Finish::TeluguOrKannada { telugu_first: t < k },
+        },
+        _ => LangChoice::of(&best),
+    }
+}
+
+/// Writing systems Whisper can wander into, and the languages that use each.
+const SCRIPTS: &[(u32, u32, &[&str])] = &[
+    (0x0370, 0x03FF, &["el"]),
+    (0x0400, 0x052F, &["ru", "uk", "bg", "sr", "mk", "be", "kk", "mn", "tg", "ba", "tt"]),
+    (0x0530, 0x058F, &["hy"]),
+    (0x0590, 0x05FF, &["he", "yi"]),
+    (0x0600, 0x06FF, &["ar", "ur", "fa", "ps", "sd"]),
+    (0x0900, 0x097F, &["hi", "mr", "ne", "sa"]),
+    (0x0980, 0x09FF, &["bn", "as"]),
+    (0x0A00, 0x0A7F, &["pa"]),
+    (0x0A80, 0x0AFF, &["gu"]),
+    (0x0B80, 0x0BFF, &["ta"]),
+    (0x0C00, 0x0C7F, &["te"]),
+    (0x0C80, 0x0CFF, &["kn"]),
+    (0x0D00, 0x0D7F, &["ml"]),
+    (0x0D80, 0x0DFF, &["si"]),
+    (0x0E00, 0x0E7F, &["th"]),
+    (0x0E80, 0x0EFF, &["lo"]),
+    (0x0F00, 0x0FFF, &["bo"]),
+    (0x1000, 0x109F, &["my"]),
+    (0x10A0, 0x10FF, &["ka"]),
+    (0x1100, 0x11FF, &["ko"]),
+    (0x1200, 0x137F, &["am"]),
+    (0x1780, 0x17FF, &["km"]),
+    (0x3040, 0x30FF, &["ja"]),
+    (0x3400, 0x9FFF, &["zh", "ja", "yue"]),
+    (0xAC00, 0xD7AF, &["ko"]),
+];
+
+/// False when `text` contains writing none of the user's languages use: Japanese kana
+/// from someone who speaks English, Hindi, Telugu and Kannada, say. Forcing a language
+/// on Whisper doesn't stop it writing in another one when the audio is unclear.
+pub fn script_ok(text: &str, allowed: &[String]) -> bool {
+    text.chars().all(|c| {
+        match SCRIPTS.iter().find(|(lo, hi, _)| (*lo..=*hi).contains(&(c as u32))) {
+            Some((_, _, langs)) => langs.iter().any(|l| allowed.iter().any(|a| a == l)),
+            None => true,
+        }
+    })
+}
+
+/// Transcribe 16 kHz mono samples: choose the language (`resolve_language`), decode, clean
+/// up. If the result is in a script none of the user's languages use, try their other
+/// languages; if none of them fits either, there was nothing usable (empty string).
+pub fn transcribe_samples(
+    ctx: &WhisperContext,
+    audio: &[f32],
+    requested: &str,
+    allowed: &[String],
+    multilingual: bool,
+    prompt: &str,
+) -> Result<String, String> {
+    let first = {
+        let mut state = ctx.create_state().map_err(|e| format!("Speech engine error: {}", e))?;
+        resolve_language(&mut state, audio, requested, allowed, multilingual)?
+    };
+    let mut tries = vec![first];
+    if multilingual {
+        let both = allowed.iter().any(|a| a == "te") && allowed.iter().any(|a| a == "kn");
+        for a in allowed {
+            let c = if both && (a == "te" || a == "kn") {
+                let te = allowed.iter().position(|x| x == "te");
+                let kn = allowed.iter().position(|x| x == "kn");
+                LangChoice { whisper: "kn".into(), finish: Finish::TeluguOrKannada { telugu_first: te < kn } }
+            } else {
+                LangChoice::of(a)
+            };
+            if !tries.iter().any(|t| t.whisper == c.whisper) {
+                tries.push(c);
+            }
+        }
+    }
+    for chosen in &tries {
+        let mut state = ctx.create_state().map_err(|e| format!("Speech engine error: {}", e))?;
+        // Beam search keeps several candidate wordings alive and picks the best overall.
+        // Greedy (one guess per word, never revisited) is faster but skips and swaps
+        // more words, most noticeably in fast or quiet speech.
+        let mut params = FullParams::new(SamplingStrategy::BeamSearch { beam_size: 5, patience: -1.0 });
+        params.set_language(Some(&chosen.whisper));
+        params.set_print_progress(false);
+        params.set_print_realtime(false);
+        params.set_print_special(false);
+        params.set_print_timestamps(false);
+        // Non-speech suppression + the anti-repetition guards.
+        apply_decoder_guards(&mut params);
+        if !prompt.is_empty() {
+            params.set_initial_prompt(prompt);
+        }
+        state.full(params, audio).map_err(|e| format!("Transcription failed: {}", e))?;
+        // Backstops: collapse any decoder repetition loop, strip bracketed non-speech tags.
+        // Telugu goes through Kannada; `finish` moves it back to Telugu script.
+        let text = chosen.finish(&strip_non_speech(&collapse_repetitions(&collect_segments(&state, audio))));
+        if !multilingual || script_ok(&text, allowed) {
+            return Ok(text);
+        }
+        eprintln!("[whisper] '{}' decode came back in a foreign script, retrying: {}", chosen.whisper, text);
+    }
+    Err(NO_FIT_HINT.to_string())
+}
+
+#[cfg(test)]
+mod lang_tests {
+    use super::*;
+
+    fn pick(probs: &[(&str, f32)], allowed: &[&str]) -> LangChoice {
+        let allowed: Vec<String> = allowed.iter().map(|s| s.to_string()).collect();
+        let p = |c: &str| probs.iter().find(|(k, _)| *k == c).map(|(_, v)| *v).unwrap_or(0.0);
+        pick_language(&p, &allowed)
+    }
+    const MINE: &[&str] = &["en", "hi", "te", "kn"];
+    fn hint(probs: &[(&str, f32)], allowed: &[&str]) -> Option<String> {
+        let allowed: Vec<String> = allowed.iter().map(|s| s.to_string()).collect();
+        let p = |c: &str| probs.iter().find(|(k, _)| *k == c).map(|(_, v)| *v).unwrap_or(0.0);
+        let top = probs.iter().max_by(|a, b| a.1.partial_cmp(&b.1).unwrap()).unwrap().0;
+        not_selected(&p, &allowed, top)
+    }
+
+    #[test]
+    fn short_clips_are_not_handed_to_english() {
+        // two-word Kannada, two-word Hindi: the detector scatters, English leads by a hair
+        let kn_b = [("ru", 0.118), ("id", 0.118), ("en", 0.104), ("th", 0.011), ("hi", 0.005), ("ur", 0.003), ("ta", 0.003)];
+        let hi_a = [("en", 0.111), ("ar", 0.081), ("hi", 0.032), ("ur", 0.018), ("th", 0.010), ("ta", 0.002)];
+        assert_eq!(pick(&kn_b, MINE).finish, EITHER);
+        assert_eq!(pick(&hi_a, MINE).whisper, "hi");
+        assert_eq!(hint(&kn_b, MINE), None);
+    }
+
+    #[test]
+    fn tamil_only_when_sure() {
+        let te_d = [("ta", 0.63), ("hi", 0.185), ("th", 0.044), ("en", 0.017)];
+        let ta_a = [("ta", 0.885), ("hi", 0.032), ("th", 0.027)];
+        assert_eq!(pick(&te_d, &["en", "hi", "te", "ta"]), LangChoice { whisper: "kn".into(), finish: Finish::Telugu });
+        assert_eq!(pick(&ta_a, &["en", "hi", "te", "ta"]).whisper, "ta");
+    }
+
+    #[test]
+    fn unselected_languages_are_reported() {
+        let ta_a = [("ta", 0.885), ("hi", 0.032), ("th", 0.027)];
+        let te_c = [("hi", 0.376), ("ta", 0.294), ("th", 0.074), ("gu", 0.029)];
+        assert_eq!(hint(&[("ja", 0.9), ("en", 0.02)], MINE).as_deref(), Some("Japanese"));
+        assert_eq!(hint(&[("bn", 0.9), ("hi", 0.03)], MINE).as_deref(), Some("Bengali"));
+        assert!(hint(&ta_a, &["en", "hi"]).unwrap().contains("South Indian"));
+        assert!(hint(&te_c, &["en", "hi"]).unwrap().contains("South Indian"));
+        // ...but not when it's one of theirs, or plain Hindi / English
+        assert_eq!(hint(&ta_a, MINE), None);
+        assert_eq!(hint(&te_c, MINE), None);
+        assert_eq!(hint(&[("hi", 0.927), ("ur", 0.053), ("th", 0.001)], &["en", "hi"]), None);
+        assert_eq!(hint(&[("en", 0.78), ("hi", 0.149)], &["en", "hi"]), None);
+        assert!(is_language_hint(&language_hint("Tamil")) && is_language_hint(NO_FIT_HINT));
+    }
+
+    #[test]
+    fn foreign_scripts_are_caught() {
+        let mine: Vec<String> = MINE.iter().map(|s| s.to_string()).collect();
+        assert!(!script_ok("身長、ほうへいほう、しょうほう。こんにちは。", &mine));
+        assert!(!script_ok("Привет", &mine));
+        assert!(script_ok("Hello, नमस्ते, నమస్కారం, ನಮಸ್ಕಾರ. F = ma!", &mine));
+        assert!(script_ok("こんにちは", &["ja".to_string()]));
+    }
+
+    const EITHER: Finish = Finish::TeluguOrKannada { telugu_first: true };
+
+    // Detector output measured on real clips (large-v3-turbo).
+    #[test]
+    fn hindi_stays_hindi() {
+        assert_eq!(pick(&[("hi", 0.909), ("ur", 0.07), ("th", 0.002)], MINE).whisper, "hi");
+        assert_eq!(pick(&[("hi", 0.927), ("ur", 0.053), ("en", 0.006), ("th", 0.001)], MINE).whisper, "hi");
+    }
+
+    #[test]
+    fn english_stays_english() {
+        assert_eq!(pick(&[("en", 1.0)], MINE).whisper, "en");
+        assert_eq!(pick(&[("en", 0.78), ("hi", 0.149), ("ur", 0.012)], MINE).whisper, "en");
+    }
+
+    #[test]
+    fn telugu_and_kannada_are_not_hindi() {
+        let te_short = [("ta", 0.379), ("hi", 0.187), ("th", 0.069), ("en", 0.025), ("ur", 0.013)];
+        let kn_d = [("hi", 0.614), ("en", 0.037), ("th", 0.037), ("ur", 0.029), ("ta", 0.007)];
+        let kn_a = [("hi", 0.459), ("ta", 0.15), ("th", 0.087), ("ur", 0.011), ("mr", 0.006), ("gu", 0.006)];
+        for probs in [&te_short[..], &kn_d[..], &kn_a[..]] {
+            assert_eq!(pick(probs, MINE).finish, EITHER, "{probs:?}");
+        }
+        // With only one of them on the list, that one.
+        assert_eq!(pick(&te_short, &["en", "hi", "kn"]), LangChoice::of("kn"));
+        assert_eq!(pick(&te_short, &["en", "hi", "te"]), LangChoice { whisper: "kn".into(), finish: Finish::Telugu });
+    }
+
+    #[test]
+    fn without_other_indian_languages_nothing_changes() {
+        let te_short = [("ta", 0.379), ("hi", 0.187), ("th", 0.069), ("en", 0.025)];
+        assert_eq!(pick(&te_short, &["en", "hi"]).whisper, "hi");
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -381,45 +780,110 @@ pub struct ModelInfo {
     pub size_mb: u32,
     pub ram_mb: u32,
     pub description: String,
+    /// Small companion files fetched before the main one: (url, filename beside it).
+    #[serde(skip)]
+    pub extras: Vec<(String, String)>,
 }
 
+/// The models offered on this platform. The names shown to users are LocalFlow's own;
+/// the engines and models behind them are credited on the About page.
 pub fn available_models() -> Vec<ModelInfo> {
+    // Apple Silicon: Swift replaces Plus, and Max (compressed) is the top multilingual
+    // option. Elsewhere the second engine is untested, so the original four stay.
+    let offered: &[&str] = if cfg!(target_os = "macos") {
+        &["base.en", "small.en", "parakeet-tdt-v2", "large-v3-turbo", "large-v3-q5"]
+    } else {
+        &["base.en", "small.en", "medium.en", "large-v3-turbo"]
+    };
+    all_models().into_iter().filter(|m| offered.contains(&m.id.as_str())).collect()
+}
+
+fn all_models() -> Vec<ModelInfo> {
     vec![
         ModelInfo {
             id: "base.en".into(),
-            name: "Base English".into(),
+            name: "Flow Lite".into(),
             filename: "ggml-base.en-q5_1.bin".into(),
             url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en-q5_1.bin".into(),
             size_mb: 57,
             ram_mb: 160,
-            description: "Quick, with okay accuracy.".into(),
+            description: "English. The smallest and lightest. Quick, with okay accuracy.".into(),
+            extras: vec![],
         },
         ModelInfo {
             id: "small.en".into(),
-            name: "Small English (Default)".into(),
+            name: "Flow Classic".into(),
             filename: "ggml-small.en-q5_1.bin".into(),
             url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en-q5_1.bin".into(),
             size_mb: 190,
             ram_mb: 310,
-            description: "Recommended for most people — fast and accurate for everyday use.".into(),
+            description: "English. Light on memory with good accuracy for everyday use.".into(),
+            extras: vec![],
+        },
+        // A different engine (NVIDIA Parakeet via ONNX Runtime, see parakeet.rs). The
+        // model is a folder; the encoder is the big file and marks it as downloaded.
+        ModelInfo {
+            id: "parakeet-tdt-v2".into(),
+            name: "Flow Swift".into(),
+            filename: format!("{}/{}", crate::parakeet::DIR, crate::parakeet::ENCODER),
+            url: "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v2-onnx/resolve/main/encoder-model.int8.onnx".into(),
+            size_mb: 661,
+            ram_mb: 1100,
+            description: "English. Our fastest and most accurate English model: text appears almost instantly and words are rarely dropped. Doesn't use the dictionary's listening hints, but its \"sounds like\" fixes still apply.".into(),
+            extras: vec![
+                ("https://huggingface.co/istupakov/parakeet-tdt-0.6b-v2-onnx/resolve/main/vocab.txt".into(), "vocab.txt".into()),
+                ("https://huggingface.co/istupakov/parakeet-tdt-0.6b-v2-onnx/resolve/main/decoder_joint-model.int8.onnx".into(), "decoder_joint-model.onnx".into()),
+            ],
         },
         ModelInfo {
             id: "medium.en".into(),
-            name: "Medium English".into(),
+            name: "Flow Plus".into(),
             filename: "ggml-medium.en-q5_0.bin".into(),
             url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.en-q5_0.bin".into(),
             size_mb: 514,
             ram_mb: 660,
-            description: "More accurate but slower. Good for longer or important writing.".into(),
+            description: "English. More accurate than Classic but slower.".into(),
+            extras: vec![],
         },
         ModelInfo {
             id: "large-v3-turbo".into(),
-            name: "Multilingual flow".into(),
+            name: "Flow Multilingual".into(),
             filename: "ggml-large-v3-turbo-q5_0.bin".into(),
             url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin".into(),
             size_mb: 874,
             ram_mb: 1000,
-            description: "Best for Hindi and other languages, and for mixing Hindi with English.".into(),
+            description: "Hindi and 90+ other languages, and mixing them with English.".into(),
+            extras: vec![],
+        },
+        ModelInfo {
+            id: "large-v3-turbo-full".into(),
+            name: "Flow Multilingual, uncompressed".into(),
+            filename: "ggml-large-v3-turbo.bin".into(),
+            url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin".into(),
+            size_mb: 1620,
+            ram_mb: 1900,
+            description: "The same model as Flow Multilingual without the compression. Slightly more accurate, same speed.".into(),
+            extras: vec![],
+        },
+        ModelInfo {
+            id: "large-v3-q5".into(),
+            name: "Flow Multilingual Max".into(),
+            filename: "ggml-large-v3-q5_0.bin".into(),
+            url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-q5_0.bin".into(),
+            size_mb: 1080,
+            ram_mb: 1500,
+            description: "Our most accurate model for Hindi, Telugu, Kannada and other languages, but several times slower.".into(),
+            extras: vec![],
+        },
+        ModelInfo {
+            id: "large-v3".into(),
+            name: "Flow Multilingual Max, uncompressed".into(),
+            filename: "ggml-large-v3.bin".into(),
+            url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin".into(),
+            size_mb: 3100,
+            ram_mb: 3900,
+            description: "Flow Multilingual Max at full quality. The slowest and largest option.".into(),
+            extras: vec![],
         },
     ]
 }
@@ -505,6 +969,19 @@ pub async fn download_model(app: AppHandle, model_id: String) -> Result<String, 
 
     if dest_path.exists() {
         return Ok(format!("Model {} already downloaded", model.name));
+    }
+
+    // Folder models: make the folder and fetch the small companion files first, so the
+    // main file landing last is what marks the model as complete.
+    let model_dir = dest_path.parent().unwrap_or(&models_dir).to_path_buf();
+    fs::create_dir_all(&model_dir).map_err(|e| e.to_string())?;
+    for (url, name) in &model.extras {
+        let resp = reqwest::get(url).await.map_err(|e| format!("Download failed: {}", e))?;
+        if !resp.status().is_success() {
+            return Err(format!("Download failed: HTTP {} for {}", resp.status().as_u16(), url));
+        }
+        let bytes = resp.bytes().await.map_err(|e| format!("Download failed: {}", e))?;
+        fs::write(model_dir.join(name), &bytes).map_err(|e| format!("Failed to save {}: {}", name, e))?;
     }
 
     println!("Downloading model {} from {}...", model.name, model.url);
@@ -653,44 +1130,17 @@ pub async fn transcribe_audio(
 
     let lang = language.unwrap_or_else(|| "en".to_string());
     let prompt = initial_prompt.unwrap_or_default();
-    let multilingual = is_multilingual_model(&model_path.to_string_lossy());
+    let allowed_langs: Vec<String> = {
+        use tauri::Manager;
+        app.try_state::<std::sync::Arc<crate::pipeline::PipelineState>>()
+            .map(|p| p.languages.lock().unwrap().clone())
+            .unwrap_or_else(|| vec!["en".to_string(), "hi".to_string()])
+    };
 
     let result = tauri::async_runtime::spawn_blocking(move || {
         let model_path_str = model_path.to_str().unwrap().to_string();
 
-        let ctx = context_for(&model_path_str)?;
-
-        let mut state = ctx
-            .create_state()
-            .map_err(|e| format!("Failed to create Whisper state: {}", e))?;
-
-        // Constrain to English/Hindi only (auto picks the higher-scoring of the two).
-        let chosen_lang = resolve_language(&mut state, &audio_data, &lang, multilingual);
-        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-        params.set_language(Some(&chosen_lang));
-        params.set_print_progress(false);
-        params.set_print_realtime(false);
-        params.set_print_special(false);
-        params.set_print_timestamps(false);
-        // Suppress the subtitle-style non-speech output Whisper learned from its training
-        // captions: blank/whitespace-only tokens and non-speech tags like "[MUSIC]" or
-        // "(clicking)". This is the source-level fix; the post-filter below is a backstop.
-        apply_decoder_guards(&mut params);
-
-        if !prompt.is_empty() {
-            params.set_initial_prompt(&prompt);
-        }
-
-        state
-            .full(params, &audio_data[..])
-            .map_err(|e| format!("Transcription failed: {}", e))?;
-
-        let transcription = collect_segments(&state, &audio_data);
-
-        // Backstops: collapse any decoder repetition loop, then strip bracketed non-speech
-        // tags and drop the result if only punctuation/whitespace remains (a stray "."
-        // hallucination).
-        Ok::<String, String>(strip_non_speech(&collapse_repetitions(&transcription)))
+        transcribe_with_model(&model_path_str, &audio_data, &lang, &allowed_langs, &prompt)
     })
     .await
     .map_err(|e| format!("Thread panicked: {}", e))??;
@@ -739,6 +1189,14 @@ pub fn delete_model(app: AppHandle, model_id: String) -> Result<(), String> {
 
     if dest_path.exists() {
         fs::remove_file(&dest_path).map_err(|e| format!("Failed to delete model file: {}", e))?;
+        for (_, name) in &model.extras {
+            let _ = fs::remove_file(dest_path.with_file_name(name));
+        }
+        if !model.extras.is_empty() {
+            // Only goes if empty, i.e. it held nothing but this model.
+            let _ = dest_path.parent().map(fs::remove_dir);
+            crate::parakeet::unload();
+        }
         // The cache is keyed by path, which cannot tell a re-downloaded file from the
         // one just deleted. Drop it so the next dictation loads from disk again.
         invalidate_model_cache();

@@ -86,6 +86,9 @@ function HistoryRow({ entry, onDelete }: { entry: DictationEntry; onDelete: (id:
           <div className="history-meta">
             <span className="history-app">{displayName(entry)}</span>
             <span className="history-time">{timeOf(when)}</span>
+            {entry.formatted === false && (
+              <span className="history-tag" title="Formatting options were turned off for this message">Formatting off</span>
+            )}
           </div>
           <p className={`history-text ${text ? "" : "is-empty"} ${expanded ? "is-full" : ""}`}>
             {text || "Text not saved (history was off)"}
@@ -104,9 +107,12 @@ function HistoryRow({ entry, onDelete }: { entry: DictationEntry; onDelete: (id:
 
       {expanded && (
         <div className="history-detail">
-          {entry.raw_text && entry.raw_text !== entry.cleaned_text && (
+          {entry.formatted === false && (
+            <p className="subtle history-note">Formatting options were turned off for this message, so it was typed as heard.</p>
+          )}
+          {entry.formatted !== false && entry.raw_text && entry.raw_text !== entry.cleaned_text && (
             <div>
-              <div className="section-label">Before cleanup</div>
+              <div className="section-label">Before formatting</div>
               <p className="history-raw">{entry.raw_text}</p>
             </div>
           )}

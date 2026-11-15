@@ -5,17 +5,14 @@ import { enable as enableAutostart, disable as disableAutostart, isEnabled as is
 import { shortcutLabel } from "../lib/utils";
 import { emit, listen } from "@tauri-apps/api/event";
 import { useAppStore } from "../lib/store";
-import { ORB_VARIANTS, type OrbVariant } from "../windows/OrbBubble";
+import { toOrbVariant, type OrbVariant } from "../windows/OrbBubble";
+import Dropdown from "../components/Dropdown";
+import OrbStylePicker from "../components/OrbStylePicker";
 import { Link } from "react-router-dom";
 import { reloadGlobalShortcut, requestInputMonitoringPermission } from "../lib/ipc";
 
-// LocalFlow transcribes English and Hindi only. "Auto-detect" picks between the two
-// per clip (multilingual model required); the backend never emits a third language.
-const LANGUAGES = [
-  { code: "auto", label: "Auto-detect (English / Hindi)" },
-  { code: "en", label: "English" },
-  { code: "hi", label: "Hindi" },
-];
+import { langName, parseLanguages } from "../lib/languages";
+
 
 function Section({
   title,
@@ -45,14 +42,17 @@ function SettingRow({
   label,
   description,
   children,
+  stacked,
 }: {
   icon?: React.ElementType;
   label: string;
   description?: React.ReactNode;
   children: React.ReactNode;
+  /** Put the control under the text, full width (for pickers that need room). */
+  stacked?: boolean;
 }) {
   return (
-    <div className="setting-row">
+    <div className={`setting-row ${stacked ? "is-stacked" : ""}`}>
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
         {Icon && <Icon size={16} color="var(--secondary)" />}
         <div>
@@ -381,6 +381,16 @@ function BubbleSizeStepper({
 
 export default function SettingsPage() {
   const { privacyMode, togglePrivacy, language, setLanguage } = useAppStore();
+  // Options: auto-detect among the languages chosen on the Language Model page, or
+  // pin one of them. (Only the Multilingual flow model hears anything but English.)
+  const [myLanguages, setMyLanguages] = useState<string[]>(["en", "hi"]);
+  useEffect(() => {
+    getSetting("languages").then((v) => setMyLanguages(parseLanguages(v))).catch(console.error);
+  }, []);
+  const languageOptions = [
+    { code: "auto", label: `Auto-detect (${myLanguages.map(langName).join(" / ")})` },
+    ...myLanguages.map((c) => ({ code: c, label: langName(c) })),
+  ];
   const [devices, setDevices] = useState<string[]>([]);
   const [selectedDevice, setSelectedDevice] = useState("");
   const [saveHistory, setSaveHistory] = useState(true);
@@ -429,7 +439,8 @@ export default function SettingsPage() {
       if (bs) setBubbleSizeState(bs);
 
       const orb = await getSetting("bubble_orb");
-      if (orb && ORB_VARIANTS.some((v) => v.id === orb)) setOrbVariant(orb as OrbVariant);
+      const ov = toOrbVariant(orb);
+      if (ov) setOrbVariant(ov);
 
       const pl = await getBubblePlacement().catch(() => null);
       if (pl) setOrbPlacement({ spot: pl[0], nudge: pl[1], nudgeY: pl[2] });
@@ -556,35 +567,28 @@ export default function SettingsPage() {
 
       <Section title="Audio input" className="settings-audio">
         <SettingRow icon={Mic} label="Microphone" description="Which microphone to listen to">
-          <select
-            className="select"
-            style={{ width: 260 }}
+          <Dropdown
+            ariaLabel="Microphone"
             value={selectedDevice}
-            onChange={(e) => {
-              setSelectedDevice(e.target.value);
-              save("mic_device", e.target.value);
-              setAudioDevice(e.target.value).catch(console.error);
+            placeholder="No microphones found"
+            options={devices.map((d) => ({ value: d, label: d }))}
+            onChange={(v) => {
+              setSelectedDevice(v);
+              save("mic_device", v);
+              setAudioDevice(v).catch(console.error);
             }}
-          >
-            {devices.length === 0 && <option value="">No devices found</option>}
-            {devices.map((device) => (
-              <option key={device} value={device}>
-                {device}
-              </option>
-            ))}
-          </select>
+          />
         </SettingRow>
       </Section>
 
       <Section title="Language" className="settings-language">
-        <SettingRow icon={Globe} label="Language you speak" description="Pick 'Auto-detect' if you speak more than one language">
-          <select className="select" style={{ width: 260 }} value={language} onChange={(e) => setLanguage(e.target.value)}>
-            {LANGUAGES.map((item) => (
-              <option key={item.code} value={item.code}>
-                {item.label}
-              </option>
-            ))}
-          </select>
+        <SettingRow icon={Globe} label="Language you speak" description="Pick 'Auto-detect' if you speak more than one. Add languages under Language Model.">
+          <Dropdown
+            ariaLabel="Language you speak"
+            value={language}
+            options={languageOptions.map((item) => ({ value: item.code, label: item.label }))}
+            onChange={setLanguage}
+          />
         </SettingRow>
       </Section>
 
@@ -631,23 +635,19 @@ export default function SettingsPage() {
         <SettingRow
           icon={Circle}
           label="Orb style"
+          stacked
           description={isMac
-            ? "How the orb moves with your voice. It turns black over light windows and white over dark ones, which needs Screen Recording permission (nothing is saved)."
+            ? "How the orb moves with your voice. It is black in light mode and white in dark mode."
             : "How the orb moves with your voice."}
         >
-          <select
-            className="select"
-            style={{ width: 260 }}
+          <OrbStylePicker
             value={orbVariant}
-            onChange={(e) => {
-              const v = e.target.value as OrbVariant;
+            onChange={(v) => {
               setOrbVariant(v);
               save("bubble_orb", v);
               emit("bubble-orb-changed", v).catch(console.error);
             }}
-          >
-            {ORB_VARIANTS.map((v) => <option key={v.id} value={v.id}>{v.label}</option>)}
-          </select>
+          />
         </SettingRow>
         <SettingRow
           icon={MonitorCheck}
@@ -683,21 +683,20 @@ export default function SettingsPage() {
             label="Sound"
             description="Pick one to hear its start sound."
           >
-            <select
-              className="select"
-              style={{ width: 260 }}
+            <Dropdown
+              ariaLabel="Sound"
               value={soundSet}
-              onChange={(e) => {
-                const v = e.target.value;
+              options={[
+                { value: "wood-low", label: "Wood bar, low", hint: "Default" },
+                { value: "wood", label: "Wood bar" },
+                { value: "wood-fifth", label: "Wood fifth" },
+                { value: "bump", label: "Round bump" },
+              ]}
+              onChange={(v) => {
                 setSoundSetState(v);
                 setSoundSet(v).catch(console.error);
               }}
-            >
-              <option value="wood-low">Wood bar, low (default)</option>
-              <option value="wood">Wood bar</option>
-              <option value="wood-fifth">Wood fifth</option>
-              <option value="bump">Round bump</option>
-            </select>
+            />
           </SettingRow>
         )}
       </Section>

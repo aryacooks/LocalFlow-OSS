@@ -1,0 +1,449 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Orb Ideas</title>
+<style>
+  :root { --bg: #efe6d2; --card: #fffaf1; --ink: #151914; --soft: #6b675d; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.4 -apple-system, system-ui, sans-serif; }
+  header { padding: 28px 28px 8px; max-width: 1240px; margin: 0 auto; }
+  h1 { margin: 0 0 4px; font-size: 30px; font-weight: 900; letter-spacing: -.02em; text-transform: uppercase; }
+  header p { margin: 0; color: var(--soft); max-width: 720px; }
+  .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 16px 0 6px; }
+  .seg { display: inline-flex; border: 2px solid var(--ink); border-radius: 999px; padding: 3px; background: var(--card); box-shadow: 2px 2px 0 var(--ink); }
+  .seg button { border: 0; background: none; font: inherit; font-weight: 700; padding: 6px 14px; border-radius: 999px; cursor: pointer; color: var(--ink); }
+  .seg button.on { background: var(--ink); color: var(--card); }
+  .state { font-weight: 800; font-size: 13px; padding: 6px 12px; border-radius: 999px; background: #eedca7; border: 2px solid var(--ink); }
+  main { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 18px; padding: 14px 28px 40px; max-width: 1240px; margin: 0 auto; }
+  .card { background: var(--card); border: 2px solid var(--ink); border-radius: 16px; box-shadow: 4px 4px 0 var(--ink); overflow: hidden; }
+  .stages { display: grid; grid-template-columns: 1fr 1fr; }
+  .stage { display: grid; place-items: center; height: 150px; }
+  .stage.light { background: #f3efe6; }
+  .stage.dark { background: #1d1f22; }
+  .meta { padding: 12px 14px 14px; border-top: 2px solid var(--ink); }
+  .meta h2 { margin: 0; font-size: 16px; font-weight: 900; display: flex; align-items: center; gap: 8px; }
+  .num { font-size: 11px; font-weight: 900; border: 2px solid var(--ink); border-radius: 6px; padding: 0 5px; }
+  .meta p { margin: 4px 0 0; color: var(--soft); font-size: 12.5px; }
+  .meta p b { color: var(--ink); }
+  @media (max-width: 600px) { header, main { padding-left: 16px; padding-right: 16px; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>10 new orb ideas</h1>
+  <p>Each one runs a pretend voice: about 5 seconds of listening, then transcribing, then the done tick. Left is a light background with the black orb, right is a dark background with the white orb, same as the real orb. Pin a state below to compare them side by side.</p>
+  <div class="bar">
+    <div class="seg" id="mode">
+      <button data-m="auto" class="on">Play through</button>
+      <button data-m="listening">Listening</button>
+      <button data-m="processing">Transcribing</button>
+    </div>
+    <span class="state" id="state">Listening</span>
+  </div>
+</header>
+<main id="grid"></main>
+
+<script>
+const TAU = Math.PI * 2;
+const ease = (x) => 1 - Math.pow(1 - Math.min(1, Math.max(0, x)), 3);
+const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
+
+// ---- Drawing helpers (same as OrbBubble.tsx) -------------------------------------
+function disc(ctx, r, fill, alpha = 1) { ctx.save(); ctx.globalAlpha *= alpha; ctx.beginPath(); ctx.arc(0, 0, Math.max(0, r), 0, TAU); ctx.fillStyle = fill; ctx.fill(); ctx.restore(); }
+function withShadow(ctx, p, fn) { ctx.save(); ctx.shadowColor = p.shadow; ctx.shadowBlur = 8; ctx.shadowOffsetY = 2; fn(); ctx.restore(); }
+function shadowDisc(ctx, r, p) {
+  withShadow(ctx, p, () => disc(ctx, r, p.body));
+  ctx.save(); ctx.beginPath(); ctx.arc(0, 0, Math.max(0, r - 0.6), 0, TAU); ctx.strokeStyle = p.rim; ctx.lineWidth = 1.2; ctx.stroke(); ctx.restore();
+}
+function check(ctx, prog, color, size = 6) {
+  if (prog <= 0) return;
+  ctx.save(); ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.lineCap = "round"; ctx.lineJoin = "round";
+  const a = [-size * 0.8, 0], b = [-size * 0.2, size * 0.6], c = [size * 0.9, -size * 0.6];
+  const l1 = Math.hypot(b[0] - a[0], b[1] - a[1]), l2 = Math.hypot(c[0] - b[0], c[1] - b[1]);
+  let d = ease(prog) * (l1 + l2);
+  ctx.beginPath(); ctx.moveTo(a[0], a[1]);
+  if (d <= l1) ctx.lineTo(a[0] + (b[0] - a[0]) * d / l1, a[1] + (b[1] - a[1]) * d / l1);
+  else { ctx.lineTo(b[0], b[1]); d -= l1; ctx.lineTo(b[0] + (c[0] - b[0]) * d / l2, b[1] + (c[1] - b[1]) * d / l2); }
+  ctx.stroke(); ctx.restore();
+}
+function ripple(ctx, r, k, p) {
+  ctx.save(); ctx.globalAlpha = 0.55 * k; ctx.shadowColor = p.shadow; ctx.shadowBlur = 4;
+  ctx.beginPath(); ctx.arc(0, 0, r, 0, TAU); ctx.strokeStyle = p.body; ctx.lineWidth = 2; ctx.stroke(); ctx.restore();
+}
+/** Blend 0→1 into the transcribing look over ~300 ms, so states hand over smoothly. */
+const proc = (s) => s.st === "processing" ? ease(s.sp * 3.5) : 0;
+
+// ---- The 10 ideas -----------------------------------------------------------------
+// s: { t, st: listening|processing|done, sp (s since state change), lv, bands[8], a (0..1 grown), pitch, punch }
+// Each draws the whole orb; on "done" it draws only the body and the tick goes on top.
+const IDEAS = [
+  {
+    id: "echo", name: "Echo",
+    listen: "Rings ripple out from the middle, faster and brighter as you get louder.",
+    trans: "The rings reverse and fall inward, like it's pulling your words in.",
+    draw(ctx, s, p, mem, dt) {
+      const L = s.st === "listening", k = proc(s);
+      const R = 6 + 9 * s.a + (L ? s.lv * 2 + s.punch * 1.2 : 0) - k * 1.5;
+      shadowDisc(ctx, R, p);
+      if (s.st === "done") return;
+      const speed = L ? 0.45 + s.lv * 1.6 + s.punch : 0.9;
+      mem.ph = (mem.ph ?? 0) + speed * dt;
+      const inner = R - 3.5;
+      for (let i = 0; i < 3; i++) {
+        const f = (mem.ph + i / 3) % 1;
+        const pos = k > 0.5 ? 1 - f : f;
+        const r = 2.5 + pos * (inner - 2.5);
+        const fade = pos < 0.15 ? pos / 0.15 : 1 - (pos - 0.15) / 0.85;
+        ctx.save(); ctx.globalAlpha = s.a * fade * (L ? 0.45 + 0.55 * s.lv : 0.85);
+        ctx.strokeStyle = p.mark; ctx.lineWidth = L ? 1.3 + s.lv * 1.2 : 1.6;
+        ctx.beginPath(); ctx.arc(0, 0, r, 0, TAU); ctx.stroke(); ctx.restore();
+      }
+      disc(ctx, 2.2 + (L ? s.lv * 1.6 : 0.6 * Math.sin(s.t * 6) + 0.6), p.mark);
+    },
+  },
+  {
+    id: "wave", name: "Wave line",
+    listen: "A line across the orb that draws the shape of your voice, every band its own ripple.",
+    trans: "The line smooths into one clean wave that rolls across, steady and calm.",
+    draw(ctx, s, p, mem, dt) {
+      const L = s.st === "listening", k = proc(s);
+      const R = 6 + 10 * s.a + (L ? s.punch * 1.2 : 0);
+      shadowDisc(ctx, R, p);
+      if (s.st === "done") return;
+      mem.ph = (mem.ph ?? 0) + dt * (L ? 4 + s.pitch * 6 : 6);
+      const w = R - 3;
+      ctx.save(); ctx.beginPath(); ctx.arc(0, 0, R - 1.6, 0, TAU); ctx.clip();
+      ctx.strokeStyle = p.mark; ctx.lineWidth = 1.9; ctx.lineCap = "round"; ctx.lineJoin = "round";
+      ctx.globalAlpha = s.a;
+      ctx.beginPath();
+      for (let x = -w; x <= w + 0.01; x += 0.8) {
+        const env = 1 - (x / w) ** 2;
+        let yv = 0;
+        for (let i = 0; i < 8; i++) yv += s.bands[i] * Math.sin(x * (0.32 + i * 0.13) + mem.ph * (1 + i * 0.35) + i);
+        yv *= 2.2 * env;
+        const yp = Math.sin(x * 0.42 - s.t * 7) * 3.4 * env;
+        const y = (L ? yv : 0) * (1 - k) + yp * k;
+        x === -w ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      }
+      ctx.stroke(); ctx.restore();
+    },
+  },
+  {
+    id: "grid", name: "Dot grid",
+    listen: "Nine dots that each follow part of your voice, low in the middle, high at the corners.",
+    trans: "The dots light up one after another in a snake, round and round.",
+    draw(ctx, s, p) {
+      const L = s.st === "listening", k = proc(s);
+      const R = 6 + 10 * s.a + (L ? s.lv * 1.5 + s.punch : 0);
+      shadowDisc(ctx, R, p);
+      if (s.st === "done") return;
+      const band = [6, 4, 7, 3, 0, 2, 5, 1, 6];
+      const snake = [0, 1, 2, 5, 8, 7, 6, 3, 4];
+      const gap = 6.2 * Math.min(1, s.a + 0.2);
+      for (let i = 0; i < 9; i++) {
+        const gx = (i % 3) - 1, gy = Math.floor(i / 3) - 1;
+        const vl = s.bands[band[i]] * (i === 4 ? 1 : 0.85);
+        const order = snake.indexOf(i);
+        const vp = order === 8 ? 0.35 : Math.pow(Math.max(0, Math.cos(((s.t * 1.4 - order / 8) % 1) * TAU)), 6);
+        const v = L ? vl : vp * k;
+        const r = 1.1 + v * 1.9;
+        ctx.save(); ctx.globalAlpha = s.a * (0.45 + 0.55 * Math.min(1, v * 1.4));
+        ctx.beginPath(); ctx.arc(gx * gap, gy * gap, r, 0, TAU); ctx.fillStyle = p.mark; ctx.fill(); ctx.restore();
+      }
+    },
+  },
+  {
+    id: "bloom", name: "Bloom",
+    listen: "Six petals open with your voice and turn faster as it rises.",
+    trans: "The petals fold in small and spin like a pinwheel while it writes.",
+    draw(ctx, s, p, mem, dt) {
+      const L = s.st === "listening", k = proc(s);
+      const R = 6 + 9 * s.a + (L ? s.lv * 1.8 + s.punch : 0);
+      shadowDisc(ctx, R, p);
+      if (s.st === "done") return;
+      mem.rot = (mem.rot ?? 0) + dt * (L ? 0.3 + s.pitch * 1.6 + s.lv : 3.2);
+      const n = 6;
+      for (let i = 0; i < n; i++) {
+        const b = s.bands[[0, 2, 4, 6, 5, 3][i]];
+        const lenL = 4 + b * 6.5;
+        const lenP = 4 + 1.8 * Math.sin(s.t * 5 - i);
+        const len = Math.min(R - 3, (L ? lenL : lenP * k + 2.6 * (1 - k)) * s.a + 1);
+        const ang = mem.rot + (i / n) * TAU;
+        ctx.save(); ctx.rotate(ang); ctx.globalAlpha = s.a * (L ? 0.55 + 0.45 * Math.min(1, b * 1.5) : 0.85);
+        ctx.beginPath(); ctx.ellipse(1.4 + len / 2, 0, len / 2, 2.2 + (L ? b * 0.7 : 0), 0, 0, TAU);
+        ctx.fillStyle = p.mark; ctx.fill(); ctx.restore();
+      }
+      disc(ctx, 1.8, p.body);
+    },
+  },
+  {
+    id: "aperture", name: "Aperture",
+    listen: "A camera shutter that opens wider the louder you speak, twisting with your pitch.",
+    trans: "The shutter half-closes and turns slowly, like it's focusing.",
+    draw(ctx, s, p, mem, dt) {
+      const L = s.st === "listening", k = proc(s);
+      const R = 6 + 9.5 * s.a + (L ? s.punch : 0);
+      shadowDisc(ctx, R, p);
+      if (s.st === "done") return;
+      const ring = R - 2.6;
+      const target = L ? 1.6 + s.lv * 7 + s.punch * 1.5 : 3.6 + 1.2 * Math.sin(s.t * 3.2);
+      mem.open = (mem.open ?? 2) + (target - (mem.open ?? 2)) * (1 - Math.exp(-dt / 0.06));
+      mem.rot = (mem.rot ?? 0) + dt * (L ? 0.2 + s.pitch * 0.8 : 1.6);
+      const open = Math.min(ring - 1.5, mem.open) * Math.min(1, s.a + 0.1);
+      ctx.save(); ctx.globalAlpha = s.a;
+      disc(ctx, ring, p.mark);
+      const n = 6, rot = mem.rot + open * 0.08;
+      ctx.beginPath();
+      for (let i = 0; i <= n; i++) { const a = rot + (i / n) * TAU; i ? ctx.lineTo(Math.cos(a) * open, Math.sin(a) * open) : ctx.moveTo(Math.cos(a) * open, Math.sin(a) * open); }
+      ctx.closePath(); ctx.fillStyle = p.body; ctx.fill();
+      ctx.strokeStyle = p.body; ctx.lineWidth = 1.1; ctx.globalAlpha = s.a * 0.75;
+      for (let i = 0; i < n; i++) {
+        const a = rot + (i / n) * TAU;
+        const x = Math.cos(a) * open, y = Math.sin(a) * open;
+        const a2 = a + TAU / n + 0.25;
+        ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(Math.cos(a2) * ring, Math.sin(a2) * ring); ctx.stroke();
+      }
+      ctx.restore();
+    },
+  },
+  {
+    id: "halo", name: "Halo",
+    listen: "A ring inside the orb that thickens wherever your voice has energy, like a round equaliser.",
+    trans: "The ring goes thin and a bright bead races around it.",
+    draw(ctx, s, p, mem, dt) {
+      const L = s.st === "listening", k = proc(s);
+      const R = 6 + 10 * s.a + (L ? s.lv * 1.5 + s.punch : 0);
+      shadowDisc(ctx, R, p);
+      if (s.st === "done") return;
+      mem.rot = (mem.rot ?? 0) + dt * (L ? 0.4 + s.pitch : 0);
+      const mid = R - 5.2, N = 96;
+      const outer = [], inner = [];
+      for (let i = 0; i <= N; i++) {
+        const th = (i / N) * TAU;
+        const f = Math.abs(((th + mem.rot) / TAU) % 1 * 2 - 1) * 7;
+        const b0 = s.bands[Math.floor(f)], b1 = s.bands[Math.min(7, Math.floor(f) + 1)];
+        const bl = b0 + (b1 - b0) * (f % 1);
+        const chase = Math.pow(Math.max(0, Math.cos(th - s.t * 5.5)), 10);
+        const w = L ? 1 + bl * 5.2 : (1.1 + chase * 3.4) * k + 1 * (1 - k);
+        outer.push([Math.cos(th) * (mid + w / 2), Math.sin(th) * (mid + w / 2)]);
+        inner.push([Math.cos(th) * (mid - w / 2), Math.sin(th) * (mid - w / 2)]);
+      }
+      ctx.save(); ctx.globalAlpha = s.a; ctx.beginPath();
+      outer.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+      for (let i = inner.length - 1; i >= 0; i--) ctx.lineTo(inner[i][0], inner[i][1]);
+      ctx.closePath(); ctx.fillStyle = p.mark; ctx.fill(); ctx.restore();
+      disc(ctx, 1.8 + (L ? s.lv * 1.8 : 0.4), p.mark, s.a);
+    },
+  },
+  {
+    id: "trio", name: "Trio",
+    listen: "Three dots hop with your voice: low, middle and high, so they dance when you talk.",
+    trans: "They become the familiar typing dots, a soft wave going left to right.",
+    draw(ctx, s, p) {
+      const L = s.st === "listening", k = proc(s);
+      const R = 6 + 10 * s.a + (L ? s.lv * 1.5 + s.punch : 0);
+      shadowDisc(ctx, R, p);
+      if (s.st === "done") return;
+      const parts = [(s.bands[0] + s.bands[1] + s.bands[2]) / 3, (s.bands[3] + s.bands[4]) / 2, (s.bands[5] + s.bands[6] + s.bands[7]) / 3];
+      for (let i = 0; i < 3; i++) {
+        const vl = Math.min(1, parts[i] * 1.5);
+        const vp = Math.max(0, Math.sin(s.t * 7 - i * 0.9));
+        const v = L ? vl : vp * k;
+        const y = -v * 4.6, r = 2.2 + (L ? vl * 0.9 : 0);
+        ctx.save(); ctx.globalAlpha = s.a * (0.6 + 0.4 * v);
+        ctx.beginPath(); ctx.ellipse((i - 1) * 6.4, y + 1, r, r * (1 + v * 0.12), 0, 0, TAU); ctx.fillStyle = p.mark; ctx.fill(); ctx.restore();
+      }
+    },
+  },
+  {
+    id: "swirl", name: "Swirl",
+    listen: "A spiral that unwinds wider as you get louder and winds tighter when your voice goes up.",
+    trans: "The spiral draws itself in and out, spinning, like ink stirring.",
+    draw(ctx, s, p, mem, dt) {
+      const L = s.st === "listening", k = proc(s);
+      const R = 6 + 9.5 * s.a + (L ? s.punch : 0);
+      shadowDisc(ctx, R, p);
+      if (s.st === "done") return;
+      mem.rot = (mem.rot ?? 0) + dt * (L ? 1 + s.lv * 5 : 4.5);
+      const turns = L ? 1.6 + s.pitch * 1.2 : 2.2;
+      const reach = (R - 3) * (L ? 0.5 + 0.5 * Math.min(1, s.lv * 1.3) : 0.85);
+      const drawn = L ? 1 : 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(s.t * 3.4));
+      const steps = 90;
+      ctx.save(); ctx.globalAlpha = s.a; ctx.strokeStyle = p.mark; ctx.lineWidth = 1.7; ctx.lineCap = "round";
+      ctx.beginPath();
+      const end = Math.max(2, Math.round(steps * (drawn * k + (1 - k))));
+      for (let i = 0; i <= end; i++) {
+        const f = i / steps, th = f * turns * TAU + mem.rot, r = 0.8 + f * reach;
+        i ? ctx.lineTo(Math.cos(th) * r, Math.sin(th) * r) : ctx.moveTo(Math.cos(th) * r, Math.sin(th) * r);
+      }
+      ctx.stroke(); ctx.restore();
+    },
+  },
+  {
+    id: "beat", name: "Heartbeat",
+    listen: "A line scrolls across and jumps on every syllable, like a heart monitor for your voice.",
+    trans: "The line goes quiet and a single blip travels across, over and over.",
+    draw(ctx, s, p, mem, dt) {
+      const L = s.st === "listening", k = proc(s);
+      const R = 6 + 10 * s.a + (L ? s.punch : 0);
+      shadowDisc(ctx, R, p);
+      if (s.st === "done") return;
+      // Flat line that kicks on each syllable; the kicks scroll left and fade out.
+      if (!mem.hist) { mem.hist = new Array(26).fill(0); mem.acc = 0; }
+      mem.acc += dt;
+      while (mem.acc > 1 / 26) {
+        mem.acc -= 1 / 26;
+        mem.hist.shift();
+        mem.hist.push(L ? Math.min(1, s.punch * 1.25 + s.lv * 0.18) : 0);
+      }
+      const w = R - 3.2, n = mem.hist.length;
+      ctx.save(); ctx.beginPath(); ctx.arc(0, 0, R - 1.6, 0, TAU); ctx.clip();
+      ctx.strokeStyle = p.mark; ctx.lineWidth = 1.7; ctx.lineJoin = "round"; ctx.lineCap = "round"; ctx.globalAlpha = s.a;
+      ctx.beginPath();
+      const bx = -w + ((s.t * 0.75) % 1) * 2 * w;
+      for (let i = 0; i < n; i++) {
+        const x = -w + (i / (n - 1)) * 2 * w;
+        const env = 1 - (x / w) ** 6;
+        // Heart-monitor shape: up spike, then a smaller dip.
+        const v = mem.hist[i];
+        const hl = i % 3 === 0 ? -v * 7.5 : i % 3 === 1 ? v * 3 : 0;
+        const d = (x - bx) / 1.6;
+        const hp = -Math.exp(-d * d) * 6 + Math.exp(-(((x - bx - 2.4) / 1.4) ** 2)) * 2.5;
+        const y = (hl * (1 - k) + hp * k) * env;
+        i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+      }
+      ctx.stroke(); ctx.restore();
+    },
+  },
+  {
+    id: "jelly", name: "Jelly",
+    listen: "A soft rounded square that squashes and bounces on each syllable, with a dot that leans into your voice.",
+    trans: "It rolls slowly around in place, wobbling a little, while the dot circles inside.",
+    draw(ctx, s, p, mem, dt) {
+      const L = s.st === "listening", k = proc(s);
+      const target = 1 + (L ? s.lv * 0.12 + s.punch * 0.32 : 0);
+      mem.v = (mem.v ?? 0) + ((target - (mem.y ?? 1)) * 320 - (mem.v ?? 0) * 14) * dt;
+      mem.y = (mem.y ?? 1) + mem.v * dt;
+      const sy = clamp(mem.y, 0.7, 1.5), sx = 1 / Math.sqrt(sy);
+      mem.rot = (mem.rot ?? 0) + dt * 1.6 * k;
+      const S = 9.5 + 5 * s.a;
+      ctx.save(); ctx.rotate(mem.rot + 0.1 * Math.sin(s.t * 5) * k); ctx.scale(sx, sy);
+      withShadow(ctx, p, () => { ctx.beginPath(); ctx.roundRect(-S, -S, 2 * S, 2 * S, S * 0.62); ctx.fillStyle = p.body; ctx.fill(); });
+      ctx.beginPath(); ctx.roundRect(-S + 0.6, -S + 0.6, 2 * S - 1.2, 2 * S - 1.2, S * 0.6);
+      ctx.strokeStyle = p.rim; ctx.lineWidth = 1.2; ctx.stroke();
+      ctx.restore();
+      if (s.st === "done") return;
+      const lean = L ? (s.pitch - 0.5) * 6 : 0;
+      const ox = lean * (1 - k) + Math.cos(s.t * 4) * 4 * k;
+      const oy = (L ? -s.lv * 2.5 : 0) * (1 - k) + Math.sin(s.t * 4) * 4 * k;
+      ctx.save(); ctx.translate(ox, oy * sy);
+      disc(ctx, 2.8 + (L ? s.lv * 1.8 + s.punch : 0), p.mark, s.a);
+      ctx.restore();
+    },
+  },
+];
+
+// ---- Pretend voice + the orb's own smoothing ---------------------------------------
+const CYCLE = [["listening", 5.2], ["processing", 3.2], ["done", 1.3], ["idle", 0.9]];
+const CYC_LEN = CYCLE.reduce((a, c) => a + c[1], 0);
+let mode = "auto";
+const LABEL = { listening: "Listening", processing: "Transcribing", done: "Done", idle: "Idle" };
+
+function voice(t) {
+  const phrase = t % 2.6;
+  const talking = phrase < 2.1 ? 1 : 0;
+  const syl = Math.pow(Math.max(0, Math.sin(t * Math.PI * 4.2)), 2);
+  const stress = 0.5 + 0.5 * Math.sin(t * 1.7 + Math.sin(t * 0.6) * 2);
+  const level = talking * (0.12 + 0.88 * syl * (0.45 + 0.55 * stress));
+  const formant = 2 + 1.8 * Math.sin(t * 1.9) + 0.6 * Math.sin(t * 5.3);
+  const bands = [];
+  for (let i = 0; i < 8; i++) bands.push(level * (Math.exp(-((i - formant) ** 2) / 3.5) * 0.85 + 0.25 * Math.exp(-i / 3)) * (0.75 + 0.25 * Math.sin(t * 9 + i * 1.3)));
+  return { level, bands };
+}
+
+function makeOrb(idea, canvas, dark) {
+  const ctx = canvas.getContext("2d");
+  const mem = {};
+  const st = { level: 0, bands: new Array(8).fill(0), punch: 0, slow: 0, pitch: 0.5, active: 0, peak: 0.3, bandPeak: 0.3, prev: "idle", at: 0 };
+  const pal = dark
+    ? { body: "#ffffff", mark: "#0b0b0c", rim: "rgba(0,0,0,.28)", shadow: "rgba(0,0,0,.45)" }
+    : { body: "#0b0b0c", mark: "#ffffff", rim: "rgba(255,255,255,.5)", shadow: "rgba(0,0,0,.35)" };
+  const SIZE = 64, SCALE = 2.1, GROW = 1.12;
+  return (t, dt, state) => {
+    const dpr = window.devicePixelRatio || 1;
+    const px = Math.round(SIZE * SCALE * dpr);
+    if (canvas.width !== px) { canvas.width = px; canvas.height = px; canvas.style.width = canvas.style.height = SIZE * SCALE + "px"; }
+    if (state !== st.prev) { st.prev = state; st.at = t; }
+    const L = state === "listening";
+    const sig = voice(t + idea.offset);
+    const raw = L ? sig.level : 0;
+    st.peak = Math.max(raw, 0.22, st.peak * Math.exp(-dt / 4));
+    const target = Math.min(1, raw / st.peak);
+    st.slow += (target - st.slow) * (1 - Math.exp(-dt / 0.35));
+    if (L && target - st.slow > 0.18 && target > st.punch) st.punch = Math.min(1, st.punch + (target - st.slow) * 2.2);
+    st.punch *= Math.exp(-dt / 0.22);
+    st.level += (target - st.level) * (target > st.level ? 1 - Math.exp(-dt / 0.04) : 1 - Math.exp(-dt / 0.15));
+    let bmax = 0; for (let i = 0; i < 8; i++) bmax = Math.max(bmax, L ? sig.bands[i] : 0);
+    st.bandPeak = Math.max(bmax, 0.22, st.bandPeak * Math.exp(-dt / 4));
+    let wsum = 0, isum = 0;
+    for (let i = 0; i < 8; i++) {
+      const tb = L ? Math.min(1, sig.bands[i] / st.bandPeak) : 0;
+      st.bands[i] += (tb - st.bands[i]) * (tb > st.bands[i] ? 1 - Math.exp(-dt / 0.035) : 1 - Math.exp(-dt / 0.13));
+      wsum += tb; isum += tb * i;
+    }
+    if (L && wsum > 0.6) st.pitch += (Math.min(1, Math.max(0, (isum / wsum - 1.5) / 4)) - st.pitch) * (1 - Math.exp(-dt / 0.12));
+    st.active += ((state === "idle" ? 0 : 1) - st.active) * (1 - Math.exp(-dt / 0.09));
+
+    ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.setTransform(dpr * SCALE, 0, 0, dpr * SCALE, canvas.width / 2, canvas.height / 2);
+    if (st.active < 0.05 && state === "idle") {
+      shadowDisc(ctx, 6, pal); disc(ctx, 2, pal.mark, 0.9); return;
+    }
+    const s = { t, st: state === "idle" ? "done" : state, sp: t - st.at, lv: st.level, bands: st.bands, a: st.active, pitch: st.pitch, punch: st.punch };
+    ctx.scale(GROW, GROW);
+    idea.draw(ctx, s, pal, mem, dt);
+    if (state === "done") check(ctx, s.sp * 3, pal.mark);
+  };
+}
+
+// ---- Page ---------------------------------------------------------------------------
+const grid = document.getElementById("grid");
+const orbs = [];
+IDEAS.forEach((idea, i) => {
+  idea.offset = i * 0.37;
+  const card = document.createElement("article");
+  card.className = "card";
+  card.innerHTML = `
+    <div class="stages"><div class="stage light"><canvas></canvas></div><div class="stage dark"><canvas></canvas></div></div>
+    <div class="meta"><h2><span class="num">${i + 1}</span>${idea.name}</h2>
+      <p><b>Listening:</b> ${idea.listen}</p><p><b>Transcribing:</b> ${idea.trans}</p></div>`;
+  grid.appendChild(card);
+  const [c1, c2] = card.querySelectorAll("canvas");
+  orbs.push(makeOrb(idea, c1, false), makeOrb(idea, c2, true));
+});
+
+document.querySelectorAll("#mode button").forEach((b) => b.addEventListener("click", () => {
+  mode = b.dataset.m;
+  document.querySelectorAll("#mode button").forEach((x) => x.classList.toggle("on", x === b));
+}));
+
+const stateEl = document.getElementById("state");
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  const t = now / 1000;
+  let state = mode;
+  if (mode === "auto") {
+    let x = t % CYC_LEN;
+    for (const [name, len] of CYCLE) { if (x < len) { state = name; break; } x -= len; }
+  }
+  if (stateEl.textContent !== LABEL[state]) stateEl.textContent = LABEL[state];
+  for (const o of orbs) o(t, dt, state);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

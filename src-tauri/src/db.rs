@@ -20,6 +20,9 @@ pub struct DictationEntry {
     pub word_count: i64,
     pub duration_secs: f64,
     pub language: String,
+    /// Whether "Formatting options" was on for this dictation. None for entries saved
+    /// before this was recorded.
+    pub formatted: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -125,6 +128,27 @@ pub fn init_db(conn: &Connection) -> SqlResult<()> {
         );
     ",
     )?;
+    // Ship one dictionary entry: the app's own name, which Whisper splits in two.
+    // Seeded once, so deleting it sticks.
+    let seeded: bool = conn
+        .prepare("SELECT 1 FROM settings WHERE key = 'dictionary_seeded'")?
+        .exists([])?;
+    if !seeded {
+        conn.execute(
+            "INSERT OR IGNORE INTO dictionary (term, pronunciation) VALUES ('LocalFlow', 'local flow, low cal flow')",
+            [],
+        )?;
+        conn.execute("INSERT INTO settings (key, value) VALUES ('dictionary_seeded', 'true')", [])?;
+    }
+
+    // Record per dictation whether formatting was on (NULL for older rows).
+    let has_formatted: bool = conn
+        .prepare("SELECT 1 FROM pragma_table_info('dictation_history') WHERE name = 'formatted'")?
+        .exists([])?;
+    if !has_formatted {
+        conn.execute("ALTER TABLE dictation_history ADD COLUMN formatted INTEGER", [])?;
+    }
+
     // Remove credentials and preferences left by the retired cloud transcription feature.
     conn.execute(
         "DELETE FROM settings WHERE key IN (
@@ -333,7 +357,7 @@ fn fetch_history_all(
 ) -> Result<Vec<DictationEntry>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, timestamp, app_name, app_exe, raw_text, cleaned_text, word_count, duration_secs, language
+            "SELECT id, timestamp, app_name, app_exe, raw_text, cleaned_text, word_count, duration_secs, language, formatted
              FROM dictation_history
              WHERE privacy_mode = 0
              ORDER BY id DESC
@@ -358,7 +382,7 @@ fn fetch_history_search(
 ) -> Result<Vec<DictationEntry>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT h.id, h.timestamp, h.app_name, h.app_exe, h.raw_text, h.cleaned_text, h.word_count, h.duration_secs, h.language
+            "SELECT h.id, h.timestamp, h.app_name, h.app_exe, h.raw_text, h.cleaned_text, h.word_count, h.duration_secs, h.language, h.formatted
              FROM dictation_history h
              JOIN dictation_fts f ON h.id = f.rowid
              WHERE f.dictation_fts MATCH ?1
@@ -387,6 +411,7 @@ fn map_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DictationEntry> {
         word_count: row.get(6)?,
         duration_secs: row.get(7)?,
         language: row.get(8)?,
+        formatted: row.get::<_, Option<i64>>(9)?.map(|v| v != 0),
     })
 }
 

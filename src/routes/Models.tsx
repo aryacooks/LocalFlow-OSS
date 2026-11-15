@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { CheckCircle, Download, Languages, Trash2, X } from "lucide-react";
+import { CheckCircle, Download, Globe, Languages, Trash2, X } from "lucide-react";
+import LanguagePicker from "../components/LanguagePicker";
 import { listModels, ModelInfo, setActiveModel, deleteModel, getSetting, setSetting, setRomanize, cancelDownload, getTotalRamMb } from "../lib/ipc";
 import { useAppStore } from "../lib/store";
-import { MODEL_MEMORY_NOTE, recommendedTranscriptionModelId } from "../lib/modelGuidance";
+import { MODEL_MEMORY_NOTE, MULTILINGUAL_NOTE, recommendationText, recommendedTranscriptionModelId } from "../lib/modelGuidance";
 
 // Lightweight on/off switch matching the one used on the Settings page.
 function Switch({ checked, onChange }: { checked: boolean; onChange: () => void }) {
@@ -18,7 +19,11 @@ const MODEL_COMPARISONS: Record<string, { speed: number; accuracy: number; avgRa
   "base.en": { speed: 96, accuracy: 55, avgRam: "~160 MB" },
   "small.en": { speed: 82, accuracy: 74, avgRam: "~310 MB" },
   "medium.en": { speed: 52, accuracy: 86, avgRam: "~660 MB" },
-  "large-v3-turbo": { speed: 40, accuracy: 97, avgRam: "~1.0 GB" },
+  "parakeet-tdt-v2": { speed: 99, accuracy: 93, avgRam: "~1.1 GB" },
+  "large-v3-turbo": { speed: 40, accuracy: 94, avgRam: "~1.0 GB" },
+  "large-v3-turbo-full": { speed: 40, accuracy: 95, avgRam: "~1.9 GB" },
+  "large-v3-q5": { speed: 14, accuracy: 97, avgRam: "~1.5 GB" },
+  "large-v3": { speed: 12, accuracy: 98, avgRam: "~3.9 GB" },
 };
 
 /** One labelled meter: "Speed ▬▬▬▬▬▬▬───". */
@@ -34,19 +39,19 @@ function Meter({ label, value, tone }: { label: string; value: number; tone: "in
 }
 
 // Multilingual models that expose the romanize (Hindi → English letters) toggle.
-const ROMANIZE_CAPABLE = ["large-v3-turbo"];
+const ROMANIZE_CAPABLE = ["large-v3-turbo", "large-v3-turbo-full", "large-v3-q5", "large-v3"];
 
 export default function ModelsPage() {
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [ramMb, setRamMb] = useState(0);
-  const recommendedId = recommendedTranscriptionModelId(ramMb);
+  const offeredIds = models.map((m) => m.id);
+  const recommendedId = recommendedTranscriptionModelId(ramMb, offeredIds);
   const [activeModel, setActiveModelState] = useState("ggml-small.en-q5_1.bin");
   const [downloadStatus, setDownloadStatus] = useState<Record<string, string>>({});
   // Download progress lives in the global store so it persists across navigation.
   const modelDownloads = useAppStore((s) => s.modelDownloads);
   const startModelDownload = useAppStore((s) => s.startModelDownload);
-  const anyDownloading = Object.keys(modelDownloads).length > 0;
-  const [autoRomanize, setAutoRomanize] = useState(true);
+  const [autoRomanize, setAutoRomanize] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
   const load = async () => {
@@ -62,10 +67,10 @@ export default function ModelsPage() {
     load().catch(console.error);
     getTotalRamMb().then(setRamMb).catch(console.error);
 
-    // Restore the saved auto-romanize preference (defaults ON) and push it live.
-    getSetting("auto_romanize")
+    // Restore the saved romanize preference (defaults OFF) and push it live.
+    getSetting("romanize_hindi")
       .then((v) => {
-        const on = v === null ? true : v === "true";
+        const on = v === "true";
         setAutoRomanize(on);
         return setRomanize(on);
       })
@@ -116,7 +121,7 @@ export default function ModelsPage() {
     setAutoRomanize(next);
     try {
       await setRomanize(next);
-      await setSetting("auto_romanize", next ? "true" : "false");
+      await setSetting("romanize_hindi", next ? "true" : "false");
     } catch (e) {
       console.error("Failed to toggle auto-romanize:", e);
       setAutoRomanize(!next); // revert on failure
@@ -137,10 +142,7 @@ export default function ModelsPage() {
 
       <section className="glass-panel" style={{ marginBottom: 14 }}>
         <p className="row-desc" style={{ margin: 0 }}>
-          {recommendedId === "small.en"
-            ? "Start with Small English, our recommended English model for computers with less than 24 GB of RAM. It balances speed, accuracy, and memory use."
-            : "With 24 GB of RAM or more, we recommend Multilingual flow for higher accuracy and multilingual speech."}
-          {" "}For Hindi or mixed Hindi-English speech, choose Multilingual flow regardless of the English recommendation.
+          {recommendationText(ramMb, offeredIds)} {MULTILINGUAL_NOTE}
         </p>
         <p className="row-desc" style={{ margin: "8px 0 0" }}>
           {MODEL_MEMORY_NOTE}
@@ -189,6 +191,22 @@ export default function ModelsPage() {
                 {/* Auto-romanize is only meaningful for multilingual models, and only
                     once downloaded. On: Hindi speech is written in English letters
                     (Hinglish). Off: written in Devanagari (Hindi script). */}
+                {/* Languages the multilingual model listens for; auto-detect picks among them. */}
+                {ROMANIZE_CAPABLE.includes(model.id) && model.downloaded && (
+                  <div className="model-langs">
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                      <Globe size={15} color="var(--accent)" />
+                      <div>
+                        <span className="row-title" style={{ fontSize: 13 }}>Languages you speak</span>
+                        <p className="row-desc" style={{ margin: 0, fontSize: 11 }}>
+                          Auto-detect picks between these. Fewer languages means fewer wrong guesses.
+                        </p>
+                      </div>
+                    </div>
+                    <LanguagePicker />
+                  </div>
+                )}
+
                 {ROMANIZE_CAPABLE.includes(model.id) && model.downloaded && (
                   <div
                     style={{
@@ -206,7 +224,7 @@ export default function ModelsPage() {
                       <div>
                         <span className="row-title" style={{ fontSize: 13 }}>Auto-transcribe to English letters</span>
                         <p className="row-desc" style={{ margin: 0, fontSize: 11 }}>
-                          On: Hindi is written in English letters (e.g. "main theek hoon"). Off: written in Hindi script (मैं ठीक हूँ).
+                          For Hindi and other Devanagari languages. On: written in English letters (e.g. "main theek hoon"). Off: written in Hindi script (मैं ठीक हूँ).
                         </p>
                       </div>
                     </div>
@@ -250,7 +268,7 @@ export default function ModelsPage() {
                     </button>
                   </>
                 ) : (
-                  <button className="button primary" disabled={anyDownloading} onClick={() => handleDownload(model)}>
+                  <button className="button primary" onClick={() => handleDownload(model)}>
                     <Download size={14} />
                     Download {formatSize(model.size_mb)}
                   </button>

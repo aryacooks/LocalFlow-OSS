@@ -274,6 +274,8 @@ export interface DictationEntry {
   word_count: number;
   duration_secs: number;
   language: string;
+  /** Formatting options on for this dictation; null for entries from before this was recorded. */
+  formatted: boolean | null;
 }
 
 export interface DictionaryEntry {
@@ -343,3 +345,9 @@ export async function downloadLlmModel(modelId: string) {
 export async function deleteLlmModel(modelId: string) {
   return invoke<void>("delete_llm_model", { modelId });
 }
+
+/** The languages the user speaks; auto-detect only picks among these. */
+export async function setLanguages(languages: string[]) {
+  return invoke<void>("set_languages", { languages });
+}
+

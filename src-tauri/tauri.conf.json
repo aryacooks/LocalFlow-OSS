@@ -66,10 +66,27 @@
       "entitlements": "entitlements.plist",
       "dmg": {
         "background": "icons/dmg-background.png",
-        "windowSize": { "width": 660, "height": 400 },
-        "appPosition": { "x": 180, "y": 180 },
-        "applicationFolderPosition": { "x": 480, "y": 180 }
+        "windowSize": {
+          "width": 660,
+          "height": 400
+        },
+        "appPosition": {
+          "x": 180,
+          "y": 180
+        },
+        "applicationFolderPosition": {
+          "x": 480,
+          "y": 180
+        }
       }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEY2QTUxNTMyODQzNUM0QzEKUldUQnhEV0VNaFdsOWpNQUtxVENWR2t5Z0RMVFNmd0pLQ3Z5VEJnejRFWlR4SjRHTGRWOHJjK3oK",
+      "endpoints": [
+        "https://github.com/aryacooks/LocalFlow-OSS/releases/latest/download/latest.json"
+      ]
     }
   }
 }

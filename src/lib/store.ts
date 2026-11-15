@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { parseLanguages } from "./languages";
 
 export type Theme = "dark" | "light";
 const THEME_KEY = "localflow-theme";
@@ -234,8 +235,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   loadLanguage: async () => {
     try {
       const saved = await invoke<string | null>("get_setting", { key: "language" });
-      // Only English/Hindi are supported now; migrate any older saved language to auto.
-      const allowed = ["auto", "en", "hi"];
+      // A pinned language must be one of the user's languages; otherwise auto-detect.
+      const mine = parseLanguages(await invoke<string | null>("get_setting", { key: "languages" }));
+      invoke("set_languages", { languages: mine }).catch(console.error);
+      const allowed = ["auto", ...mine];
       const lang = saved && allowed.includes(saved) ? saved : "auto";
       if (lang !== saved) {
         invoke("set_setting", { key: "language", value: lang }).catch(console.error);

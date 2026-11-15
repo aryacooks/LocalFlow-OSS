@@ -7,12 +7,20 @@ import AppleBrandLogo from "../components/ui/apple-brand-logo";
 import BookIcon from "../components/ui/book-icon";
 import UserIcon from "../components/ui/user-icon";
 import LoopingIcon from "../components/LoopingIcon";
+import OilFire from "../components/OilFire";
+import UpdateCard from "../components/UpdateCard";
+import { useEffect, useState } from "react";
+import { getVersion } from "@tauri-apps/api/app";
 
 const ICON_COLOR = "#151914";
 
 const DEPS = [
   { name: "whisper.cpp", desc: "C/C++ speech inference engine", license: "MIT", url: "https://github.com/ggml-org/whisper.cpp" },
   { name: "whisper-rs", desc: "Rust bindings for whisper.cpp", license: "MIT", url: "https://github.com/tazz4843/whisper-rs" },
+  { name: "Whisper", desc: "Speech models behind Flow Lite, Classic, Plus and Multilingual", license: "MIT", url: "https://github.com/openai/whisper" },
+  { name: "Parakeet TDT 0.6B v2", desc: "Speech model behind Flow Swift, by NVIDIA", license: "CC BY 4.0", url: "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2" },
+  { name: "parakeet-rs", desc: "Rust runner for Parakeet models", license: "MIT / Apache-2.0", url: "https://github.com/altunenes/parakeet-rs" },
+  { name: "ONNX Runtime", desc: "Model inference engine", license: "MIT", url: "https://onnxruntime.ai" },
   { name: "Tauri", desc: "Security-focused desktop app runner", license: "Apache-2.0 / MIT", url: "https://tauri.app" },
   { name: "cpal", desc: "Low-level system audio interface", license: "Apache-2.0", url: "https://github.com/RustAudio/cpal" },
   { name: "rusqlite", desc: "Local SQLite persistence client", license: "MIT", url: "https://github.com/rusqlite/rusqlite" },
@@ -55,6 +63,8 @@ const COMMITMENTS = [
 ];
 
 export default function AboutPage() {
+  const [version, setVersion] = useState("");
+  useEffect(() => { getVersion().then(setVersion).catch(() => {}); }, []);
   return (
     <div className="page narrow" style={{ paddingBottom: 24 }}>
 
@@ -73,6 +83,8 @@ export default function AboutPage() {
         </div>
       </div>
 
+      <UpdateCard />
+
       {/* Main panels */}
       <div className="grid cols-3" style={{ gap: 16, marginBottom: 20 }}>
         {/* Brand card */}
@@ -82,8 +94,8 @@ export default function AboutPage() {
               <img src={logoWhite} alt="LocalFlow" style={{ width: "100%", height: "100%", objectFit: "contain" }} />
             </div>
             <div>
-              <h2 className="page-title" style={{ fontSize: 26, fontWeight: 800, letterSpacing: "-0.5px" }}>LocalFlow</h2>
-              <p className="page-kicker" style={{ fontSize: 12, fontWeight: 600, color: "var(--accent)", margin: "2px 0 0 0" }}>Version 0.1.0 · Local Voice-to-Text</p>
+              <h2 className="page-title wordmark" style={{ fontSize: 26 }}>LocalFlow</h2>
+              <p className="page-kicker" style={{ fontSize: 12, fontWeight: 600, color: "var(--accent)", margin: "2px 0 0 0" }}>{version ? `Version ${version} · ` : ""}Local Voice-to-Text</p>
             </div>
           </div>
           <p className="about-copy">
@@ -113,8 +125,10 @@ export default function AboutPage() {
         </section>
 
         {/* Creator stamp */}
-        <section className="glass-panel" style={{ display: "flex", flexDirection: "column", justifyContent: "space-between", padding: 20, background: "var(--warning)" }}>
-          <div>
+        <section className="glass-panel creator-card" style={{ display: "flex", flexDirection: "column", justifyContent: "space-between", padding: 20, background: "var(--warning)" }}>
+          {/* Oil theme only: flames in the bottom half (blue in dark mode). */}
+          <OilFire />
+          <div style={{ position: "relative", zIndex: 1 }}>
             <div style={{ fontSize: 9, fontWeight: 900, textTransform: "uppercase", letterSpacing: "1px", color: "var(--warning-text)" }}>
               // CREATOR
             </div>
@@ -129,6 +143,8 @@ export default function AboutPage() {
             rel="noopener noreferrer"
             className="button"
             style={{
+              position: "relative",
+              zIndex: 1,
               marginTop: 20,
               background: "#ffffff",
               color: "#151914",

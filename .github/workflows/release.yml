@@ -1,135 +1,141 @@
-# Builds LocalFlow installers for macOS (.dmg, universal) and Windows (.exe) and
-# attaches them to a GitHub Release. Runs when you push a version tag, e.g.:
+# Ships a new LocalFlow for macOS on every push to main/master of the public repo
+# (aryacooks/LocalFlow-OSS). Installed apps find it within 6 hours, or straight away
+# from About, and update in one click. The website's download button also picks up
+# the newest DMG from these releases.
 #
-#     git tag v0.1.0 && git push origin v0.1.0
+# Version: <major>.<minor> from src-tauri/tauri.conf.json, patch = number of commits,
+# so every push is newer than the last (0.1.212, 0.1.213, …). To jump to 0.2, change
+# the version in tauri.conf.json.
 #
-# It also runs on demand from the Actions tab (workflow_dispatch).
+# It only runs in the public repo: GitHub Actions minutes on public repos are free, and
+# release downloads must be public for the apps to fetch them.
 #
-# ── macOS signing + notarization ────────────────────────────────────────────
-# Builds run UNSIGNED until you add the Apple secrets below. Once APPLE_CERTIFICATE
-# exists, the signed build path switches on by itself:
-#   APPLE_CERTIFICATE            base64 of your "Developer ID Application" .p12
-#   APPLE_CERTIFICATE_PASSWORD   the password you set when exporting the .p12
-#   APPLE_SIGNING_IDENTITY       e.g. "Developer ID Application: Your Name (TEAMID)"
-#   APPLE_ID                     your Apple ID email
-#   APPLE_PASSWORD               an app-specific password (appleid.apple.com)
-#   APPLE_TEAM_ID                your 10-char Team ID
-# Add them under: GitHub repo → Settings → Secrets and variables → Actions.
-#
-# The Apple variables are passed ONLY on the signed path, never as empty strings.
-# GitHub substitutes "" for a secret that does not exist, and an empty-but-defined
-# APPLE_CERTIFICATE still looks like a certificate to the bundler — it then ran
-# `security import` on nothing and the v0.1.2 macOS build died at bundling with
-# "failed to import keychain certificate", after compiling successfully.
+# Repository secrets (Settings → Secrets and variables → Actions):
+#   TAURI_SIGNING_PRIVATE_KEY   contents of ~/.tauri/localflow-updater.key (signs updates;
+#                               apps refuse anything not signed with it)
+#   MACOS_CERT_P12              base64 of the "LocalFlow Dev Signing" certificate + key (.p12)
+#   MACOS_CERT_PASSWORD         the .p12's password
+# The certificate matters: macOS ties Microphone and Accessibility permission to the
+# app's signature. Signed with the same certificate, an update keeps its permissions;
+# signed with anything else, people would have to grant them again after every update.
 
 name: Release
 
 on:
   push:
-    tags: ["v*"]
+    branches: [main, master]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "design/**"
+      - ".github/ISSUE_TEMPLATE/**"
   workflow_dispatch:
 
+concurrency:
+  group: release
+  cancel-in-progress: true # two quick pushes: only the newer one ships
+
 jobs:
-  release:
+  macos:
+    if: github.repository == 'aryacooks/LocalFlow-OSS'
+    runs-on: macos-latest # Apple Silicon
     permissions:
       contents: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: macos-latest
-            args: "--target universal-apple-darwin --bundles dmg"
-            rust_targets: "aarch64-apple-darwin,x86_64-apple-darwin"
-          # Pinned to windows-2022 (VS 2022). windows-latest moved to the VS 18 /
-          # 2026 image, where the CMake sub-build for whisper's Vulkan shader
-          # generator fails its compiler check with
-          # "C1083: Cannot open compiler generated file: ''".
-          - platform: windows-2022
-            args: "--bundles nsis"
-            rust_targets: ""
-    runs-on: ${{ matrix.platform }}
-
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
         with:
-          version: 9
+          fetch-depth: 0 # full history, to count commits for the version
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - name: Work out the version
+        id: version
+        run: |
+          base=$(node -p "require('./src-tauri/tauri.conf.json').version.split('.').slice(0,2).join('.')")
+          version="$base.$(git rev-list --count HEAD)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          node -e "
+            const fs = require('fs'), p = 'src-tauri/tauri.conf.json';
+            const c = JSON.parse(fs.readFileSync(p, 'utf8'));
+            c.version = '$version';
+            fs.writeFileSync(p, JSON.stringify(c, null, 2) + '\n');
+          "
+          echo "Building LocalFlow $version"
+
+      - name: Check the signing secrets are set
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+        run: |
+          [ -n "$TAURI_SIGNING_PRIVATE_KEY" ] || { echo "::error::TAURI_SIGNING_PRIVATE_KEY secret is missing"; exit 1; }
+          [ -n "$MACOS_CERT_P12" ] || { echo "::error::MACOS_CERT_P12 secret is missing"; exit 1; }
+
+      - name: Import the code-signing certificate
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          kc="$RUNNER_TEMP/signing.keychain-db"
+          kp=$(openssl rand -hex 24)
+          security create-keychain -p "$kp" "$kc"
+          security set-keychain-settings -lut 21600 "$kc"
+          security unlock-keychain -p "$kp" "$kc"
+          echo "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          pw=$(printf %s "$MACOS_CERT_PASSWORD" | tr -d '\r\n')
+          security import "$RUNNER_TEMP/cert.p12" -k "$kc" -P "$pw" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/cert.p12"
+          security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kp" "$kc" > /dev/null
+          # It's a self-made certificate, so tell this machine to trust it for signing.
+          security find-certificate -c "LocalFlow Dev Signing" -p "$kc" > "$RUNNER_TEMP/cert.pem"
+          sudo security add-trusted-cert -d -r trustRoot -p codeSign -k /Library/Keychains/System.keychain "$RUNNER_TEMP/cert.pem"
+          security find-identity -v -p codesigning "$kc"
+
+      - uses: pnpm/action-setup@v4
         with:
-          node-version: 20
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
           cache: pnpm
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.rust_targets }}
-
-      - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "./src-tauri -> target"
 
-      # whisper-rs is built with the `vulkan` feature on Windows, which needs the
-      # Vulkan SDK (shader compiler + headers) at build time. macOS uses `metal`,
-      # which ships with the OS — no extra install there.
-      - name: Install Vulkan SDK (Windows)
-        if: runner.os == 'Windows'
-        uses: jakoch/install-vulkan-sdk-action@v1
-        with:
-          vulkan_version: 1.3.290.0
-          install_runtime: true
-          cache: true
-          stripdown: true
+      - run: pnpm install --frozen-lockfile
 
-      - name: Install frontend dependencies
-        run: pnpm install --frozen-lockfile
+      - name: Build and sign
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+          APPLE_SIGNING_IDENTITY: LocalFlow Dev Signing
+        # Update files are only made here, so contributors can build without the update key.
+        run: pnpm tauri build --bundles app,dmg --config '{"bundle":{"createUpdaterArtifacts":true}}'
 
-      # Is there actually a certificate to sign with? Secrets cannot be used in an
-      # `if:` directly, so the answer becomes a step output.
-      - name: Detect Apple signing secrets
-        id: signing
-        shell: bash
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          if [ -n "${{ secrets.APPLE_CERTIFICATE }}" ]; then
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-          fi
+          b=src-tauri/target/release/bundle
+          mkdir -p out
+          cp "$b/dmg/LocalFlow_${VERSION}_aarch64.dmg" out/
+          cp "$b/macos/LocalFlow.app.tar.gz" "out/LocalFlow_${VERSION}_aarch64.app.tar.gz"
+          notes=$(git log -1 --pretty=%s)
+          repo="${{ github.repository }}"
+          VERSION="$VERSION" NOTES="$notes" REPO="$repo" SIG="$(cat "$b/macos/LocalFlow.app.tar.gz.sig")" node -e "
+            const e = process.env;
+            const url = 'https://github.com/' + e.REPO + '/releases/download/v' + e.VERSION + '/LocalFlow_' + e.VERSION + '_aarch64.app.tar.gz';
+            require('fs').writeFileSync('out/latest.json', JSON.stringify({
+              version: e.VERSION,
+              notes: e.NOTES,
+              pub_date: new Date().toISOString(),
+              platforms: { 'darwin-aarch64': { signature: e.SIG.trim(), url } },
+            }, null, 2));
+          "
+          gh release create "v$VERSION" out/* \
+            --title "LocalFlow $VERSION" \
+            --notes "$notes
 
-      # The two build steps below differ ONLY in their `env:` block — keep the
-      # `with:` inputs identical when changing either.
-      - name: Build and release (unsigned)
-        if: steps.signing.outputs.enabled != 'true'
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "LocalFlow ${{ github.ref_name }}"
-          releaseBody: "Download the installer for your platform below. macOS: open the .dmg and drag LocalFlow to Applications. Windows: run the .exe (if SmartScreen warns, click More info → Run anyway)."
-          releaseDraft: true
-          prerelease: false
-          args: ${{ matrix.args }}
-
-      - name: Build and release (signed + notarized)
-        if: steps.signing.outputs.enabled == 'true'
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "LocalFlow ${{ github.ref_name }}"
-          releaseBody: "Download the installer for your platform below. macOS: open the .dmg and drag LocalFlow to Applications. Windows: run the .exe (if SmartScreen warns, click More info → Run anyway)."
-          releaseDraft: true
-          prerelease: false
-          args: ${{ matrix.args }}
+          **Mac (Apple Silicon):** download the .dmg, open it and drag LocalFlow to Applications. Already installed? LocalFlow updates itself from About." \
+            --target "${{ github.sha }}" \
+            --latest

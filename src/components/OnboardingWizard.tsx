@@ -36,7 +36,7 @@ import {
   type ModelInfo,
 } from "../lib/ipc";
 import logoWhite from "../assets/brand/logo_white.png";
-import { MODEL_MEMORY_NOTE, recommendedTranscriptionModelId } from "../lib/modelGuidance";
+import { MODEL_MEMORY_NOTE, MULTILINGUAL_NOTE, recommendationText, recommendedTranscriptionModelId } from "../lib/modelGuidance";
 
 /** First-run setup wizard. Walks a new (esp. macOS) user through the two TCC
  *  permissions the app silently needs — Microphone + Accessibility — then a model
@@ -119,7 +119,8 @@ export default function OnboardingWizard({ onClose }: { onClose: () => void }) {
     setActiveModel(fallback.filename).catch((error) => setActionError(errorText(error)));
   }, [models, activeModelReady]);
 
-  const recommended = models.find((model) => model.id === recommendedTranscriptionModelId(ramMb));
+  const offeredIds = models.map((model) => model.id);
+  const recommended = models.find((model) => model.id === recommendedTranscriptionModelId(ramMb, offeredIds));
 
   // Steps — permission steps only matter on macOS.
   const steps = useMemo(() => {
@@ -334,14 +335,10 @@ export default function OnboardingWizard({ onClose }: { onClose: () => void }) {
               icon={Download}
               done={activeModelReady}
               title="Download a speech model"
-              desc={
-                ramGb
-                  ? `Your ${deviceWord} has about ${ramGb} GB of RAM. ${ramMb < 24 * 1024 ? "We recommend Small English for computers with less than 24 GB." : "We recommend Multilingual flow for computers with 24 GB or more."}`
-                  : "Start with Small English for everyday English dictation. It runs entirely on your machine."
-              }
+              desc={`${ramGb ? `Your ${deviceWord} has about ${ramGb} GB of RAM. ` : ""}${recommendationText(ramMb, offeredIds)} It runs entirely on your machine.`}
             >
               <p className="onb-tip">{MODEL_MEMORY_NOTE}</p>
-              <p className="onb-tip">For Hindi or mixed Hindi-English speech, choose Multilingual flow.</p>
+              <p className="onb-tip">{MULTILINGUAL_NOTE}</p>
               <div className="onb-models">
                 {models.map((m) => {
                   const isRec = recommended?.id === m.id;
