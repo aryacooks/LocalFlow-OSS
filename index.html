@@ -13,7 +13,7 @@
           el.classList.remove("dark", "light");
           el.classList.add(t);
           el.dataset.sky = t;
-          if (localStorage.getItem("localflow-look") === "oil") el.classList.add("oil");
+          el.classList.add("oil"); // oil is the only look
         } catch (e) {}
       })();
     </script>

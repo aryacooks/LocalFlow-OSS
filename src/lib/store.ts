@@ -31,12 +31,10 @@ function applyTheme(t: Theme) {
 export type Look = "normal" | "oil";
 const LOOK_KEY = "localflow-look";
 
+// Oil is the only look now (the Normal/Oil switch was removed); "normal" stays in the
+// type so older code paths still compile.
 function readStoredLook(): Look {
-  try {
-    return localStorage.getItem(LOOK_KEY) === "oil" ? "oil" : "normal";
-  } catch {
-    return "normal";
-  }
+  return "oil";
 }
 
 // The "oil" look (painted textures, sunrise/dusk palette) is a class layered on top of

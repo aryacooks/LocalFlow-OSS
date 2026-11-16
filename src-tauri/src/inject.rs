@@ -439,8 +439,19 @@ pub fn focused_accepts_text() -> Option<bool> {
         // report a focused element even with the cursor in a text box, so only call
         // it a miss when the app has no window in focus, or it's the Finder (the
         // desktop). Anything else: assume the paste landed.
+        // Electron apps (Claude, Slack, VS Code, Discord…) often answer "nothing
+        // focused" even with the cursor in their text box, and the paste lands fine.
+        // Never call it a miss there; the card would pop up after every dictation.
+        if frontmost_is_electron() {
+            return None;
+        }
         let Some(app) = focused_app else { return verdict };
         let app_ref = app.as_CFTypeRef() as AXUIElementRef;
+        // The system-wide query can come back empty while the app itself knows its
+        // focused element; ask it directly before giving up.
+        if let (AX_OK, Some(_)) = copy(app_ref, "AXFocusedUIElement") {
+            return None;
+        }
         let has_window = matches!(copy(app_ref, "AXFocusedWindow"), (AX_OK, Some(_)));
         let is_finder = match copy(app_ref, "AXTitle") {
             (AX_OK, Some(t)) => t.downcast::<CFString>().map(|t| t.to_string() == "Finder").unwrap_or(false),
@@ -452,6 +463,37 @@ pub fn focused_accepts_text() -> Option<bool> {
             None
         }
     }
+}
+
+/// True when the frontmost app is built on Electron (it ships Electron Framework).
+#[cfg(target_os = "macos")]
+fn frontmost_is_electron() -> bool {
+    use objc::runtime::Object;
+    use objc::{class, msg_send, sel, sel_impl};
+    use std::ffi::CStr;
+    let path = unsafe {
+        let workspace: *mut Object = msg_send![class!(NSWorkspace), sharedWorkspace];
+        let frontmost: *mut Object = msg_send![workspace, frontmostApplication];
+        if frontmost.is_null() {
+            return false;
+        }
+        let url: *mut Object = msg_send![frontmost, bundleURL];
+        if url.is_null() {
+            return false;
+        }
+        let p: *mut Object = msg_send![url, path];
+        if p.is_null() {
+            return false;
+        }
+        let utf8: *const std::os::raw::c_char = msg_send![p, UTF8String];
+        if utf8.is_null() {
+            return false;
+        }
+        CStr::from_ptr(utf8).to_string_lossy().into_owned()
+    };
+    std::path::Path::new(&path)
+        .join("Contents/Frameworks/Electron Framework.framework")
+        .exists()
 }
 
 /// One look at the focused element. Some(true) = clearly a text box, Some(false) =

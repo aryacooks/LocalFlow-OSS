@@ -24,7 +24,7 @@ function readPalette(): Palette {
   let dark = false, oil = false;
   try {
     dark = localStorage.getItem("localflow-theme") === "dark";
-    oil = localStorage.getItem("localflow-look") === "oil";
+    oil = true; // oil is the only look
   } catch { /* defaults */ }
   if (oil && !dark) return {
     card: "#fbf6ec", ink: "#16130f", muted: "rgba(22,19,15,0.62)", accent: "#073929",

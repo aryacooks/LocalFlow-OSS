@@ -5,7 +5,6 @@ import {
   Keyboard,
   Lightbulb,
   Moon,
-  Palette,
   Shield,
   Sparkles,
   Sun,
@@ -112,7 +111,7 @@ function SetupReminders({
 }
 
 export default function App() {
-  const { isRecording, isProcessing, privacyMode, togglePrivacy, initListeners, loadLanguage, theme, toggleTheme, initTheme, look, toggleLook, lastError, clearLastError } = useAppStore();
+  const { isRecording, isProcessing, privacyMode, togglePrivacy, initListeners, loadLanguage, theme, toggleTheme, initTheme, lastError, clearLastError } = useAppStore();
   const plugRef = useRef<AnimatedIconHandle>(null);
   const ghostRef = useRef<AnimatedIconHandle>(null);
   const bugRef = useRef<AnimatedIconHandle>(null);
@@ -352,21 +351,6 @@ export default function App() {
           >
             <PlugConnectedIcon ref={plugRef} size={15} />
             <span>Quit App</span>
-          </button>
-          <button
-            type="button"
-            className={`theme-toggle look-toggle ${look === "oil" ? "is-oil" : ""}`}
-            onClick={toggleLook}
-            title={look === "oil" ? "Switch to the normal theme" : "Switch to the oil-paint theme"}
-            aria-label="Toggle oil-paint theme"
-            aria-pressed={look === "oil"}
-          >
-            <Palette size={15} />
-            <span>Theme</span>
-            <span className="look-switch" aria-hidden="true">
-              <span className={look === "normal" ? "on" : ""}>Normal</span>
-              <span className={look === "oil" ? "on" : ""}>Oil</span>
-            </span>
           </button>
           <button
             type="button"
