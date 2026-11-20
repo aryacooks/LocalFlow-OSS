@@ -69,29 +69,29 @@ export default function RemoveLocalFlow() {
 
   return (
     <section className="remove-localflow glass-panel" aria-labelledby="remove-localflow-title">
-      <div className="remove-localflow-head">
+      <div className="remove-localflow-copy">
         <h2 id="remove-localflow-title">Remove LocalFlow</h2>
-        <p>Choose what to remove from this computer.</p>
+        <p className="remove-localflow-sub">Choose what to remove from this computer.</p>
+        <p className="remove-localflow-explain" aria-live="polite">{c.explain}</p>
+        {appBlocked && support?.reason && <p className="remove-localflow-note">{support.reason}</p>}
+        {result && (
+          <p className={`remove-localflow-result is-${result.kind}`} role={result.kind === "error" ? "alert" : "status"}>
+            {result.text}
+          </p>
+        )}
       </div>
-      <div className="remove-localflow-row">
+      <div className="remove-localflow-controls">
         <Dropdown
           value={choice}
           onChange={(v) => { setChoice(v as RemoveChoice); setResult(null); }}
           options={ORDER.map((v) => ({ value: v, label: REMOVE_CHOICES[v].label }))}
           ariaLabel="What to remove"
-          width={350}
+          width={340}
         />
         <button type="button" className="button destructive" onClick={openDialog} disabled={appBlocked || busy}>
           <Trash2 size={15} aria-hidden="true" /> {c.button}
         </button>
       </div>
-      <p className="remove-localflow-explain" aria-live="polite">{c.explain}</p>
-      {appBlocked && support?.reason && <p className="remove-localflow-note">{support.reason}</p>}
-      {result && (
-        <p className={`remove-localflow-result is-${result.kind}`} role={result.kind === "error" ? "alert" : "status"}>
-          {result.text}
-        </p>
-      )}
 
       <ConfirmDialog
         open={open}
