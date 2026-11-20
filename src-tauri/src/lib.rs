@@ -949,19 +949,27 @@ pub async fn run_pipeline(
     )
     .ok();
 
-    // Inject, then check whether anything could have taken the text: if clearly not
-    // (or the paste failed), show the card with a Copy button so the words aren't lost.
-    let pasted = inject::inject_text_clipboard(text_to_inject.clone()).await;
-    // Checked after the paste so it never delays typing; the paste doesn't move focus.
+    // Paste, then check it landed; if it surely didn't, show the card with a Copy
+    // button so the words aren't lost. The focused text box is looked at just before
+    // the paste and again after (inject::paste_verdict): changed text = it landed.
     // Dictating into LocalFlow's own window: the OS can't see into our webview, so use
     // what the window reported (a text box focused or not).
-    let accepts_text = if inject::foreground_is_self() {
-        Some(inject::self_text_focused())
+    let into_self = inject::foreground_is_self();
+    let before = if into_self {
+        None
     } else {
-        tauri::async_runtime::spawn_blocking(inject::focused_accepts_text)
+        tauri::async_runtime::spawn_blocking(inject::focus_snapshot).await.ok()
+    };
+    let pasted = inject::inject_text_clipboard(text_to_inject.clone()).await;
+    let accepts_text = if into_self {
+        Some(inject::self_text_focused())
+    } else if let Some(before) = before {
+        tauri::async_runtime::spawn_blocking(move || inject::paste_verdict(before))
             .await
             .ok()
             .flatten()
+    } else {
+        None
     };
     if let Err(e) = &pasted {
         eprintln!("Injection failed: {}", e);

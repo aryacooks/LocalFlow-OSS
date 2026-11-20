@@ -32,6 +32,7 @@ async fn send_command_key(keycode: u16) -> Result<(), String> {
         down.set_flags(CGEventFlags::CGEventFlagCommand);
         up.set_flags(CGEventFlags::CGEventFlagCommand);
         down.post(CGEventTapLocation::HID);
+        std::thread::sleep(std::time::Duration::from_millis(12));
         up.post(CGEventTapLocation::HID);
         Ok::<(), String>(())
     })
@@ -123,17 +124,44 @@ pub async fn inject_text_clipboard(text: String) -> Result<(), String> {
     let old_clipboard = get_clipboard_text().ok();
 
     set_clipboard_text(&text)?;
-    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+    let ours = pasteboard_change_count();
+    tokio::time::sleep(std::time::Duration::from_millis(60)).await;
 
-    send_paste().await?;
+    let result = send_paste().await;
 
-    // Restore old clipboard contents after the paste settles.
+    // Put the old clipboard back once the app has surely read ours. Apps read the
+    // clipboard when they handle ⌘V, which can take a while (Chrome, Electron apps
+    // under load); restoring after 150 ms made them paste the *old* clipboard. Done
+    // in the background so it never delays anything, and skipped if anything else
+    // wrote to the clipboard in the meantime (the user copied something).
     if let Some(old_text) = old_clipboard {
-        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-        let _ = set_clipboard_text(&old_text);
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(900)).await;
+            if pasteboard_change_count() == ours {
+                let _ = set_clipboard_text(&old_text);
+            }
+        });
     }
 
-    Ok(())
+    result
+}
+
+/// The clipboard's change counter (macOS), so we can tell whether anything else
+/// wrote to it after us. `None` where there's no such counter.
+fn pasteboard_change_count() -> Option<i64> {
+    #[cfg(target_os = "macos")]
+    unsafe {
+        use objc::runtime::Object;
+        use objc::{class, msg_send, sel, sel_impl};
+        let pb: *mut Object = msg_send![class!(NSPasteboard), generalPasteboard];
+        if pb.is_null() {
+            return None;
+        }
+        let n: i64 = msg_send![pb, changeCount];
+        return Some(n);
+    }
+    #[allow(unreachable_code)]
+    None
 }
 
 /// Write text to the system clipboard.
@@ -548,3 +576,201 @@ pub fn focused_accepts_text() -> Option<bool> {
     None
 }
 
+
+// ─── Did the paste land? ─────────────────────────────────────────────────────
+//
+// Asking "is a text box focused?" alone guesses wrong both ways: a web page with no
+// field selected looks focused, and some apps report nothing focused while the text
+// lands fine. So we look at the focused element just before pasting and again
+// after: if its text changed, the paste landed. Only when that can't be read do we
+// fall back to judging the focused element (focused_accepts_text above).
+
+/// The focused element as it was just before the paste.
+pub struct FocusSnapshot {
+    #[cfg(target_os = "macos")]
+    el: Option<core_foundation::base::CFType>,
+    #[cfg(target_os = "macos")]
+    role: String,
+    #[cfg(target_os = "macos")]
+    editable: bool,
+    #[cfg(target_os = "macos")]
+    sig: Option<(i64, u64)>,
+}
+// AX elements are plain CF objects; they're only used from one thread at a time.
+unsafe impl Send for FocusSnapshot {}
+
+#[cfg(target_os = "macos")]
+mod ax {
+    use core_foundation::base::{CFType, CFTypeRef, TCFType};
+    use core_foundation::boolean::CFBoolean;
+    use core_foundation::number::CFNumber;
+    use core_foundation::string::{CFString, CFStringRef};
+    use std::ffi::c_void;
+
+    pub type Ref = *const c_void;
+    pub const OK: i32 = 0;
+
+    #[link(name = "ApplicationServices", kind = "framework")]
+    extern "C" {
+        fn AXIsProcessTrusted() -> bool;
+        fn AXUIElementCreateSystemWide() -> Ref;
+        fn AXUIElementCopyAttributeValue(el: Ref, attr: CFStringRef, value: *mut CFTypeRef) -> i32;
+        fn AXUIElementSetAttributeValue(el: Ref, attr: CFStringRef, value: CFTypeRef) -> i32;
+        fn AXUIElementSetMessagingTimeout(el: Ref, seconds: f32) -> i32;
+    }
+
+    pub fn system() -> Option<CFType> {
+        unsafe {
+            if !AXIsProcessTrusted() {
+                return None;
+            }
+            let sys = AXUIElementCreateSystemWide();
+            if sys.is_null() {
+                return None;
+            }
+            let sys = CFType::wrap_under_create_rule(sys as CFTypeRef);
+            AXUIElementSetMessagingTimeout(sys.as_CFTypeRef() as Ref, 0.25);
+            Some(sys)
+        }
+    }
+
+    pub fn r(t: &CFType) -> Ref {
+        t.as_CFTypeRef() as Ref
+    }
+
+    pub fn copy(el: Ref, attr: &str) -> (i32, Option<CFType>) {
+        unsafe {
+            let mut v: CFTypeRef = std::ptr::null();
+            let key = CFString::new(attr);
+            let err = AXUIElementCopyAttributeValue(el, key.as_concrete_TypeRef(), &mut v);
+            let val = (err == OK && !v.is_null()).then(|| CFType::wrap_under_create_rule(v));
+            (err, val)
+        }
+    }
+
+    /// Electron apps only build their accessibility tree when asked.
+    pub fn wake(app: Ref) {
+        unsafe {
+            let key = CFString::new("AXManualAccessibility");
+            AXUIElementSetAttributeValue(app, key.as_concrete_TypeRef(), CFBoolean::true_value().as_CFTypeRef());
+        }
+    }
+
+    pub fn string(el: Ref, attr: &str) -> Option<String> {
+        copy(el, attr).1?.downcast::<CFString>().map(|s| s.to_string())
+    }
+
+    pub fn boolean(el: Ref, attr: &str) -> Option<bool> {
+        copy(el, attr).1?.downcast::<CFBoolean>().map(bool::from)
+    }
+
+    /// (character count, hash of the text) of a text element, if it shares its text.
+    pub fn signature(el: Ref) -> Option<(i64, u64)> {
+        use std::hash::{Hash, Hasher};
+        let count = copy(el, "AXNumberOfCharacters").1.and_then(|n| n.downcast::<CFNumber>()).and_then(|n| n.to_i64());
+        let value = string(el, "AXValue");
+        if count.is_none() && value.is_none() {
+            return None;
+        }
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        // Hash the text only when it's a reasonable size; a huge document's count is enough.
+        if let Some(v) = value.as_ref().filter(|v| v.len() < 200_000) {
+            v.hash(&mut h);
+        }
+        let count = count.or_else(|| value.as_ref().map(|v| v.encode_utf16().count() as i64)).unwrap_or(-1);
+        Some((count, h.finish()))
+    }
+}
+
+/// Look at the focused element just before pasting. Quick (a few AX calls, each
+/// capped at 250 ms) and never fails: an empty snapshot just means "can't tell".
+#[cfg(target_os = "macos")]
+pub fn focus_snapshot() -> FocusSnapshot {
+    let empty = FocusSnapshot { el: None, role: String::new(), editable: false, sig: None };
+    let Some(sys) = ax::system() else { return empty };
+    let sys_ref = ax::r(&sys);
+    let app = ax::copy(sys_ref, "AXFocusedApplication").1;
+    if let Some(app) = &app {
+        ax::wake(ax::r(app));
+    }
+    // System-wide first; some apps only answer when asked directly.
+    let el = match ax::copy(sys_ref, "AXFocusedUIElement") {
+        (ax::OK, Some(el)) => Some(el),
+        _ => app.as_ref().and_then(|a| match ax::copy(ax::r(a), "AXFocusedUIElement") {
+            (ax::OK, Some(el)) => Some(el),
+            _ => None,
+        }),
+    };
+    let Some(el) = el else { return empty };
+    let e = ax::r(&el);
+    let role = ax::string(e, "AXRole").unwrap_or_default();
+    let editable = ax::boolean(e, "AXEditable").unwrap_or(false);
+    let sig = ax::signature(e);
+    FocusSnapshot { el: Some(el), role, editable, sig }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn focus_snapshot() -> FocusSnapshot {
+    FocusSnapshot {}
+}
+
+/// After the paste: Some(true) = it landed, Some(false) = it surely didn't (show the
+/// Copy card), None = can't tell (assume it landed).
+#[cfg(target_os = "macos")]
+pub fn paste_verdict(before: FocusSnapshot) -> Option<bool> {
+    const TEXT_ROLES: &[&str] = &["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"];
+    // Focus on something that can't take text: a page with no field selected, a
+    // button, a list, a picture. A paste there goes nowhere.
+    const NOT_TEXT: &[&str] = &[
+        "AXWebArea", "AXButton", "AXPopUpButton", "AXMenuButton", "AXList", "AXOutline",
+        "AXTable", "AXRow", "AXCell", "AXImage", "AXStaticText", "AXLink", "AXCheckBox",
+        "AXRadioButton", "AXMenuItem", "AXWindow", "AXBrowser", "AXTabGroup", "AXSlider",
+    ];
+
+    let Some(el) = before.el.as_ref() else {
+        // Nothing focused before the paste: fall back to the old judgement.
+        return focused_accepts_text();
+    };
+    let e = ax::r(el);
+
+    // 1. The text changed: it landed. Apps apply a paste asynchronously, so look a
+    //    few times over ~0.6 s.
+    if let Some(sig) = before.sig {
+        for _ in 0..8 {
+            std::thread::sleep(std::time::Duration::from_millis(75));
+            if let Some(now) = ax::signature(e) {
+                if now != sig {
+                    return Some(true);
+                }
+            }
+        }
+    }
+
+    let texty = before.editable || TEXT_ROLES.contains(&before.role.as_str());
+    if texty {
+        // A real text box whose text we could read, and it didn't change: the paste
+        // didn't arrive. Electron apps sometimes report stale text, so trust them.
+        if before.sig.is_some() && !frontmost_is_electron() {
+            return Some(false);
+        }
+        // Can't read its text (password fields, some editors): it's a text box,
+        // so assume the paste landed.
+        return Some(true);
+    }
+
+    if NOT_TEXT.contains(&before.role.as_str()) {
+        // Electron apps (Claude, Slack…) often report the whole page as focused
+        // while the cursor is in their chat box, and the paste lands fine.
+        if before.role == "AXWebArea" && frontmost_is_electron() {
+            return None;
+        }
+        return Some(false);
+    }
+    // Something else (terminals, canvases, custom views): many take a paste fine.
+    None
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn paste_verdict(_before: FocusSnapshot) -> Option<bool> {
+    focused_accepts_text()
+}
