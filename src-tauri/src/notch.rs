@@ -158,6 +158,30 @@ pub fn apply_window_mode(b: &tauri::WebviewWindow, notch: bool) {
     }
 }
 
+/// Show `w` on every desktop (Space) and over full-screen apps (macOS; no-op elsewhere).
+pub fn join_all_spaces(w: &tauri::WebviewWindow) {
+    #[cfg(target_os = "macos")]
+    {
+        let win = w.clone();
+        let _ = w.run_on_main_thread(move || {
+            use objc::runtime::Object;
+            use objc::{msg_send, sel, sel_impl};
+            let Ok(ptr) = win.ns_window() else { return };
+            let ns = ptr as *mut Object;
+            if ns.is_null() {
+                return;
+            }
+            unsafe {
+                let behavior: u64 = (1 << 0) | (1 << 4) | (1 << 6) | (1 << 8);
+                let current: u64 = msg_send![ns, collectionBehavior];
+                let _: () = msg_send![ns, setCollectionBehavior: (current & !(1 << 1)) | behavior];
+            }
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = w;
+}
+
 #[cfg(target_os = "macos")]
 fn apply_appkit(b: &tauri::WebviewWindow, notch: bool) {
     let win = b.clone();
@@ -170,6 +194,15 @@ fn apply_appkit(b: &tauri::WebviewWindow, notch: bool) {
             return;
         }
         unsafe {
+            make_panel(ns);
+            // On every desktop (Space) and over full-screen apps, in both modes:
+            // canJoinAllSpaces | stationary | ignoresCycle | fullScreenAuxiliary.
+            // Without this the bubble stays on the Space it was created on and
+            // vanishes when you switch desktops or put an app in full screen.
+            let behavior: u64 = (1 << 0) | (1 << 4) | (1 << 6) | (1 << 8);
+            let current: u64 = msg_send![ns, collectionBehavior];
+            // moveToActiveSpace (1 << 1) conflicts with canJoinAllSpaces.
+            let _: () = msg_send![ns, setCollectionBehavior: (current & !(1 << 1)) | behavior];
             if !notch {
                 // kCGDockWindowLevel (20) + 1: the orb can be shifted over the Dock
                 // strip, and a plain floating window would sit behind the Dock.
@@ -178,14 +211,54 @@ fn apply_appkit(b: &tauri::WebviewWindow, notch: bool) {
             }
             // NSMainMenuWindowLevel (24) + 3: above the menu bar and status items.
             let _: () = msg_send![ns, setLevel: 27i64];
-            // canJoinAllSpaces | stationary | ignoresCycle | fullScreenAuxiliary
-            let behavior: u64 = (1 << 0) | (1 << 4) | (1 << 6) | (1 << 8);
-            let current: u64 = msg_send![ns, collectionBehavior];
-            let _: () = msg_send![ns, setCollectionBehavior: current | behavior];
             let _: () = msg_send![ns, setHasShadow: false];
             pin_to_notch(ns);
         }
     });
+}
+
+/// Turn the bubble's window into a non-activating NSPanel (once). macOS only shows a
+/// regular app's windows on its own Spaces: on another app's full-screen Space a plain
+/// window disappears even with fullScreenAuxiliary set, because LocalFlow has a Dock
+/// icon. A non-activating panel is allowed there (it's how floating HUDs and notch
+/// apps stay visible), and clicking it doesn't steal focus from the app you're typing in.
+/// Same approach as the tauri-nspanel plugin: swap the window's class for an NSPanel
+/// subclass at runtime. The window's memory and tao's ivars are untouched.
+#[cfg(target_os = "macos")]
+unsafe fn make_panel(ns: *mut objc::runtime::Object) {
+    use objc::declare::ClassDecl;
+    use objc::runtime::{Class, Object, Sel, BOOL, NO};
+    use objc::{class, msg_send, sel, sel_impl};
+
+    extern "C" {
+        fn object_setClass(obj: *mut Object, cls: *const Class) -> *const Class;
+    }
+    extern "C" fn no(_: &Object, _: Sel) -> BOOL {
+        NO
+    }
+
+    static CLASS: once_cell::sync::OnceCell<usize> = once_cell::sync::OnceCell::new();
+    let cls = *CLASS.get_or_init(|| {
+        let mut decl = ClassDecl::new("LocalFlowOrbPanel", class!(NSPanel))
+            .expect("LocalFlowOrbPanel is declared once");
+        // The orb never takes keyboard focus (see show_bubble_window).
+        decl.add_method(sel!(canBecomeKeyWindow), no as extern "C" fn(&Object, Sel) -> BOOL);
+        decl.add_method(sel!(canBecomeMainWindow), no as extern "C" fn(&Object, Sel) -> BOOL);
+        decl.register() as *const Class as usize
+    }) as *const Class;
+
+    let current: *const Class = msg_send![ns, class];
+    if current == cls {
+        return;
+    }
+    object_setClass(ns, cls);
+    // NSWindowStyleMaskNonactivatingPanel
+    let mask: u64 = msg_send![ns, styleMask];
+    let _: () = msg_send![ns, setStyleMask: mask | (1 << 7)];
+    // Panels hide when their app goes to the background by default; the orb must not.
+    let _: () = msg_send![ns, setHidesOnDeactivate: NO];
+    let _: () = msg_send![ns, setFloatingPanel: objc::runtime::YES];
+    let _: () = msg_send![ns, setBecomesKeyOnlyIfNeeded: objc::runtime::YES];
 }
 
 /// Re-pin after anything moves or resizes the window while in notch mode.

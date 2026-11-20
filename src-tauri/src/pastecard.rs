@@ -71,6 +71,7 @@ pub fn show(app: &tauri::AppHandle, text: &str) {
             y: y.round() as i32,
         }));
     }
+    crate::notch::join_all_spaces(&w);
     let _ = w.show();
     let _ = w.set_always_on_top(true);
     let _ = app.emit_to("card", "paste-card", text);
