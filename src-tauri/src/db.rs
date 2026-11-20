@@ -425,12 +425,39 @@ pub fn delete_history_entry(db: State<'_, DbState>, id: i64) -> Result<(), Strin
     Ok(())
 }
 
+/// Delete every saved transcription and everything derived from it, in one
+/// transaction (all or nothing):
+/// - `dictation_history`: the transcriptions (Dashboard stats are computed from it,
+///   so they reset with it),
+/// - `dictation_fts`: the search index over them,
+/// - `style_memory`: recent cleaned transcriptions kept to match your writing style.
+/// Settings, dictionary, notes and downloaded models are left alone. Deleted rows
+/// can linger in free database pages until SQLite reuses them; this is ordinary
+/// deletion, not secure erasure.
+pub fn clear_transcription_data(conn: &mut Connection) -> Result<(), String> {
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    // The index mirrors dictation_history ("external content"), so it's emptied with
+    // FTS5's own command; a plain DELETE would read rows that are already gone.
+    tx.execute("INSERT INTO dictation_fts(dictation_fts) VALUES('delete-all')", [])
+        .map_err(|e| format!("Couldn't clear the search index: {e}"))?;
+    tx.execute("DELETE FROM dictation_history", [])
+        .map_err(|e| format!("Couldn't delete transcriptions: {e}"))?;
+    tx.execute("DELETE FROM style_memory", [])
+        .map_err(|e| format!("Couldn't delete style memory: {e}"))?;
+    tx.commit().map_err(|e| e.to_string())?;
+    // Fold the write-ahead log back into the database file so the deleted rows don't
+    // sit on in the -wal side file. Best effort: the deletion itself is done.
+    let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+    Ok(())
+}
+
 #[tauri::command]
-pub fn clear_history(db: State<'_, DbState>) -> Result<(), String> {
-    let conn = db.0.lock().unwrap();
-    conn.execute("DELETE FROM dictation_history", [])
-        .map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM dictation_fts", []).ok();
+pub fn clear_history(app: AppHandle, db: State<'_, DbState>) -> Result<(), String> {
+    let mut conn = db.0.lock().unwrap();
+    clear_transcription_data(&mut conn)?;
+    drop(conn);
+    use tauri::Emitter;
+    let _ = app.emit("history-cleared", ());
     Ok(())
 }
 
@@ -843,6 +870,65 @@ pub fn delete_note(db: State<'_, DbState>, id: String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A throwaway database with one row in every table.
+    fn seeded() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO dictation_history (id, app_name, raw_text, cleaned_text, word_count) VALUES (1, 'Notes', 'hello there', 'Hello there.', 2);
+             INSERT INTO dictation_history (id, app_name, raw_text, cleaned_text, word_count) VALUES (2, 'Mail', 'see you soon', 'See you soon.', 3);
+             INSERT INTO dictation_fts(rowid, cleaned_text) VALUES (1, 'Hello there.');
+             INSERT INTO dictation_fts(rowid, cleaned_text) VALUES (2, 'See you soon.');
+             INSERT INTO style_memory (cleaned_text, app_exe) VALUES ('Hello there.', 'notes');
+             INSERT INTO dictionary (term, pronunciation, replacement) VALUES ('Tauri', 'tory', 'Tauri');
+             INSERT OR REPLACE INTO settings (key, value) VALUES ('active_model', 'small.en');
+             INSERT INTO notes (id, title, content) VALUES ('n1', 'Groceries', 'eggs');",
+        )
+        .unwrap();
+        conn
+    }
+
+    fn count(conn: &Connection, table: &str) -> i64 {
+        conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn clearing_transcriptions_removes_history_index_and_style_memory_only() {
+        let mut conn = seeded();
+        let dictionary_before = count(&conn, "dictionary");
+        let settings_before = count(&conn, "settings");
+        clear_transcription_data(&mut conn).unwrap();
+        assert_eq!(count(&conn, "dictation_history"), 0);
+        assert_eq!(count(&conn, "style_memory"), 0);
+        let hits: i64 = conn
+            .query_row("SELECT COUNT(*) FROM dictation_fts WHERE dictation_fts MATCH 'hello'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(hits, 0, "search index still finds deleted text");
+        // Kept: dictionary, settings, notes.
+        assert_eq!(count(&conn, "dictionary"), dictionary_before);
+        assert_eq!(count(&conn, "settings"), settings_before);
+        assert_eq!(count(&conn, "notes"), 1);
+        let model: String = conn
+            .query_row("SELECT value FROM settings WHERE key = 'active_model'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(model, "small.en");
+        // Dashboard stats start again from zero.
+        assert_eq!(count(&conn, "dictation_history WHERE privacy_mode = 0"), 0);
+    }
+
+    #[test]
+    fn clearing_transcriptions_is_all_or_nothing() {
+        let mut conn = seeded();
+        // Make the last step fail: style_memory is gone.
+        conn.execute_batch("DROP TABLE style_memory;").unwrap();
+        assert!(clear_transcription_data(&mut conn).is_err());
+        assert_eq!(count(&conn, "dictation_history"), 2, "history deleted despite the failure");
+        let hits: i64 = conn
+            .query_row("SELECT COUNT(*) FROM dictation_fts WHERE dictation_fts MATCH 'hello'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(hits, 1, "search index changed despite the failure");
+    }
 
     #[test]
     fn local_only_upgrade_removes_cloud_settings_and_preserves_history() {

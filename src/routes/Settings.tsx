@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Globe, Keyboard, Mic, MonitorCheck, Shield, History, Circle, Volume2, Music, Move, Check, CircleAlert, ExternalLink, Accessibility, RotateCcw, Power, Minus, Plus, PanelTop } from "lucide-react";
+import RemoveLocalFlow from "../components/RemoveLocalFlow";
 import { listAudioDevices, setAudioDevice, setSetting, getSetting, setBubbleSize, BUBBLE_SCALE_MIN, BUBBLE_SCALE_MAX, BUBBLE_SCALE_STEP, setBubbleVisible, setEarconsEnabled, setSoundSet, setBubbleMode, getBubblePlacement, setBubblePlacement, getNudgeRange, getPermissionStatus, requestAccessibilityPermission, requestMicrophonePermission, openPrivacySettings, type PermissionStatus, type BubbleMode } from "../lib/ipc";
 import { enable as enableAutostart, disable as disableAutostart, isEnabled as isAutostartEnabled } from "@tauri-apps/plugin-autostart";
 import { shortcutLabel } from "../lib/utils";
@@ -783,6 +784,10 @@ export default function SettingsPage() {
           <span className="privacy-strip-chip">Works offline</span>
         </div>
       </section>
+
+      <div className="settings-remove">
+        <RemoveLocalFlow />
+      </div>
       </div>
     </div>
   );

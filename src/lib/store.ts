@@ -115,6 +115,8 @@ interface AppState {
   // Active Whisper-model downloads: id → percent. Lives here (not in the Models page)
   // so progress survives navigating away — the backend keeps downloading regardless.
   modelDownloads: Record<string, number>;
+  /** Bumped when saved transcriptions are deleted, so History and Dashboard reload. */
+  historyVersion: number;
 
   setIsRecording: (v: boolean) => void;
   setIsProcessing: (v: boolean) => void;
@@ -153,6 +155,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   themeTransition: null,
   look: readStoredLook(),
   modelDownloads: {},
+  historyVersion: 0,
 
   setIsRecording: (v) => set({ isRecording: v }),
   setIsProcessing: (v) => set({ isProcessing: v }),
@@ -396,7 +399,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     );
 
+    // Transcriptions deleted (History → Clear all, or Settings → Remove LocalFlow).
+    const unlistenCleared = await listen("history-cleared", () => {
+      set((s) => ({ historyVersion: s.historyVersion + 1, lastTranscript: null }));
+    });
+
     return () => {
+      unlistenCleared();
       unlisten1();
       unlisten2();
       unlisten3();

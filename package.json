@@ -8,7 +8,8 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "build:demo": "vite build --config vite.demo.config.ts && rm -rf \"../../localflow website/public/app-demo\" && cp -R dist-demo \"../../localflow website/public/app-demo\" && mv \"../../localflow website/public/app-demo/demo.html\" \"../../localflow website/public/app-demo/index.html\""
+    "build:demo": "vite build --config vite.demo.config.ts && rm -rf \"../../localflow website/public/app-demo\" && cp -R dist-demo \"../../localflow website/public/app-demo\" && mv \"../../localflow website/public/app-demo/demo.html\" \"../../localflow website/public/app-demo/index.html\"",
+    "test": "vitest run"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.2.9",
@@ -36,10 +37,15 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
+    "@testing-library/dom": "^10.4.2",
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.13",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",
+    "jsdom": "^26.1.0",
     "typescript": "~5.8.3",
-    "vite": "^7.0.4"
+    "vite": "^7.0.4",
+    "vitest": "^3.2.7"
   }
 }

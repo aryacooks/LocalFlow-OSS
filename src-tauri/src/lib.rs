@@ -26,6 +26,7 @@ mod vocab;
 mod pipeline;
 mod translit;
 mod update;
+mod uninstall;
 mod dravidian;
 mod whisper;
 
@@ -322,6 +323,8 @@ pub fn run() {
             db::get_history,
             db::delete_history_entry,
             db::clear_history,
+            uninstall::removal_support,
+            uninstall::remove_localflow,
             db::get_dashboard_stats,
             db::get_dictionary,
             db::add_dictionary_entry,

@@ -60,6 +60,13 @@ export async function clearHistory() {
   return invoke<void>("clear_history");
 }
 
+/** Settings → Remove LocalFlow (src-tauri/src/uninstall.rs). */
+export type RemoveChoice = "app_and_data" | "app_only" | "data_only";
+export interface RemovalOutcome { data_deleted: boolean; app_removed: boolean; error: string | null }
+export interface RemovalSupport { app_removable: boolean; reason: string | null }
+export const removalSupport = () => invoke<RemovalSupport>("removal_support");
+export const removeLocalflow = (choice: RemoveChoice) => invoke<RemovalOutcome>("remove_localflow", { choice });
+
 export async function getDictionary() {
   return invoke<DictionaryEntry[]>("get_dictionary");
 }

@@ -592,7 +592,7 @@ export default function Dashboard() {
   const [triggerOn, setTriggerOn] = useState<Record<string, boolean>>({});
   const [period, setPeriod] = useState<Period>("today");
   const [grain, setGrain] = useState<Grain>("daily");
-  const { isRecording, isProcessing, lastTranscript, startRecording, stopRecording } = useAppStore();
+  const { isRecording, isProcessing, lastTranscript, historyVersion, startRecording, stopRecording } = useAppStore();
   useEffect(() => {
     // Load app tracking preference and trigger keybind settings
     getSetting("track_apps").then((val) => {
@@ -633,7 +633,7 @@ export default function Dashboard() {
       .then(setStats)
       .catch(console.error)
       .finally(() => setLoading(false));
-  }, [lastTranscript]);
+  }, [lastTranscript, historyVersion]);
 
   // Telemetry Poll
   useEffect(() => {

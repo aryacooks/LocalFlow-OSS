@@ -148,7 +148,7 @@ export default function HistoryPage() {
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [saveHistoryEnabled, setSaveHistoryEnabled] = useState(true);
-  const { lastTranscript } = useAppStore();
+  const { lastTranscript, historyVersion } = useAppStore();
 
   const loadSetting = useCallback(async () => {
     try {
@@ -171,7 +171,7 @@ export default function HistoryPage() {
   useEffect(() => {
     loadSetting().catch(console.error);
     load().catch(console.error);
-  }, [load, loadSetting, lastTranscript]);
+  }, [load, loadSetting, lastTranscript, historyVersion]);
 
   const handleToggleSaveHistory = async () => {
     const nextVal = !saveHistoryEnabled;
