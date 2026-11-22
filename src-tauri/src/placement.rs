@@ -79,19 +79,45 @@ pub fn orb_origin_free(
     (bx + nudge.clamp(lo_x, hi_x), by + nudge_y.clamp(lo_y, hi_y))
 }
 
-/// How far the orb can be shifted from its spot before it hits a screen edge:
-/// (min_x, max_x, min_y, max_y), same units as the inputs.
+/// How far the sliders may shift the orb from its spot: (min_x, max_x, min_y, max_y),
+/// same units as the inputs.
+///
+/// Toward a neighbouring spot (left / centre / right, top / middle / bottom) it goes
+/// most of the way there, `NEIGHBOUR_REACH`, and stops short: past that you'd just
+/// pick the other spot. With no spot beyond (the screen edge side) it can go right up
+/// to the edge of `bounds`, over the Dock strip.
 pub fn nudge_range(spot: &str, area: Area, bounds: Area, orb: f64, margin: f64) -> (f64, f64, f64, f64) {
+    let (row, col) = parts(spot);
     let (bx, by) = orb_origin(spot, area, orb, margin, 0.0, 0.0);
+    let at = |r: char, c: char| orb_origin(&format!("{r}{c}"), area, orb, margin, 0.0, 0.0);
     let max_x = (bounds.x + bounds.w - orb).max(bounds.x);
     let max_y = (bounds.y + bounds.h - orb).max(bounds.y);
-    (
-        (bounds.x - bx).min(0.0),
-        (max_x - bx).max(0.0),
-        (bounds.y - by).min(0.0),
-        (max_y - by).max(0.0),
-    )
+    let toward = |d: f64| d * NEIGHBOUR_REACH;
+    let lo_x = match col {
+        'r' => toward(at(row, 'c').0 - bx),
+        'c' => toward(at(row, 'l').0 - bx),
+        _ => bounds.x - bx,
+    };
+    let hi_x = match col {
+        'l' => toward(at(row, 'c').0 - bx),
+        'c' => toward(at(row, 'r').0 - bx),
+        _ => max_x - bx,
+    };
+    let lo_y = match row {
+        'b' => toward(at('m', col).1 - by),
+        'm' => toward(at('t', col).1 - by),
+        _ => bounds.y - by,
+    };
+    let hi_y = match row {
+        't' => toward(at('m', col).1 - by),
+        'm' => toward(at('b', col).1 - by),
+        _ => max_y - by,
+    };
+    (lo_x.min(0.0), hi_x.max(0.0), lo_y.min(0.0), hi_y.max(0.0))
 }
+
+/// How much of the way to the next spot the sliders can take the orb.
+pub const NEIGHBOUR_REACH: f64 = 0.85;
 
 /// Top-left of a `w`×`h` window that keeps the orb box at `orb_at`, growing away from
 /// the screen edge.
@@ -158,8 +184,12 @@ mod tests {
         let screen = Area { x: 0.0, y: 25.0, w: 1600.0, h: 1050.0 };
         let work = Area { x: 0.0, y: 25.0, w: 1600.0, h: 975.0 };
         let (lo_x, hi_x, lo_y, hi_y) = nudge_range("br", work, screen, 60.0, 6.0);
+        // Out to the screen edge (right, and down over the Dock strip)...
         assert_eq!((hi_x, hi_y), (6.0, 81.0));
-        assert_eq!((lo_x, lo_y), (-1534.0, -909.0));
+        // ...but only most of the way to the next spot: bottom centre (x 770) and
+        // right middle (y 482.5), from br at (1534, 934).
+        assert!((lo_x - (770.0 - 1534.0) * NEIGHBOUR_REACH).abs() < 1e-6);
+        assert!((lo_y - (482.5 - 934.0) * NEIGHBOUR_REACH).abs() < 1e-6);
         assert_eq!(orb_origin_free("br", work, screen, 60.0, 6.0, 900.0, 900.0), (1540.0, 1015.0));
         assert_eq!(orb_origin_free("br", work, screen, 60.0, 6.0, -20.0, 30.0), (1514.0, 964.0));
     }

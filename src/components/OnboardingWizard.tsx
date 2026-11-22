@@ -349,7 +349,7 @@ export default function OnboardingWizard({ onClose }: { onClose: () => void }) {
                       <div className="onb-model-info">
                         <div className="onb-model-name">
                           {m.name}
-                          {isRec && <span className="onb-rec-badge">Recommended</span>}
+                          {isRec && <span className="badge-recommended is-small">Recommended</span>}
                         </div>
                         <div className="onb-model-meta">
                           {m.size_mb >= 1024 ? `${(m.size_mb / 1024).toFixed(1)} GB` : `${Math.round(m.size_mb)} MB`}

@@ -615,23 +615,30 @@ a {
   opacity: 0.9;
 }
 
+.mac-main { position: relative; }
+/* Floats over the page (doesn't push it down), like a toast. */
 .app-error-banner {
+  position: absolute;
+  top: 14px;
+  left: max(var(--page-padding), calc((100% - var(--page-max, 100%)) / 2 + var(--page-padding)));
+  right: max(var(--page-padding), calc((100% - var(--page-max, 100%)) / 2 + var(--page-padding)));
+  z-index: 40;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 12px;
-  margin: 12px var(--page-padding) 0;
+  margin: 0;
   padding: 8px 8px 8px 10px;
   border: 2px solid var(--separator);
   border-radius: 12px;
-  background: color-mix(in srgb, var(--error) 8%, var(--panel-solid, var(--panel)));
-  box-shadow: 3px 3px 0 var(--separator);
+  background: color-mix(in srgb, var(--error) 8%, var(--panel-solid, #fbf6ec));
+  box-shadow: 3px 3px 0 var(--separator), 0 18px 40px -14px rgba(40, 20, 5, 0.45);
   color: var(--label);
   font-size: 13px;
   font-weight: 600;
-  animation: error-in 220ms ease-out;
+  animation: error-in 260ms cubic-bezier(.2, .9, .3, 1.2);
 }
-@keyframes error-in { from { opacity: 0; transform: translateY(-6px); } }
+@keyframes error-in { from { opacity: 0; transform: translateY(-14px) scale(.98); } }
 @media (prefers-reduced-motion: reduce) { .app-error-banner { animation: none; } }
 
 .app-error-icon {
@@ -3748,3 +3755,46 @@ html:not(.oil) .confirm-dialog { background: var(--panel); backdrop-filter: none
   border: 2px solid var(--separator); background: var(--panel-solid, var(--panel)); color: var(--label); cursor: pointer;
 }
 .tip-dialog-close:hover { background: var(--control-hover); }
+
+/* "Recommended" model: the theme's gold, drawn like the app's other inked pieces. */
+.badge-recommended {
+  display: inline-flex; align-items: center;
+  padding: 2px 9px; border-radius: 6px;
+  font-size: 11.5px; font-weight: 800; letter-spacing: .02em; white-space: nowrap;
+  color: #16130f;
+  background: var(--oil-gold, #fbb927);
+  border: 2px solid var(--separator);
+  box-shadow: 2px 2px 0 var(--separator);
+}
+/* "Active": the same inked badge in the theme's green. */
+.badge-recommended.badge-active { background: var(--oil-green, #073929); color: #f1ece2; }
+html.dark .badge-recommended.badge-active { background: #2f6b3c; }
+.badge-recommended.is-small { padding: 1px 7px; font-size: 9.5px; text-transform: uppercase; letter-spacing: .05em; box-shadow: 1.5px 1.5px 0 var(--separator); }
+
+/* Models: downloaded / not-downloaded tile, inked like the badges. */
+.model-state-icon {
+  width: 40px; height: 40px; flex-shrink: 0; display: grid; place-items: center;
+  border-radius: 10px; border: 2px solid var(--separator); box-shadow: 2px 2px 0 var(--separator);
+  background: var(--control); color: var(--label);
+}
+.model-state-icon.is-ready { background: var(--oil-green, #073929); color: #f1ece2; }
+html.dark .model-state-icon.is-ready { background: #2f6b3c; }
+
+/* Models: which model to pick, as two clear inked rows. */
+.model-advice {
+  display: grid; gap: 10px; margin-bottom: 16px; padding: 14px 16px;
+  border: 2px solid var(--separator); border-radius: 12px;
+  background: color-mix(in srgb, var(--oil-gold, #fbb927) 22%, var(--panel-solid, var(--panel)));
+  box-shadow: 3px 3px 0 var(--separator);
+}
+.model-advice-row { display: flex; align-items: baseline; gap: 12px; }
+.model-advice-row p { margin: 0; font-size: 14px; line-height: 20px; font-weight: 600; color: var(--label); }
+.model-advice-tag {
+  flex-shrink: 0; min-width: 118px; text-align: center;
+  padding: 2px 9px; border-radius: 6px; border: 2px solid var(--separator); box-shadow: 2px 2px 0 var(--separator);
+  font-size: 11px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase;
+  background: var(--oil-gold, #fbb927); color: #16130f;
+}
+.model-advice-tag.is-multi { background: var(--oil-green, #073929); color: #f1ece2; }
+html.dark .model-advice-tag.is-multi { background: #2f6b3c; }
+@media (max-width: 640px) { .model-advice-row { flex-direction: column; gap: 6px; } }

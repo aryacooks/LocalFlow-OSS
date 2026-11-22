@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { CheckCircle, Download, Globe, Languages, Trash2, X } from "lucide-react";
+import { Check, Download, Globe, Languages, Trash2, X } from "lucide-react";
 import LanguagePicker from "../components/LanguagePicker";
 import { listModels, ModelInfo, setActiveModel, deleteModel, getSetting, setSetting, setRomanize, cancelDownload, getTotalRamMb } from "../lib/ipc";
 import { useAppStore } from "../lib/store";
@@ -140,10 +140,15 @@ export default function ModelsPage() {
         </div>
       </div>
 
-      <section className="glass-panel" style={{ marginBottom: 14 }}>
-        <p className="row-desc" style={{ margin: 0 }}>
-          {recommendationText(ramMb, offeredIds)} {MULTILINGUAL_NOTE}
-        </p>
+      <section className="model-advice" aria-label="Which model to pick">
+        <div className="model-advice-row">
+          <span className="model-advice-tag">English</span>
+          <p>{recommendationText(ramMb, offeredIds)}</p>
+        </div>
+        <div className="model-advice-row">
+          <span className="model-advice-tag is-multi">Other languages</span>
+          <p>{MULTILINGUAL_NOTE}</p>
+        </div>
       </section>
 
       <section className="grid">
@@ -157,15 +162,15 @@ export default function ModelsPage() {
 
           return (
             <article key={model.id} className="glass-panel model-card">
-              <div className="brand-icon" style={{ width: 40, height: 40 }}>
-                {model.downloaded ? <CheckCircle size={19} color="var(--success)" /> : <Download size={19} />}
+              <div className={`model-state-icon ${model.downloaded ? "is-ready" : ""}`} title={model.downloaded ? "Downloaded" : "Not downloaded yet"}>
+                {model.downloaded ? <Check size={19} strokeWidth={3} /> : <Download size={18} strokeWidth={2.4} />}
               </div>
 
               <div>
                 <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, marginBottom: 3 }}>
                   <span className="row-title">{model.name}</span>
-                  {isActive && <span className="badge">Active</span>}
-                  {model.id === recommendedId && <span className="badge">Recommended</span>}
+                  {isActive && <span className="badge-recommended badge-active">Active</span>}
+                  {model.id === recommendedId && <span className="badge-recommended">Recommended</span>}
                 </div>
                 <p className="row-desc" style={{ margin: 0 }}>{model.description}</p>
                 
