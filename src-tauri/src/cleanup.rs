@@ -812,11 +812,48 @@ pub fn format_dictation(
         return raw.trim().to_string();
     }
     let rewritten = if o.ai { ai(o) } else { None };
+    // A small model sometimes answers with its prompt's examples instead of your
+    // words. Use its text only when it's clearly a cleaned-up version of what you said.
+    let rewritten = rewritten.filter(|t| {
+        let ok = plausible_rewrite(raw, t);
+        if !ok {
+            eprintln!("AI rewrite didn't match what was said; using built-in formatting.");
+        }
+        ok
+    });
     let text = match rewritten {
         Some(t) => trim_surrounding_quotes(&t),
         None => builtin_format(raw, o),
     };
     finalize(&text, o)
+}
+
+fn content_words(s: &str) -> Vec<String> {
+    s.split(|c: char| !c.is_alphanumeric() && c != '\'')
+        .filter(|w| !w.is_empty())
+        .map(|w| w.to_lowercase().replace('\'', ""))
+        .collect()
+}
+
+/// Whether the AI's output is a rewrite of `raw`, not something else (its examples, a
+/// reply, an explanation): most of its words were spoken, and it isn't much longer.
+pub fn plausible_rewrite(raw: &str, out: &str) -> bool {
+    let said = content_words(raw);
+    let wrote = content_words(out);
+    if wrote.is_empty() {
+        return false;
+    }
+    if wrote.len() > said.len() * 3 / 2 + 4 {
+        return false;
+    }
+    let spoken: std::collections::HashSet<&str> = said.iter().map(String::as_str).collect();
+    // Words the model may add while formatting.
+    const ADDED: &[&str] = &["emoji", "a", "an", "the", "i", "im", "is", "are", "and", "to", "ok", "okay", "its", "it"];
+    let known = wrote
+        .iter()
+        .filter(|w| spoken.contains(w.as_str()) || ADDED.contains(&w.as_str()) || w.chars().all(|c| c.is_ascii_digit()))
+        .count();
+    known * 100 >= wrote.len() * 70
 }
 
 /// Build the LLM cleanup prompt (every formatting choice on).
@@ -1530,5 +1567,23 @@ mod options_tests {
         let keep = build_cleanup_prompt_for("x", "", "", "", FormatOptions { ai: true, ..NONE });
         assert!(!keep.contains("Remove filler words") && !keep.contains("Resolve self-corrections"));
         assert!(!keep.contains("so um, yesterday") && keep.contains("the build is green"));
+    }
+
+    #[test]
+    fn ai_output_must_be_a_rewrite_of_what_was_said() {
+        // The bug: the model answered with its prompt's examples.
+        assert!(!crate::cleanup::plausible_rewrite(
+            "The deal.",
+            "\"Yesterday I went to the park and it was raining.\" 😊\n\n\"First we need to buy milk and then bread.\"",
+        ));
+        assert!(!crate::cleanup::plausible_rewrite("What are you trying?", "Yesterday I went to the park and it was raining."));
+        // Real cleanups pass.
+        assert!(crate::cleanup::plausible_rewrite(
+            "so um yesterday i went to the office no i mean the park",
+            "Yesterday I went to the park",
+        ));
+        assert!(crate::cleanup::plausible_rewrite("i dont think their coming today", "I don't think they're coming today"));
+        assert!(crate::cleanup::plausible_rewrite("are you coming question mark", "Are you coming?"));
+        assert!(!crate::cleanup::plausible_rewrite("hello", ""));
     }
 }
