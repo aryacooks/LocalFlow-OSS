@@ -372,3 +372,11 @@ export interface UpdateStatus {
 export const checkUpdate = () => invoke<UpdateStatus>("check_update");
 /** Downloads, verifies and installs; listen to "update-progress" for [downloaded, total|null]. */
 export const installUpdate = () => invoke<void>("install_update");
+
+// ─── Privacy extras (privacy.rs) ─────────────────────────────────────────────
+export interface KnownApp { name: string; exe: string }
+export const setHistoryRetention = (days: number) => invoke<void>("set_history_retention", { days });
+export const listKnownApps = () => invoke<KnownApp[]>("list_known_apps");
+export const setHideFromCapture = (on: boolean) => invoke<void>("set_hide_from_capture", { on });
+export const historyLockSupported = () => invoke<boolean>("history_lock_supported");
+export const unlockHistory = (reason: string) => invoke<boolean>("unlock_history", { reason });

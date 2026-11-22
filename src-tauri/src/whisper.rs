@@ -20,11 +20,14 @@ static NON_SPEECH_TAG: Lazy<Regex> =
 /// So it is held for a window instead: dictate again within the window and the model is
 /// still warm; walk away and the memory comes back. 90 s comfortably covers a burst of
 /// back-to-back dictations while still releasing well before you'd notice.
-const MODEL_IDLE_TTL: Duration = Duration::from_secs(90);
+///
+/// Since the model is now loaded as soon as the mic opens (`preload`), a cold start is
+/// mostly hidden behind your speaking time, so the window can be short.
+pub const MODEL_IDLE_TTL: Duration = Duration::from_secs(30);
 
 /// How often the reaper wakes to check. Coarse on purpose — this is a cleanup sweep,
 /// not a deadline, and a sleeping thread that wakes twice a minute costs nothing.
-const REAP_INTERVAL: Duration = Duration::from_secs(15);
+pub const REAP_INTERVAL: Duration = Duration::from_secs(5);
 
 struct CachedModel {
     path: String,
@@ -64,6 +67,10 @@ fn spawn_model_reaper() {
             .name("whisper-model-reaper".into())
             .spawn(|| loop {
                 std::thread::sleep(REAP_INTERVAL);
+                // Never while the mic is open: that dictation is about to need it.
+                if crate::audio::RECORDING.load(std::sync::atomic::Ordering::SeqCst) {
+                    continue;
+                }
                 let mut cache = MODEL_CACHE
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -81,6 +88,37 @@ fn spawn_model_reaper() {
             })
             .ok();
     });
+}
+
+/// Load the speech model in the background as the mic opens, so transcription doesn't
+/// wait for it when you stop. Whisper or Parakeet, whichever is active.
+pub fn preload(model_path: String) {
+    std::thread::Builder::new()
+        .name("speech-model-preload".into())
+        .spawn(move || {
+            let started = Instant::now();
+            let res = if crate::parakeet::is_parakeet(&model_path) {
+                crate::parakeet::preload(&model_path)
+            } else {
+                crate::parakeet::unload();
+                context_for(&model_path).map(|_| ())
+            };
+            match res {
+                Ok(()) => eprintln!("speech model ready in {:?}", started.elapsed()),
+                Err(e) => eprintln!("preload: {e}"),
+            }
+        })
+        .ok();
+}
+
+/// Restart the idle clock (the mic just closed; transcription is next).
+pub fn touch() {
+    if let Ok(mut c) = MODEL_CACHE.try_lock() {
+        if let Some(m) = c.as_mut() {
+            m.last_used = Instant::now();
+        }
+    }
+    crate::parakeet::touch();
 }
 
 /// Fetch the context for `model_path`, loading it only if it isn't already cached.

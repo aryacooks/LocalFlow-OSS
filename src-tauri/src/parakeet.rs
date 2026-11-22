@@ -26,8 +26,8 @@ struct Loaded {
 static MODEL: Mutex<Option<Loaded>> = Mutex::new(None);
 static REAPER: Once = Once::new();
 /// Same idle window as the Whisper cache: stay warm for follow-up dictations, then free
-/// the memory.
-const IDLE_TTL: Duration = Duration::from_secs(90);
+/// the memory. Short, because the model is loaded again while you speak (preload).
+const IDLE_TTL: Duration = crate::whisper::MODEL_IDLE_TTL;
 
 /// ONNX Runtime allows one environment per process.
 fn config() -> Result<ExecutionConfig, String> {
@@ -50,7 +50,11 @@ fn spawn_reaper() {
         std::thread::Builder::new()
             .name("parakeet-model-reaper".into())
             .spawn(|| loop {
-                std::thread::sleep(Duration::from_secs(15));
+                std::thread::sleep(crate::whisper::REAP_INTERVAL);
+                // Never while the mic is open: that dictation is about to need it.
+                if crate::audio::RECORDING.load(std::sync::atomic::Ordering::SeqCst) {
+                    continue;
+                }
                 // try_lock: a dictation in progress holds the lock, and is not idle.
                 if let Ok(mut m) = MODEL.try_lock() {
                     if m.as_ref().is_some_and(|l| l.last_used.elapsed() >= IDLE_TTL) {
@@ -88,6 +92,39 @@ fn pieces(audio: &[f32]) -> Vec<&[f32]> {
     out
 }
 
+fn ensure_loaded(guard: &mut Option<Loaded>, dir: &std::path::Path, dir_str: String) -> Result<(), String> {
+    if guard.as_ref().is_none_or(|l| l.dir != dir_str) {
+        *guard = None;
+        // Never hold two speech models in memory at once.
+        crate::whisper::invalidate_model_cache();
+        let model = ParakeetTDT::from_pretrained(dir, Some(config()?))
+            .map_err(|e| format!("Failed to load the speech model: {e}"))?;
+        *guard = Some(Loaded { dir: dir_str, model, last_used: Instant::now() });
+    } else if let Some(l) = guard.as_mut() {
+        l.last_used = Instant::now();
+    }
+    Ok(())
+}
+
+/// Load the model now (the mic just opened), so it's ready when you stop talking.
+pub fn preload(model_path: &str) -> Result<(), String> {
+    spawn_reaper();
+    let path = std::path::Path::new(model_path);
+    let dir = if path.is_dir() { path } else { path.parent().ok_or("Bad model path")? };
+    let dir_str = dir.to_string_lossy().to_string();
+    let mut guard = MODEL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    ensure_loaded(&mut guard, dir, dir_str)
+}
+
+/// Restart the idle clock (the mic just closed; transcription is next).
+pub fn touch() {
+    if let Ok(mut m) = MODEL.try_lock() {
+        if let Some(l) = m.as_mut() {
+            l.last_used = Instant::now();
+        }
+    }
+}
+
 /// Transcribe 16 kHz mono audio with the model in `model_path` (the encoder file or its
 /// folder).
 pub fn transcribe(model_path: &str, audio: &[f32]) -> Result<String, String> {
@@ -97,14 +134,7 @@ pub fn transcribe(model_path: &str, audio: &[f32]) -> Result<String, String> {
     let dir_str = dir.to_string_lossy().to_string();
 
     let mut guard = MODEL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    if guard.as_ref().is_none_or(|l| l.dir != dir_str) {
-        *guard = None;
-        // Never hold two speech models in memory at once.
-        crate::whisper::invalidate_model_cache();
-        let model = ParakeetTDT::from_pretrained(dir, Some(config()?))
-            .map_err(|e| format!("Failed to load the speech model: {e}"))?;
-        *guard = Some(Loaded { dir: dir_str, model, last_used: Instant::now() });
-    }
+    ensure_loaded(&mut guard, dir, dir_str)?;
     let loaded = guard.as_mut().unwrap();
 
     let mut parts = Vec::new();

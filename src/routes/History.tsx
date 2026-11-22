@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { Check, ChevronDown, Clipboard, Search, Trash2 } from "lucide-react";
-import { clearHistory, deleteHistoryEntry, DictationEntry, getAppIcon, getHistory, getSetting, setSetting } from "../lib/ipc";
+import { Check, ChevronDown, Clipboard, Fingerprint, Search, Trash2 } from "lucide-react";
+import { clearHistory, deleteHistoryEntry, DictationEntry, getAppIcon, getHistory, getSetting, setSetting, unlockHistory } from "../lib/ipc";
 import { useAppStore } from "../lib/store";
 import { appColor } from "../lib/utils";
 
@@ -143,7 +143,61 @@ function groupByDay(entries: DictationEntry[]): [string, DictationEntry[]][] {
   return out;
 }
 
+// Settings → Privacy → Lock History. Once unlocked, History stays open while you're
+// on it and for 2 minutes after you leave; hiding the window locks it again.
+const GRACE_MS = 2 * 60 * 1000;
+let unlockedUntil = 0;
+if (typeof document !== "undefined") {
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) unlockedUntil = 0;
+  });
+}
+
 export default function HistoryPage() {
+  const [state, setState] = useState<"checking" | "locked" | "open">("checking");
+  const [failed, setFailed] = useState(false);
+
+  const unlock = useCallback(async () => {
+    setFailed(false);
+    const ok = await unlockHistory("show your dictation history").catch(() => false);
+    if (ok) setState("open");
+    else setFailed(true);
+  }, []);
+
+  useEffect(() => {
+    getSetting("history_lock")
+      .then((v) => {
+        if (v !== "true" || Date.now() < unlockedUntil) setState("open");
+        else { setState("locked"); unlock(); }
+      })
+      .catch(() => setState("open"));
+  }, [unlock]);
+
+  // Leaving the page starts the grace period.
+  useEffect(() => () => { if (state === "open") unlockedUntil = Date.now() + GRACE_MS; }, [state]);
+  useEffect(() => {
+    const onHide = () => { if (document.hidden) setState((s) => (s === "open" ? "locked" : s)); };
+    document.addEventListener("visibilitychange", onHide);
+    return () => document.removeEventListener("visibilitychange", onHide);
+  }, []);
+
+  if (state === "checking") return <div className="page" />;
+  if (state === "locked") {
+    return (
+      <div className="page">
+        <div className="history-locked">
+          <div className="lock-badge"><Fingerprint size={28} /></div>
+          <h3>History is locked</h3>
+          <p>{failed ? "That didn't work. Try again with Touch ID or your Mac password." : "Use Touch ID or your Mac password to see your past dictations."}</p>
+          <button type="button" className="button" onClick={unlock}>Unlock</button>
+        </div>
+      </div>
+    );
+  }
+  return <HistoryContent />;
+}
+
+function HistoryContent() {
   const [entries, setEntries] = useState<DictationEntry[]>([]);
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);

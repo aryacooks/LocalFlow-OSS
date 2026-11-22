@@ -116,12 +116,23 @@ pub async fn inject_text(text: String) -> Result<(), String> {
     }
 }
 
+static KEEP_ON_CLIPBOARD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Settings → Writing → Keep text on the clipboard: skip putting the old clipboard back.
+pub fn set_keep_on_clipboard(on: bool) {
+    KEEP_ON_CLIPBOARD.store(on, std::sync::atomic::Ordering::SeqCst);
+}
+
 /// Paste text via the clipboard (fast for long texts). Saves and restores the
 /// previous clipboard contents.
 #[tauri::command]
 pub async fn inject_text_clipboard(text: String) -> Result<(), String> {
-    // Save current clipboard contents to restore later.
-    let old_clipboard = get_clipboard_text().ok();
+    // Save current clipboard contents to restore later (unless you keep the dictation).
+    let old_clipboard = if KEEP_ON_CLIPBOARD.load(std::sync::atomic::Ordering::SeqCst) {
+        None
+    } else {
+        get_clipboard_text().ok()
+    };
 
     set_clipboard_text(&text)?;
     let ours = pasteboard_change_count();

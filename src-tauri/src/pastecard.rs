@@ -78,6 +78,15 @@ pub fn show(app: &tauri::AppHandle, text: &str) {
     start_countdown(app.clone());
 }
 
+/// Settings → "Show a preview": shows the real card with sample text.
+#[tauri::command]
+pub fn preview_paste_card(app: tauri::AppHandle) {
+    let ah = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        show(&ah, "This is how your words show up when there's no text box to paste into. Click Copy, then paste them anywhere.")
+    });
+}
+
 /// Hide the card after LIFETIME seconds of the pointer not being over it. Runs here
 /// rather than in the webview: a non-focused window's page doesn't reliably get timer
 /// ticks or mouse-leave events. Sends (fraction left, paused) for the countdown ring.

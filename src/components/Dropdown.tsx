@@ -41,7 +41,11 @@ export default function Dropdown({ value, options, onChange, width = 260, ariaLa
     const above = r.top - 12;
     const want = Math.min(320, options.length * 40 + 12);
     const up = below < want && above > below;
-    setPos({ left: r.left, top: up ? r.top - 6 : r.bottom + 6, width: Math.max(r.width, 200), up, maxH: Math.min(320, up ? above : below) });
+    // Keep the list inside the window: if it would run off the right edge, line its
+    // right side up with the button's instead.
+    const width = Math.max(r.width, 200);
+    const left = r.left + width > window.innerWidth - 12 ? Math.max(12, r.right - width) : r.left;
+    setPos({ left, top: up ? r.top - 6 : r.bottom + 6, width, up, maxH: Math.min(320, up ? above : below) });
   };
 
   const openList = () => {

@@ -121,6 +121,9 @@ fn audio_err_fn(err: cpal::StreamError) {
 }
 
 /// Internal function usable from pipeline without Tauri State wrapper
+/// True while the mic is open; the model reapers leave the model alone then.
+pub static RECORDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 pub fn start_capture_internal(
     state: &Arc<AudioState>,
     device_name: Option<String>,
@@ -236,18 +239,17 @@ pub fn start_capture_internal(
     }
     .map_err(|e| e.to_string())?;
 
-    // Mute master playback (Windows only; no-op elsewhere)
-    if let Err(e) = set_master_mute(true) {
-        eprintln!("Failed to mute master playback: {}", e);
-    }
-
     if let Err(e) = stream.play() {
-        let _ = set_master_mute(false);
         return Err(e.to_string());
     }
 
     *state.stream.lock().unwrap() = Some(stream);
     *state.is_recording.lock().unwrap() = true;
+    RECORDING.store(true, std::sync::atomic::Ordering::SeqCst);
+    // Load the speech model while you talk, so it's ready when you stop.
+    crate::preload_speech_model();
+    // Pause / turn down music while you talk (Settings → Pause music while dictating).
+    crate::media::begin();
 
     Ok(())
 }
@@ -481,8 +483,7 @@ pub fn set_master_mute(_mute: bool) -> Result<(), String> {
 pub fn stop_capture_internal(state: &AudioState) {
     *state.stream.lock().unwrap() = None;
     *state.is_recording.lock().unwrap() = false;
-
-    if let Err(e) = set_master_mute(false) {
-        eprintln!("Failed to unmute master volume: {}", e);
-    }
+    RECORDING.store(false, std::sync::atomic::Ordering::SeqCst);
+    crate::whisper::touch();
+    crate::media::end();
 }

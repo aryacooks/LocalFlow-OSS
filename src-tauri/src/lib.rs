@@ -27,6 +27,9 @@ mod pipeline;
 mod translit;
 mod update;
 mod uninstall;
+mod privacy;
+mod media;
+mod snippets;
 mod dravidian;
 mod whisper;
 
@@ -201,6 +204,11 @@ pub fn run() {
                 notch::init();
                 placer::create(app.handle());
                 pastecard::create(app.handle());
+                privacy::apply_capture_protection(app.handle());
+                media::init(app.handle());
+                let _ = APP_HANDLE.set(app.handle().clone());
+                privacy::start_retention_timer(app.handle().clone());
+                privacy::start_fullscreen_watch(app.handle().clone());
                 // Show the bubble window on startup
                 show_bubble_window(app.handle());
                 // Notch island: keep it pinned if anything moves the window.
@@ -388,6 +396,12 @@ pub fn run() {
             placer::get_placer_layout,
             pastecard::get_paste_card,
             pastecard::hide_paste_card,
+            pastecard::preview_paste_card,
+            privacy::set_history_retention,
+            privacy::list_known_apps,
+            privacy::set_hide_from_capture,
+            privacy::history_lock_supported,
+            privacy::unlock_history,
             inject::copy_to_clipboard,
             placer::toggle_placing,
             placer::cancel_placing,
@@ -557,6 +571,9 @@ fn adaptive_scale_for(b: &tauri::WebviewWindow, monitor: &tauri::Monitor) -> f64
 /// right-anchored, so changing the width only moves the LEFT edge — the logo never
 /// shifts on screen.
 fn place_bubble(b: &tauri::WebviewWindow, logical_w: f64, logical_h: f64) {
+    if let Ok(mut last) = LAST_BUBBLE_SIZE.lock() {
+        *last = (logical_w, logical_h);
+    }
     // Notch island: a fixed-size window flush with the top of the notch screen,
     // centred on the notch. Size and position settings don't apply.
     if bubble_is_notch(b.app_handle()) {
@@ -588,10 +605,24 @@ fn place_bubble(b: &tauri::WebviewWindow, logical_w: f64, logical_h: f64) {
         let (spot, nudge, nudge_y) = saved_placement(b.app_handle());
         let orb = (placement::ORB_BOX * adaptive_scale).round();
         let margin = placement::EDGE_MARGIN * adaptive_scale;
+        // A full-screen app hides the Dock and menu bar: use the whole screen so the
+        // orb sits at the real edge instead of floating where the Dock would be.
+        let (work, free) = if privacy::FULLSCREEN.load(std::sync::atomic::Ordering::SeqCst) {
+            let p = monitor.position();
+            let whole = placement::Area {
+                x: p.x as f64,
+                y: p.y as f64,
+                w: monitor.size().width as f64,
+                h: monitor.size().height as f64,
+            };
+            (whole, whole)
+        } else {
+            (work_area(&monitor), free_area(&monitor))
+        };
         let orb_at = placement::orb_origin_free(
             &spot,
-            work_area(&monitor),
-            free_area(&monitor),
+            work,
+            free,
             orb,
             margin,
             nudge * monitor.scale_factor(),
@@ -607,6 +638,19 @@ fn place_bubble(b: &tauri::WebviewWindow, logical_w: f64, logical_h: f64) {
             x: x.round() as i32,
             y: y.round() as i32,
         }));
+    }
+}
+
+static LAST_BUBBLE_SIZE: std::sync::Mutex<(f64, f64)> = std::sync::Mutex::new((BUBBLE_IDLE_W, BUBBLE_IDLE_H));
+
+/// Re-place the orb at its current size (e.g. a full-screen app came or went).
+pub fn replace_bubble(app: &tauri::AppHandle) {
+    if bubble_hidden(app) || bubble_is_notch(app) {
+        return;
+    }
+    if let Some(b) = app.get_webview_window("bubble") {
+        let (w, h) = LAST_BUBBLE_SIZE.lock().map(|g| *g).unwrap_or((BUBBLE_IDLE_W, BUBBLE_IDLE_H));
+        place_bubble(&b, w, h);
     }
 }
 
@@ -861,7 +905,9 @@ pub async fn run_pipeline(
     let heard = vocab::apply(&raw, &vocab_terms);
 
     let formatted = cleanup::formatting_enabled(&app);
-    let cleaned = match cleanup::cleanup_text(app.clone(), heard.clone(), app_exe.clone()) {
+    // Settings → Writing → Tone per app: your choice wins over LocalFlow's guess.
+    let tone_exe = app_tone_exe(&app, &app_name).unwrap_or_else(|| app_exe.clone());
+    let cleaned = match cleanup::cleanup_text(app.clone(), heard.clone(), tone_exe) {
         Ok(t) => t,
         Err(e) => {
             eprintln!("Cleanup error: {}", e);
@@ -896,7 +942,12 @@ pub async fn run_pipeline(
             }
         }
     } else {
-        cleaned.clone()
+        // Settings → Writing → Voice snippets.
+        let snips = app
+            .try_state::<DbState>()
+            .and_then(|db| db.0.lock().ok().map(|c| snippets::load(&c)))
+            .unwrap_or_default();
+        snippets::expand(&cleaned, &snips)
     };
 
     let word_count = text_to_inject.split_whitespace().count() as i64;
@@ -906,6 +957,10 @@ pub async fn run_pipeline(
     if !privacy {
         if let Some(db_state) = app.try_state::<DbState>() {
             let conn = db_state.0.lock().unwrap();
+            // Settings → Privacy → "Don't save from these apps".
+            if privacy::is_nosave_app(&conn, &app_name) {
+                eprintln!("history: not saved ({} is on the don't-save list)", app_name);
+            } else {
             let save_history: String = conn
                 .query_row(
                     "SELECT value FROM settings WHERE key = 'save_history'",
@@ -938,6 +993,8 @@ pub async fn run_pipeline(
                 "INSERT INTO dictation_history (app_name, app_exe, raw_text, cleaned_text, word_count, duration_secs, language, formatted) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 rusqlite::params![final_app_name, final_app_exe, final_raw, final_cleaned, word_count, duration_secs, language, formatted],
             );
+            privacy::prune_history(&conn);
+            }
         }
     }
 
@@ -963,6 +1020,7 @@ pub async fn run_pipeline(
     } else {
         tauri::async_runtime::spawn_blocking(inject::focus_snapshot).await.ok()
     };
+    inject::set_keep_on_clipboard(setting_is_true(&app, "keep_on_clipboard"));
     let pasted = inject::inject_text_clipboard(text_to_inject.clone()).await;
     let accepts_text = if into_self {
         Some(inject::self_text_focused())
@@ -979,7 +1037,7 @@ pub async fn run_pipeline(
     }
     let landed = pasted.is_ok() && accepts_text != Some(false);
     eprintln!("paste check: pasted_ok={} accepts_text={:?}", pasted.is_ok(), accepts_text);
-    if !landed {
+    if !landed && setting_on(&app, "show_paste_card") {
         let ah = app.clone();
         let text = text_to_inject.clone();
         let _ = app.run_on_main_thread(move || pastecard::show(&ah, &text));
@@ -1658,6 +1716,50 @@ fn set_bubble_mode(app: tauri::AppHandle, mode: String) -> Result<(), String> {
 #[tauri::command]
 fn get_notch_geometry() -> notch::NotchGeometry {
     notch::geometry()
+}
+
+static APP_HANDLE: once_cell::sync::OnceCell<tauri::AppHandle> = once_cell::sync::OnceCell::new();
+
+/// The mic just opened: start loading the active speech model in the background.
+pub fn preload_speech_model() {
+    let Some(app) = APP_HANDLE.get() else { return };
+    let Ok(path) = whisper::get_active_model_path(app) else { return };
+    if std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0) < 1_000_000 && !path.is_dir() {
+        return; // missing or broken: the pipeline reports that when you stop
+    }
+    whisper::preload(path.to_string_lossy().to_string());
+}
+
+/// True only if the setting is stored as "true" (missing means off).
+fn setting_is_true(app: &tauri::AppHandle, key: &str) -> bool {
+    let Some(db) = app.try_state::<DbState>() else { return false };
+    let Ok(conn) = db.0.lock() else { return false };
+    conn.query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| r.get::<_, String>(0))
+        .map(|v| v == "true")
+        .unwrap_or(false)
+}
+
+/// The tone the user picked for this app (`app_tones`: {"Slack": "casual", ...}),
+/// as the app token cleanup.rs understands. None = let LocalFlow guess.
+fn app_tone_exe(app: &tauri::AppHandle, app_name: &str) -> Option<String> {
+    let db = app.try_state::<DbState>()?;
+    let conn = db.0.lock().ok()?;
+    let json: String = conn
+        .query_row("SELECT value FROM settings WHERE key = 'app_tones'", [], |r| r.get(0))
+        .ok()?;
+    let map: std::collections::HashMap<String, String> = serde_json::from_str(&json).ok()?;
+    let name = app_name.trim().to_lowercase();
+    let tone = map.iter().find(|(k, _)| k.trim().to_lowercase() == name)?.1;
+    cleanup::exe_for_tone(tone).map(str::to_string)
+}
+
+/// True unless the setting is stored as "false" (missing means on).
+fn setting_on(app: &tauri::AppHandle, key: &str) -> bool {
+    let Some(db) = app.try_state::<DbState>() else { return true };
+    let Ok(conn) = db.0.lock() else { return true };
+    conn.query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| r.get::<_, String>(0))
+        .map(|v| v != "false")
+        .unwrap_or(true)
 }
 
 fn write_setting(app: &tauri::AppHandle, key: &str, value: &str) -> Result<(), String> {

@@ -66,6 +66,19 @@ export default function MicBubble() {
   const signal = useRef<OrbSignal>({ level: 0, bands: Array(8).fill(0) });
   const [privacy, setPrivacy] = useState(false);
   const [sounds, setSounds] = useState(true);
+  // Settings → Display → Orb transparency (1 = solid, 0.2 = faintest). Orb only:
+  // the menu and messages stay solid so they're readable.
+  const [orbOpacity, setOrbOpacity] = useState(1);
+  useEffect(() => {
+    const parse = (v: unknown) => {
+      const n = Number.parseFloat(String(v));
+      return Number.isFinite(n) ? Math.min(Math.max(n, 0.2), 1) : 1;
+    };
+    getSetting("bubble_opacity").then((v) => v && setOrbOpacity(parse(v))).catch(() => {});
+    const un = listen<number>("bubble-opacity-changed", (e) => setOrbOpacity(parse(e.payload)));
+    return () => { un.then((f) => f()); };
+  }, []);
+
   // "classic" floating mic, or the "notch" island (macOS; window placed by Rust).
   const [mode, setMode] = useState<"classic" | "notch">("classic");
   const [notch, setNotch] = useState({ width: 186, height: 32 });
@@ -370,7 +383,7 @@ export default function MicBubble() {
       }}
     >
       {/* ─── Orb ─── */}
-      <div style={{ position: "absolute", ...hAnchor(0), ...vAnchor(0), pointerEvents: "none" }}>
+      <div style={{ position: "absolute", ...hAnchor(0), ...vAnchor(0), pointerEvents: "none", opacity: orbOpacity, transition: "opacity 200ms ease" }}>
         <OrbBubble
           variant={variant}
           status={status}

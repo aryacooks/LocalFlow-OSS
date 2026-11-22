@@ -1,16 +1,17 @@
 import { useEffect, useState } from "react";
-import { Globe, Keyboard, Mic, MonitorCheck, Shield, History, Circle, Volume2, Music, Move, Check, CircleAlert, ExternalLink, Accessibility, RotateCcw, Power, Minus, Plus, PanelTop } from "lucide-react";
+import { Globe, Keyboard, Mic, MonitorCheck, Shield, History, Circle, Volume2, Music, Move, Check, CircleAlert, ExternalLink, Accessibility, RotateCcw, Power, Minus, Plus, PanelTop, ClipboardCopy, Timer, AppWindow, Fingerprint, MonitorOff, Droplet, Music2, MessageSquareQuote, PenLine, ClipboardCheck } from "lucide-react";
 import RemoveLocalFlow from "../components/RemoveLocalFlow";
-import { listAudioDevices, setAudioDevice, setSetting, getSetting, setBubbleSize, BUBBLE_SCALE_MIN, BUBBLE_SCALE_MAX, BUBBLE_SCALE_STEP, setBubbleVisible, setEarconsEnabled, setSoundSet, setBubbleMode, getBubblePlacement, setBubblePlacement, getNudgeRange, getPermissionStatus, requestAccessibilityPermission, requestMicrophonePermission, openPrivacySettings, type PermissionStatus, type BubbleMode } from "../lib/ipc";
+import { listAudioDevices, setAudioDevice, setSetting, getSetting, setBubbleSize, BUBBLE_SCALE_MIN, BUBBLE_SCALE_MAX, BUBBLE_SCALE_STEP, setBubbleVisible, setEarconsEnabled, setSoundSet, setBubbleMode, getBubblePlacement, setBubblePlacement, getNudgeRange, getPermissionStatus, requestAccessibilityPermission, requestMicrophonePermission, openPrivacySettings, setHistoryRetention, setHideFromCapture, historyLockSupported, unlockHistory, type PermissionStatus, type BubbleMode } from "../lib/ipc";
 import { enable as enableAutostart, disable as disableAutostart, isEnabled as isAutostartEnabled } from "@tauri-apps/plugin-autostart";
-import { shortcutLabel } from "../lib/utils";
 import { emit, listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "../lib/store";
 import { toOrbVariant, type OrbVariant } from "../windows/OrbBubble";
 import Dropdown from "../components/Dropdown";
+import { CaptureExample, NoSaveApps } from "../components/PrivacyExtras";
+import { AppTones, SnippetsEditor } from "../components/WritingSettings";
 import OrbStylePicker from "../components/OrbStylePicker";
 import { Link } from "react-router-dom";
-import { reloadGlobalShortcut, requestInputMonitoringPermission } from "../lib/ipc";
 
 import { langName, parseLanguages } from "../lib/languages";
 
@@ -405,15 +406,16 @@ export default function SettingsPage() {
   const [soundSet, setSoundSetState] = useState("wood-low");
   const [bubbleStyle, setBubbleStyleState] = useState<"classic" | "notch">("classic");
   const [autostart, setAutostart] = useState(false);
-  const [fnEnabled, setFnEnabled] = useState(false);
+  const [showPasteCard, setShowPasteCard] = useState(true);
+  const [orbOpacity, setOrbOpacity] = useState(1);
+  const [pauseMedia, setPauseMedia] = useState(true);
+  const [keepOnClipboard, setKeepOnClipboard] = useState(false);
+  const [retention, setRetention] = useState("0");
+  const [hideFromCapture, setHideFromCaptureState] = useState(false);
+  const [showCaptureExample, setShowCaptureExample] = useState(false);
+  const [lockSupported, setLockSupported] = useState(false);
+  const [historyLock, setHistoryLock] = useState(false);
   const [isMac, setIsMac] = useState(false);
-  
-  // Custom Dynamic Shortcuts Settings State
-  const [shortcutToggle, setShortcutToggle] = useState("Ctrl+Alt");
-  const [keybindKeyboardName, setKeybindKeyboardName] = useState("Ctrl+Q");
-  const [keybindKeyboardMode, setKeybindKeyboardMode] = useState("hold");
-  const [keybindMouseName, setKeybindMouseName] = useState("Middle Click");
-  const [keybindMouseMode, setKeybindMouseMode] = useState("hold");
 
   useEffect(() => {
     Promise.all([listAudioDevices(), getSetting("mic_device")])
@@ -430,9 +432,6 @@ export default function SettingsPage() {
 
   useEffect(() => {
     const loadSettings = async () => {
-      const toggle = await getSetting("shortcut_toggle");
-      if (toggle) setShortcutToggle(toggle);
-
       const saveHist = await getSetting("save_history");
       if (saveHist) setSaveHistory(saveHist === "true");
 
@@ -448,60 +447,21 @@ export default function SettingsPage() {
 
       setShowBubble((await getSetting("show_bubble")) !== "false");
       setPlaySounds((await getSetting("play_sounds")) !== "false");
+      setShowPasteCard((await getSetting("show_paste_card")) !== "false");
+      const op = Number.parseFloat((await getSetting("bubble_opacity")) ?? "1");
+      setOrbOpacity(Number.isFinite(op) ? op : 1);
+      setRetention((await getSetting("history_retention_days")) ?? "0");
+      setPauseMedia((await getSetting("pause_media")) !== "false");
+      setKeepOnClipboard((await getSetting("keep_on_clipboard")) === "true");
+      setHideFromCaptureState((await getSetting("hide_from_capture")) === "true");
+      setLockSupported(await historyLockSupported().catch(() => false));
+      setHistoryLock((await getSetting("history_lock")) === "true");
       const ss = await getSetting("sound_set");
       if (ss) setSoundSetState(ss);
       setBubbleStyleState((await getSetting("bubble_style")) === "notch" ? "notch" : "classic");
-      setFnEnabled((await getSetting("fn_quick_toggle")) === "true");
       setIsMac((await getPermissionStatus()).is_macos);
       setAutostart(await isAutostartEnabled().catch(() => false));
 
-      const kbName = await getSetting("keybind_keyboard_name");
-      const kbMode = await getSetting("keybind_keyboard_mode");
-      const kbOld = await getSetting("keybind_keyboard");
-
-      if (kbName) {
-        setKeybindKeyboardName(kbName);
-      } else if (kbOld) {
-        const mapping: Record<string, string> = {
-          rshift_ralt: "Right Alt",
-          rshift_double: "Right Shift",
-          ralt_hold: "Right Alt",
-          caps_hold: "Caps Lock",
-          tilde_hold: "Tilde (~)",
-        };
-        setKeybindKeyboardName(mapping[kbOld] ?? "Right Alt");
-      } else {
-        setKeybindKeyboardName("Ctrl+Q");
-      }
-
-      if (kbMode) {
-        setKeybindKeyboardMode(kbMode);
-      } else if (kbOld) {
-        setKeybindKeyboardMode(kbOld.includes("double") || kbOld === "rshift_ralt" ? "double_tap" : "hold");
-      } else {
-        setKeybindKeyboardMode("hold");
-      }
-
-      const mouse = await getSetting("keybind_mouse");
-      const mouseName = await getSetting("keybind_mouse_name");
-      const mouseMode = await getSetting("keybind_mouse_mode");
-      
-      if (mouseName) {
-        setKeybindMouseName(mouseName);
-      } else if (mouse && mouse !== "none") {
-        const mapping: Record<string, string> = {
-          middle: "Middle Click",
-          back: "Mouse Button 4",
-          forward: "Mouse Button 5",
-          right: "Right Click",
-        };
-        setKeybindMouseName(mapping[mouse] ?? "Middle Click");
-      } else if (mouse === "none") {
-        setKeybindMouseName("Disabled");
-      } else {
-        setKeybindMouseName("Middle Click");
-      }
-      if (mouseMode) setKeybindMouseMode(mouseMode);
     };
     loadSettings().catch(console.error);
   }, []);
@@ -547,12 +507,6 @@ export default function SettingsPage() {
     applyFeature(k, !currentlyOn);
   };
 
-  const keyboardModeLabel = {
-    hold: "Hold-to-talk",
-    toggle: "Tap-to-toggle",
-    double_tap: "Double-tap"
-  }[keybindKeyboardMode] ?? "Hold-to-talk";
-
   return (
     <div className="page settings-page" style={{ position: "relative" }}>
 
@@ -577,6 +531,22 @@ export default function SettingsPage() {
               setSelectedDevice(v);
               save("mic_device", v);
               setAudioDevice(v).catch(console.error);
+            }}
+          />
+        </SettingRow>
+        <SettingRow
+          icon={Music2}
+          label="Pause music while dictating"
+          description={isMac
+            ? "Pauses Spotify or Music and turns everything else down while you talk, then puts it back."
+            : "Mutes other sound while you talk, then turns it back on."}
+        >
+          <Switch
+            checked={pauseMedia}
+            onChange={() => {
+              const next = !pauseMedia;
+              setPauseMedia(next);
+              save("pause_media", next ? "true" : "false");
             }}
           />
         </SettingRow>
@@ -664,6 +634,29 @@ export default function SettingsPage() {
           />
         </SettingRow>
         <SettingRow
+          icon={Droplet}
+          label="Orb transparency"
+          description="See through the orb so it gets in the way less. The menu and messages stay solid."
+        >
+          <div className="orb-opacity">
+            <input
+              type="range"
+              min={20}
+              max={100}
+              step={5}
+              value={Math.round(orbOpacity * 100)}
+              aria-label="Orb opacity"
+              onChange={(e) => {
+                const v = Number(e.target.value) / 100;
+                setOrbOpacity(v);
+                save("bubble_opacity", v.toFixed(2));
+                emit("bubble-opacity-changed", v).catch(console.error);
+              }}
+            />
+            <span className="orb-opacity-value">{Math.round(orbOpacity * 100)}%</span>
+          </div>
+        </SettingRow>
+        <SettingRow
           icon={Move}
           label="Orb position"
           description="Drag the orb on screen and drop it near any of these spots, or pick one here. The sliders fine-tune it left/right and up/down."
@@ -671,6 +664,29 @@ export default function SettingsPage() {
           <OrbPlacer spot={orbPlacement.spot} nudge={orbPlacement.nudge} nudgeY={orbPlacement.nudgeY} onChange={placeOrb} />
         </SettingRow>
         </>)}
+        <SettingRow
+          icon={ClipboardCopy}
+          label="Copy card"
+          description="If your words can't be pasted (no text box selected), a small card pops up with them and a Copy button. Turn it off to skip it; the text is still saved in History."
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <button
+              type="button"
+              className="button"
+              onClick={() => invoke("preview_paste_card").catch(console.error)}
+            >
+              Show me
+            </button>
+            <Switch
+              checked={showPasteCard}
+              onChange={() => {
+                const next = !showPasteCard;
+                setShowPasteCard(next);
+                save("show_paste_card", next ? "true" : "false");
+              }}
+            />
+          </div>
+        </SettingRow>
         <SettingRow
           icon={Volume2}
           label="Play sounds"
@@ -702,6 +718,7 @@ export default function SettingsPage() {
         )}
       </Section>
 
+      <div className="settings-right-col">
       <Section title="Startup" className="settings-startup">
         <SettingRow icon={Power} label="Launch at login" description="Open LocalFlow automatically when you start your computer">
           <Switch
@@ -720,6 +737,12 @@ export default function SettingsPage() {
         </SettingRow>
       </Section>
 
+      <Section title="Shortcuts" className="settings-triggers">
+        <SettingRow icon={Keyboard} label="Shortcuts" description="Your dictation keys, mouse button and the Fn key.">
+          <Link to="/shortcuts" className="button">Open shortcuts</Link>
+        </SettingRow>
+      </Section>
+
       <Section title="Privacy" className="settings-privacy">
         <SettingRow icon={Shield} label="Incognito mode" description="Pause saving — nothing you dictate is recorded while this is on">
           <Switch checked={privacyMode} onChange={togglePrivacy} />
@@ -734,40 +757,104 @@ export default function SettingsPage() {
             }}
           />
         </SettingRow>
-      </Section>
-
-      <Section title="Triggers" className="settings-triggers">
-        {isMac && (
-          <SettingRow icon={Keyboard} label="Fn quick toggle" description="Hold Fn to talk. Double-tap to keep recording; press Fn again to finish.">
-            <Switch checked={fnEnabled} onChange={async () => {
-              const next = !fnEnabled;
-              try {
-                await setSetting("fn_quick_toggle", String(next));
-                await reloadGlobalShortcut();
-                setFnEnabled(next);
-                if (next) await requestInputMonitoringPermission();
-              } catch (error) { console.error(error); }
-            }} />
+        <SettingRow icon={Timer} label="Auto-delete history" description="Older dictations are deleted on their own. Never keeps everything.">
+          <Dropdown
+            ariaLabel="Auto-delete history"
+            width={160}
+            value={retention}
+            options={[
+              { value: "0", label: "Never", hint: "Default" },
+              { value: "1", label: "After 1 day" },
+              { value: "7", label: "After 7 days" },
+              { value: "30", label: "After 30 days" },
+            ]}
+            onChange={(v) => {
+              setRetention(v);
+              setHistoryRetention(Number(v)).catch(console.error);
+            }}
+          />
+        </SettingRow>
+        {lockSupported && (
+          <SettingRow icon={Fingerprint} label="Lock History" description="Ask for Touch ID or your Mac password before showing past dictations.">
+            <Switch
+              checked={historyLock}
+              onChange={async () => {
+                const next = !historyLock;
+                // Turning it off needs the same check, or anyone could switch it off.
+                const ok = await unlockHistory(next ? "turn on the History lock" : "turn off the History lock").catch(() => false);
+                if (!ok) return;
+                setHistoryLock(next);
+                save("history_lock", next ? "true" : "false");
+              }}
+            />
           </SettingRow>
         )}
-        <SettingRow icon={MonitorCheck} label="Toggle dictation" description="Press once to start, press again to stop.">
-          <span className="keycap">{shortcutLabel(shortcutToggle)}</span>
+        <SettingRow
+          icon={MonitorOff}
+          label="Hide from screen sharing"
+          description={<>
+            The orb, notch and copy card stay visible to you but don't show up for people watching your shared screen or recordings.{" "}
+            <button type="button" className="inline-link" onClick={() => setShowCaptureExample((v) => !v)}>
+              {showCaptureExample ? "Hide example" : "See how it looks"}
+            </button>
+          </>}
+        >
+          <Switch
+            checked={hideFromCapture}
+            onChange={() => {
+              const next = !hideFromCapture;
+              setHideFromCaptureState(next);
+              setHideFromCapture(next).catch(console.error);
+            }}
+          />
         </SettingRow>
-        <SettingRow icon={Keyboard} label="Instant dictation" description="Hold key to talk, release key to transcribe.">
-          <span style={{ fontSize: 13, fontWeight: 500 }}>
-            {shortcutLabel(keybindKeyboardName)} ({keyboardModeLabel})
-          </span>
+        {showCaptureExample && <CaptureExample />}
+        <SettingRow
+          icon={AppWindow}
+          label="Don't save from these apps"
+          description="Dictation still works in these apps, but nothing you say there is kept in History. Good for password managers, banking and private chats."
+          stacked
+        >
+          <NoSaveApps />
         </SettingRow>
-        <SettingRow label="Mouse trigger" description="Optional mouse trigger button">
-          <span style={{ fontSize: 13, fontWeight: 500 }}>
-            {keybindMouseName !== "Disabled" ? `${keybindMouseName} (${keybindMouseMode === "hold" ? "Hold-to-talk" : "Tap-to-toggle"})` : "Disabled"}
-          </span>
+      </Section>
+
+
+
+
+      </div>
+
+      <Section title="Writing" className="settings-writing">
+        <SettingRow
+          icon={MessageSquareQuote}
+          label="Voice snippets"
+          description="Say a phrase and LocalFlow types saved text instead, like your email, address or a sign-off. Pick phrases you wouldn't say by accident."
+          stacked
+        >
+          <SnippetsEditor />
         </SettingRow>
-        <div style={{ padding: "10px 14px", borderTop: "1px solid var(--separator-soft)", display: "flex", justifyContent: "flex-end" }}>
-          <Link to="/shortcuts" style={{ fontSize: 12, color: "var(--accent)", textDecoration: "none", fontWeight: 500 }}>
-            Change Shortcuts & Triggers →
-          </Link>
-        </div>
+        <SettingRow
+          icon={PenLine}
+          label="Tone per app"
+          description="Casual in chats, formal in email. Used when AI formatting is on (Formatting options); LocalFlow guesses for apps not listed here."
+          stacked
+        >
+          <AppTones />
+        </SettingRow>
+        <SettingRow
+          icon={ClipboardCheck}
+          label="Keep text on the clipboard"
+          description="After pasting, leave your dictation on the clipboard instead of putting back what was there."
+        >
+          <Switch
+            checked={keepOnClipboard}
+            onChange={() => {
+              const next = !keepOnClipboard;
+              setKeepOnClipboard(next);
+              save("keep_on_clipboard", next ? "true" : "false");
+            }}
+          />
+        </SettingRow>
       </Section>
 
       <section className="privacy-strip settings-privacy-callout">

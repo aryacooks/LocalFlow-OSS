@@ -255,6 +255,18 @@ pub fn app_context(exe: &str) -> &'static str {
     }
 }
 
+/// An app token whose `app_context` is `tone`, for Settings → Tone per app.
+pub fn exe_for_tone(tone: &str) -> Option<&'static str> {
+    match tone {
+        "casual" => Some("slack.exe"),
+        "formal" => Some("outlook.exe"),
+        "code" => Some("code.exe"),
+        "notes" => Some("notion.exe"),
+        "neutral" => Some("neutral"),
+        _ => None, // "auto"
+    }
+}
+
 /// Regex-based cleanup as graceful degradation fallback
 pub fn regex_cleanup(raw: &str) -> String {
     // Resolve spoken self-corrections first, before fillers are stripped (some cues,
@@ -319,18 +331,22 @@ static SPOKEN_SUBS: Lazy<Vec<(Regex, &'static str)>> = Lazy::new(|| {
     vec![
         (p(r"(?i)\s*\bnew\s+paragraph\b\s*"), "\n\n"),
         (p(r"(?i)\s*\b(?:new|next)\s+line\b\s*"), "\n"),
-        (p(r"(?i)\s*\bquestion\s+mark\b"), "?"),
+        // The speech model often punctuates around the spoken word itself ("Hello,
+        // comma, world."), so each punctuation command also swallows the commas,
+        // semicolons, colons and periods right next to it. Otherwise "comma" came
+        // out as ",,".
+        (p(r"(?i)[\s,;:]*\bquestion\s+mark\b[,;:.]?"), "?"),
         // "explanation mark/point" is not a slip of the tongue — it is what Whisper
         // reliably hears for "exclamation mark", so the spoken command silently failed.
         (
-            p(r"(?i)\s*\b(?:exclamation|explanation)\s+(?:mark|point)\b"),
+            p(r"(?i)[\s,;:]*\b(?:exclamation|explanation)\s+(?:mark|point)\b[,;:.]?"),
             "!",
         ),
-        (p(r"(?i)\s*\b(?:full\s+stop|full-stop)\b"), "."),
-        (p(r"(?i)\s*\bsemi[\s-]?colon\b"), ";"),
-        (p(r"(?i)\s*\bcomma\b"), ","),
-        (p(r"(?i)\s*\bperiod\b"), "."),
-        (p(r"(?i)\s*\bcolon\b"), ":"),
+        (p(r"(?i)[\s,;:]*\b(?:full\s+stop|full-stop)\b[,;:.]?"), "."),
+        (p(r"(?i)[\s,;:]*\bsemi[\s-]?colon\b[,;:.]?"), ";"),
+        (p(r"(?i)[\s,;:]*\bcomma\b[,;:.]?"), ","),
+        (p(r"(?i)[\s,;:]*\bperiod\b[,;:.]?"), "."),
+        (p(r"(?i)[\s,;:]*\bcolon\b[,;:.]?"), ":"),
     ]
 });
 
@@ -526,6 +542,9 @@ fn apply_spoken_symbols(input: &str) -> String {
 // and `.class` byte-for-byte.
 static SPACE_BEFORE_PUNCT_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"[ \t]+([,.;:!?]+)([ \t\r\n]|$)").unwrap());
+// ",," or ", ," (the speech model's comma plus one from the spoken word or the
+// cleanup model) → one. Same for ; and :. Ellipses ("...") are left alone.
+static DOUBLE_PUNCT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"([,;:])(?:[ \t]*[,;:])+").unwrap());
 static MULTISPACE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"[ \t]{2,}").unwrap());
 static AROUND_NL_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"[ \t]*\n[ \t]*").unwrap());
 static MULTI_NL_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\n{3,}").unwrap());
@@ -559,6 +578,7 @@ fn spoken(input: &str, commands: bool, emoji: bool, recap: bool) -> String {
 
     // Tidy spacing without clobbering intentional newlines.
     text = SPACE_BEFORE_PUNCT_RE.replace_all(&text, "$1$2").to_string();
+    text = DOUBLE_PUNCT_RE.replace_all(&text, "$1").to_string();
     text = MULTISPACE_RE.replace_all(&text, " ").to_string();
     text = AROUND_NL_RE.replace_all(&text, "\n").to_string();
     text = MULTI_NL_RE.replace_all(&text, "\n\n").to_string();
@@ -1110,6 +1130,21 @@ mod tests {
             resolve_corrections("send it to bob sorry, to jim"),
             "send it to jim"
         );
+    }
+
+    #[test]
+    fn spoken_comma_does_not_double_the_models_comma() {
+        // The speech model already wrote commas around the spoken word.
+        assert_eq!(apply_spoken_commands("Hello, comma, world."), "Hello, world.");
+        assert_eq!(apply_spoken_commands("Hello comma, world"), "Hello, world");
+        assert_eq!(apply_spoken_commands("Hello, comma world"), "Hello, world");
+        assert_eq!(apply_spoken_commands("Is it ready, question mark."), "Is it ready?");
+        assert_eq!(apply_spoken_commands("We shipped it, period."), "We shipped it.");
+        assert_eq!(apply_spoken_commands("first item, semicolon, second item"), "First item; second item");
+        // The cleanup model already turned "comma" into "," next to the speech model's own.
+        assert_eq!(apply_spoken_commands("Hello,, world"), "Hello, world");
+        assert_eq!(apply_spoken_commands("Hello, , world"), "Hello, world");
+        assert!(apply_spoken_commands("Wait... what").starts_with("Wait..."), "ellipsis kept");
     }
 
     #[test]
