@@ -3,7 +3,7 @@ import { CheckCircle, Download, Globe, Languages, Trash2, X } from "lucide-react
 import LanguagePicker from "../components/LanguagePicker";
 import { listModels, ModelInfo, setActiveModel, deleteModel, getSetting, setSetting, setRomanize, cancelDownload, getTotalRamMb } from "../lib/ipc";
 import { useAppStore } from "../lib/store";
-import { MODEL_MEMORY_NOTE, MULTILINGUAL_NOTE, recommendationText, recommendedTranscriptionModelId } from "../lib/modelGuidance";
+import { MULTILINGUAL_NOTE, recommendationText, recommendedTranscriptionModelId } from "../lib/modelGuidance";
 
 // Lightweight on/off switch matching the one used on the Settings page.
 function Switch({ checked, onChange }: { checked: boolean; onChange: () => void }) {
@@ -14,16 +14,16 @@ function Switch({ checked, onChange }: { checked: boolean; onChange: () => void 
   );
 }
 
-// Relative scores (0–100) for the Speed / Accuracy meters, plus the RAM estimate.
-const MODEL_COMPARISONS: Record<string, { speed: number; accuracy: number; avgRam: string }> = {
-  "base.en": { speed: 96, accuracy: 55, avgRam: "~160 MB" },
-  "small.en": { speed: 82, accuracy: 74, avgRam: "~310 MB" },
-  "medium.en": { speed: 52, accuracy: 86, avgRam: "~660 MB" },
-  "parakeet-tdt-v2": { speed: 99, accuracy: 93, avgRam: "~1.1 GB" },
-  "large-v3-turbo": { speed: 40, accuracy: 94, avgRam: "~1.0 GB" },
-  "large-v3-turbo-full": { speed: 40, accuracy: 95, avgRam: "~1.9 GB" },
-  "large-v3-q5": { speed: 14, accuracy: 97, avgRam: "~1.5 GB" },
-  "large-v3": { speed: 12, accuracy: 98, avgRam: "~3.9 GB" },
+// Relative scores (0–100) for the Speed / Accuracy meters.
+const MODEL_COMPARISONS: Record<string, { speed: number; accuracy: number }> = {
+  "base.en": { speed: 96, accuracy: 55 },
+  "small.en": { speed: 82, accuracy: 74 },
+  "medium.en": { speed: 52, accuracy: 86 },
+  "parakeet-tdt-v2": { speed: 99, accuracy: 93 },
+  "large-v3-turbo": { speed: 40, accuracy: 94 },
+  "large-v3-turbo-full": { speed: 40, accuracy: 95 },
+  "large-v3-q5": { speed: 14, accuracy: 97 },
+  "large-v3": { speed: 12, accuracy: 98 },
 };
 
 /** One labelled meter: "Speed ▬▬▬▬▬▬▬───". */
@@ -144,9 +144,6 @@ export default function ModelsPage() {
         <p className="row-desc" style={{ margin: 0 }}>
           {recommendationText(ramMb, offeredIds)} {MULTILINGUAL_NOTE}
         </p>
-        <p className="row-desc" style={{ margin: "8px 0 0" }}>
-          {MODEL_MEMORY_NOTE}
-        </p>
       </section>
 
       <section className="grid">
@@ -179,7 +176,7 @@ export default function ModelsPage() {
                   </div>
                 )}
                 <div className="model-meta">
-                  {formatSize(model.size_mb)} download · {MODEL_COMPARISONS[model.id]?.avgRam || `~${formatSize(model.ram_mb)}`} RAM
+                  {formatSize(model.size_mb)}
                 </div>
 
                 {status && (

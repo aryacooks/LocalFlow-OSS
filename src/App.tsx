@@ -1,4 +1,4 @@
-import { Routes, Route, NavLink, Link, Navigate } from "react-router-dom";
+import { Routes, Route, NavLink, Link, Navigate, useLocation } from "react-router-dom";
 import {
   Download,
   CircleAlert,
@@ -112,6 +112,12 @@ function SetupReminders({
 
 export default function App() {
   const { isRecording, isProcessing, privacyMode, togglePrivacy, initListeners, loadLanguage, theme, toggleTheme, initTheme, lastError, clearLastError } = useAppStore();
+  const location = useLocation();
+  const scrollRef = useRef<HTMLElement>(null);
+  // A new page starts at the top (a #section link scrolls itself into view after).
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: 0, behavior: "instant" as ScrollBehavior });
+  }, [location.pathname]);
   const plugRef = useRef<AnimatedIconHandle>(null);
   const ghostRef = useRef<AnimatedIconHandle>(null);
   const bugRef = useRef<AnimatedIconHandle>(null);
@@ -259,7 +265,14 @@ export default function App() {
     ready: "Ready",
   }[statusState];
   const readinessTarget = notReadyReason?.toLowerCase().includes("model") ? "/models" : "/settings";
-  const errorTarget = lastError?.toLowerCase().includes("model") ? "/models" : "/settings";
+  // Where "Fix it" takes you: the exact place that fixes it, or nowhere if nothing does.
+  const errorTarget = (() => {
+    const e = lastError?.toLowerCase() ?? "";
+    if (e.includes("model")) return "/models";
+    if (e.includes("speech was detected") || e.includes("microphone")) return "/settings#audio";
+    if (e.includes("accessibility") || e.includes("type into")) return "/settings#permissions";
+    return null;
+  })();
 
   return (
     <div className="mac-window">
@@ -399,18 +412,22 @@ export default function App() {
       <section className="mac-main">
         {lastError && (
           <div className="app-error-banner" role="alert">
-            <CircleAlert size={16} />
-            <span>{lastError}</span>
-            <Link to={errorTarget} onClick={clearLastError}>
-              Fix it
-            </Link>
+            <span className="app-error-icon"><CircleAlert size={16} /></span>
+            <span className="app-error-text">{lastError}</span>
+            {errorTarget ? (
+              <Link to={errorTarget} className="app-error-fix" onClick={clearLastError}>
+                {errorTarget === "/settings#audio" ? "Check microphone" : errorTarget === "/models" ? "Open Language Model" : "Fix it"}
+              </Link>
+            ) : <span />}
             <button type="button" onClick={clearLastError} aria-label="Dismiss error">
               <X size={15} />
             </button>
           </div>
         )}
 
-        <main className="page-scroll">
+        <main className="page-scroll" ref={scrollRef}>
+          {/* Keyed by page so each one fades in when you switch. */}
+          <div key={location.pathname} className="route-view">
           <Routes>
             <Route path="/" element={<Dashboard />} />
             <Route path="/history" element={<HistoryPage />} />
@@ -423,6 +440,7 @@ export default function App() {
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="/about" element={<AboutPage />} />
           </Routes>
+          </div>
         </main>
       </section>
 

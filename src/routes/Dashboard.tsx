@@ -1088,22 +1088,21 @@ export default function Dashboard() {
         </div>
 
         {/*
-          Recording limits. The 10 minutes below mirrors MAX_RECORDING_SECS in
-          src-tauri/src/audio.rs, and the 90 seconds mirrors MODEL_IDLE_TTL in
-          src-tauri/src/whisper.rs — change each pair together.
+          How recording works. The 8 minutes mirrors CHUNK_SECS in src-tauri/src/longrec.rs,
+          and the unload mirrors whisper::release_after_dictation: change each pair together.
         */}
         <div className="dashboard-limits">
           <div className="dashboard-limit-note">
             <span className="limit-icon"><TrimIcon /></span>
-            <p><strong>10 min max per recording.</strong> Keep talking past that and only the last 10 minutes are kept.</p>
+            <p><strong>No time limit.</strong> Talk as long as you like: every 8 minutes it's transcribed in the background, then pasted in one go.</p>
           </div>
           <div className="dashboard-limit-note">
             <span className="limit-icon"><WaitIcon /></span>
-            <p><strong>Longer talk, longer wait.</strong> Text appears after you stop, so long recordings take a bit longer.</p>
+            <p><strong>Ready when you stop.</strong> The model loads while you talk, so text appears soon after you finish.</p>
           </div>
           <div className="dashboard-limit-note">
             <span className="limit-icon"><FreeIcon /></span>
-            <p><strong>Memory frees itself.</strong> The model unloads 90 s after you stop to keep your Mac light.</p>
+            <p><strong>Memory frees itself.</strong> The model loads when you start talking and unloads as soon as your text is ready.</p>
           </div>
         </div>
       </section>

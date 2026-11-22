@@ -1,10 +1,12 @@
-/// snippets.rs — voice snippets (Settings → Writing → Voice snippets).
+/// snippets.rs — voice snippets (Formatting options → Voice snippets).
 ///
 /// Say a phrase, get saved text: "my email" → "arya@example.com". Stored in the
 /// `snippets` setting as JSON: [{"trigger": "my email", "text": "..."}].
 ///
 /// - The whole dictation is the phrase ("My email.") → just the saved text, no full stop.
-/// - The phrase inside a sentence ("send it to my email please") → replaced in place.
+/// - The phrase inside a sentence ("send it to my email please") → replaced in place,
+///   for phrases of two words or more. A one-word snippet ("email") only fires when it's
+///   all you said, or "I'll send you an email" would turn into the address.
 /// Matching ignores case, and commas or extra spaces between the phrase's words.
 use regex::Regex;
 use serde::Deserialize;
@@ -50,7 +52,7 @@ pub fn expand(text: &str, snippets: &[Snippet]) -> String {
     let mut out = text.to_string();
     for s in &list {
         let w = words(&s.trigger);
-        if w.is_empty() {
+        if w.len() < 2 {
             continue;
         }
         let pattern = format!(
@@ -95,7 +97,14 @@ mod tests {
 
     #[test]
     fn dollar_signs_in_text_are_kept() {
-        let s = [sn("price", "$5 off")];
-        assert_eq!(expand("The price today", &s), "The $5 off today");
+        let s = [sn("the price", "$5 off")];
+        assert_eq!(expand("It's the price today", &s), "It's $5 off today");
+    }
+
+    #[test]
+    fn one_word_snippet_only_when_said_alone() {
+        let s = [sn("Email", "me@example.com")];
+        assert_eq!(expand("Email.", &s), "me@example.com");
+        assert_eq!(expand("I'll send you an email.", &s), "I'll send you an email.");
     }
 }

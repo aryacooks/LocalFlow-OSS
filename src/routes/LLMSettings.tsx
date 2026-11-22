@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import DictionaryPage from "./Dictionary";
+import { SnippetsSection } from "../components/WritingSettings";
 import FormatIcon from "../components/FormatIcon";
 import { Download, CheckCircle, Check, ArrowRight, Play, Trash2, AlertCircle, Sparkles } from "lucide-react";
 import {
@@ -367,6 +368,9 @@ export default function LLMSettingsPage() {
           </button>
         </div>
       </section>
+
+      {/* Saved text you can say: works with cleanup on or off */}
+      <SnippetsSection />
 
       {/* Custom words: works with cleanup on or off */}
       <DictionaryPage embedded />

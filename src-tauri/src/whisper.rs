@@ -157,6 +157,33 @@ pub fn invalidate_model_cache() {
         .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
 }
 
+/// Free the speech model now that a dictation is transcribed (Whisper or Parakeet).
+/// Skipped if a new dictation already started: it has loaded the model for itself.
+/// The model loads again as soon as the next dictation starts (`preload`), while you
+/// talk, so memory is only used while you're actually dictating.
+pub fn release_after_dictation() {
+    if crate::audio::RECORDING.load(std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    invalidate_model_cache();
+    crate::parakeet::unload();
+    return_freed_memory();
+}
+
+/// Hand freed memory back to macOS now. Without this the allocator keeps the pages it
+/// got back from the model as a cache, and Activity Monitor keeps counting them
+/// against LocalFlow (hundreds of MB) until the system happens to ask for them.
+pub fn return_freed_memory() {
+    #[cfg(target_os = "macos")]
+    unsafe {
+        extern "C" {
+            fn malloc_zone_pressure_relief(zone: *mut std::ffi::c_void, goal: usize) -> usize;
+        }
+        let freed = malloc_zone_pressure_relief(std::ptr::null_mut(), 0);
+        eprintln!("memory: gave {} MB back to macOS", freed / (1024 * 1024));
+    }
+}
+
 /// Whisper detects language from a single 30-second window, so only the opening of a
 /// recording is worth analysing. Feeding it the whole take made a 10-minute dictation
 /// compute 20× more mel spectrogram than the detector could ever look at.

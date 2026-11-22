@@ -50,27 +50,49 @@ fn llama_legacy_filename() -> &'static str {
     }
 }
 
+/// The llama.cpp build LocalFlow uses. b3040 (mid-2024) predates Llama 3.2 and failed
+/// every run with "wrong number of tensors", so formatting silently fell back to the
+/// built-in rules. Changing this upgrades existing installs on the next launch.
+const LLAMA_BUILD: &str = "b6000";
+/// Written next to llama-cli once a build is installed, holding LLAMA_BUILD.
+const VERSION_FILE: &str = "llama-version";
+
 /// Platform-specific precompiled llama.cpp release asset URL.
-fn llama_download_url() -> &'static str {
-    #[cfg(windows)]
-    {
-        "https://github.com/ggml-org/llama.cpp/releases/download/b3040/llama-b3040-bin-win-avx2-x64.zip"
-    }
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    {
-        "https://github.com/ggml-org/llama.cpp/releases/download/b3040/llama-b3040-bin-macos-arm64.zip"
-    }
-    #[cfg(all(target_os = "macos", not(target_arch = "aarch64")))]
-    {
-        "https://github.com/ggml-org/llama.cpp/releases/download/b3040/llama-b3040-bin-macos-x64.zip"
-    }
-    #[cfg(not(any(windows, target_os = "macos")))]
-    {
-        ""
+fn llama_download_url() -> String {
+    let asset = if cfg!(windows) {
+        "win-cpu-x64"
+    } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        "macos-arm64"
+    } else if cfg!(target_os = "macos") {
+        "macos-x64"
+    } else {
+        return String::new();
+    };
+    format!(
+        "https://github.com/ggml-org/llama.cpp/releases/download/{b}/llama-{b}-bin-{asset}.zip",
+        b = LLAMA_BUILD
+    )
+}
+
+fn installed_build(bin_dir: &std::path::Path) -> Option<String> {
+    fs::read_to_string(bin_dir.join(VERSION_FILE)).ok().map(|s| s.trim().to_string())
+}
+
+/// An older llama.cpp is installed: replace it in the background (startup).
+pub fn upgrade_if_outdated(app: &AppHandle) {
+    let Ok(bin_dir) = get_llm_bin_dir(app) else { return };
+    let has_old = bin_dir.join(llama_cli_filename()).exists() || bin_dir.join(llama_legacy_filename()).exists();
+    if has_old && installed_build(&bin_dir).as_deref() != Some(LLAMA_BUILD) {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            match download_llama_cli(app).await {
+                Ok(_) => eprintln!("llama.cpp upgraded to {LLAMA_BUILD}"),
+                Err(e) => eprintln!("llama.cpp upgrade failed: {e}"),
+            }
+        });
     }
 }
 
-/// On Unix, make the binary executable and clear macOS quarantine so it can run.
 fn make_runnable(bin_dir: &std::path::Path, cli_path: &std::path::Path) {
     #[cfg(unix)]
     {
@@ -162,23 +184,9 @@ pub fn list_llm_models(app: AppHandle) -> Vec<serde_json::Value> {
 
 #[tauri::command]
 pub fn is_llama_cli_installed(app: AppHandle) -> bool {
-    let bin_dir = match get_llm_bin_dir(&app) {
-        Ok(d) => d,
-        Err(_) => return false,
-    };
-    let cli_path = bin_dir.join(llama_cli_filename());
-    if cli_path.exists() {
-        return true;
-    }
-    // Automatically rename legacy `main` binary from older llama.cpp releases
-    let main_exe = bin_dir.join(llama_legacy_filename());
-    if main_exe.exists() {
-        if fs::rename(&main_exe, &cli_path).is_ok() {
-            make_runnable(&bin_dir, &cli_path);
-            return true;
-        }
-    }
-    false
+    let Ok(bin_dir) = get_llm_bin_dir(&app) else { return false };
+    // An old build doesn't count: it can't load current models (see LLAMA_BUILD).
+    bin_dir.join(llama_cli_filename()).exists() && installed_build(&bin_dir).as_deref() == Some(LLAMA_BUILD)
 }
 
 #[tauri::command]
@@ -186,8 +194,15 @@ pub async fn download_llama_cli(app: AppHandle) -> Result<String, String> {
     let bin_dir = get_llm_bin_dir(&app)?;
     let cli_path = bin_dir.join(llama_cli_filename());
 
-    if cli_path.exists() {
+    if cli_path.exists() && installed_build(&bin_dir).as_deref() == Some(LLAMA_BUILD) {
         return Ok("llama-cli already installed".into());
+    }
+    // Start clean: an older build's binary and libraries must not mix with the new ones.
+    if let Ok(entries) = fs::read_dir(&bin_dir) {
+        for e in entries.flatten() {
+            let p = e.path();
+            let _ = if p.is_dir() { fs::remove_dir_all(&p) } else { fs::remove_file(&p) };
+        }
     }
 
     let url = llama_download_url();
@@ -197,7 +212,7 @@ pub async fn download_llama_cli(app: AppHandle) -> Result<String, String> {
     let dest_zip = bin_dir.join("llama-bin.zip");
 
     println!("Downloading llama.cpp precompiled binaries...");
-    let response = reqwest::get(url)
+    let response = reqwest::get(&url)
         .await
         .map_err(|e| format!("Download failed: {}", e))?;
 
@@ -272,28 +287,31 @@ pub async fn download_llama_cli(app: AppHandle) -> Result<String, String> {
         return Err("Extraction failed".into());
     }
 
-    // Release zips vary: newer ones ship `llama-cli`, older ones ship `main`, and
-    // macOS builds nest everything under `build/bin/`. Search recursively for either
-    // name and promote it to the expected top-level path.
+    // Release zips nest everything under `build/bin/` (macOS) and newer builds ship
+    // llama-cli with shared libraries it loads from its own folder (@loader_path). So
+    // move the whole folder that holds llama-cli up to `bin/`, libraries included.
     if !cli_path.exists() {
         let found = find_file_recursive(&bin_dir, llama_cli_filename())
             .or_else(|| find_file_recursive(&bin_dir, llama_legacy_filename()));
         if let Some(found) = found {
-            let _ = fs::rename(&found, &cli_path);
+            if let Some(src_dir) = found.parent().filter(|d| *d != bin_dir.as_path()) {
+                if let Ok(entries) = fs::read_dir(src_dir) {
+                    for e in entries.flatten() {
+                        let _ = fs::rename(e.path(), bin_dir.join(e.file_name()));
+                    }
+                }
+            }
+            let moved = bin_dir.join(found.file_name().unwrap_or_default());
+            if moved != cli_path {
+                let _ = fs::rename(&moved, &cli_path);
+            }
         }
-    }
-
-    // macOS Metal builds need ggml-metal.metal beside the binary to use the GPU.
-    // (The binary still runs on CPU without it, but we move it so GPU works too.)
-    let metal_dest = bin_dir.join("ggml-metal.metal");
-    if !metal_dest.exists() {
-        if let Some(metal) = find_file_recursive(&bin_dir, "ggml-metal.metal") {
-            let _ = fs::rename(&metal, &metal_dest);
-        }
+        let _ = fs::remove_dir_all(bin_dir.join("build"));
     }
 
     if cli_path.exists() {
         make_runnable(&bin_dir, &cli_path);
+        let _ = fs::write(bin_dir.join(VERSION_FILE), LLAMA_BUILD);
         Ok("llama-cli successfully installed".into())
     } else {
         Err(format!(
@@ -526,6 +544,9 @@ pub fn run_inference(app: &AppHandle, prompt: &str) -> Result<String, String> {
         "--repeat-penalty".to_string(),
         "1.15".to_string(),
         "--no-display-prompt".to_string(),
+        // Newer llama-cli starts a chat when the model has a chat template; this run
+        // is a single prompt in, text out.
+        "-no-cnv".to_string(),
     ];
 
     if let Some(stop) = stop_token {
@@ -546,6 +567,10 @@ pub fn run_inference(app: &AppHandle, prompt: &str) -> Result<String, String> {
     }
 
     let mut result = String::from_utf8_lossy(&output.stdout).to_string();
+    // llama-cli marks the end of generation in its output; it isn't part of the text.
+    if let Some(i) = result.find("[end of text]") {
+        result.truncate(i);
+    }
     result = result.trim().to_string();
 
     Ok(result)

@@ -352,7 +352,7 @@ export default function OnboardingWizard({ onClose }: { onClose: () => void }) {
                           {isRec && <span className="onb-rec-badge">Recommended</span>}
                         </div>
                         <div className="onb-model-meta">
-                          {Math.round(m.size_mb)} MB download · ~{m.ram_mb >= 1024 ? `${(m.ram_mb / 1024).toFixed(1)} GB` : `${m.ram_mb} MB`} RAM while processing
+                          {m.size_mb >= 1024 ? `${(m.size_mb / 1024).toFixed(1)} GB` : `${Math.round(m.size_mb)} MB`}
                         </div>
                         {busy && (
                           <div className="onb-model-bar" aria-hidden="true">

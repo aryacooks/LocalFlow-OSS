@@ -29,7 +29,10 @@ mod update;
 mod uninstall;
 mod privacy;
 mod media;
+mod longrec;
 mod snippets;
+#[cfg(target_os = "macos")]
+mod systap;
 mod dravidian;
 mod whisper;
 
@@ -124,6 +127,15 @@ pub fn run() {
                     if !saved_mic.is_empty() {
                         *audio_state.device_name.lock().unwrap() = saved_mic;
                     }
+                    let source: String = db_state
+                        .0
+                        .lock()
+                        .unwrap()
+                        .query_row("SELECT value FROM settings WHERE key = 'audio_source'", [], |r| r.get(0))
+                        .unwrap_or_default();
+                    if source == "system" {
+                        *audio_state.source.lock().unwrap() = source;
+                    }
                 }
 
                 // Restore saved language + romanize choices into the live pipeline
@@ -206,6 +218,8 @@ pub fn run() {
                 pastecard::create(app.handle());
                 privacy::apply_capture_protection(app.handle());
                 media::init(app.handle());
+                // Replace an old llama.cpp that can't load current models.
+                llm::upgrade_if_outdated(app.handle());
                 let _ = APP_HANDLE.set(app.handle().clone());
                 privacy::start_retention_timer(app.handle().clone());
                 privacy::start_fullscreen_watch(app.handle().clone());
@@ -313,6 +327,10 @@ pub fn run() {
             audio::get_amplitude,
             audio::is_recording,
             audio::set_audio_device,
+            audio::set_audio_source,
+            audio::system_audio_supported,
+            audio::start_level_meter,
+            audio::stop_level_meter,
             // Primary key capture (Shortcuts)
             hook::capture_trigger_key,
             update::check_update,
@@ -788,7 +806,14 @@ pub async fn run_pipeline(
 
     // Resample captured audio to 16 kHz mono for Whisper (mics often run at 44.1/48 kHz).
     let audio_data = audio::resample_to_16k(audio_data, capture_rate);
-    let duration_secs = audio_data.len() as f64 / audio::SAMPLE_RATE as f64;
+
+    // Long recordings: earlier pieces were already transcribed while you talked
+    // (longrec.rs). Wait for any still running and put their text first.
+    let (earlier, earlier_secs) = tauri::async_runtime::spawn_blocking(longrec::finish)
+        .await
+        .unwrap_or_default();
+    let earlier_text = earlier.join(" ");
+    let duration_secs = earlier_secs + audio_data.len() as f64 / audio::SAMPLE_RATE as f64;
 
     // Silence gate: bail on near-silent or too-short clips (hotkey tapped with no speech,
     // long silent lead-in). On silence Whisper hallucinates subtitle filler like
@@ -798,7 +823,8 @@ pub async fn run_pipeline(
     } else {
         (audio_data.iter().map(|s| s * s).sum::<f32>() / audio_data.len() as f32).sqrt()
     };
-    if rms < 0.005 || audio_data.len() < audio::SAMPLE_RATE as usize / 2 {
+    let tail_silent = rms < 0.005 || audio_data.len() < audio::SAMPLE_RATE as usize / 2;
+    if tail_silent && earlier_text.is_empty() {
         app.emit(
             "processing-done",
             serde_json::json!({"error": "No speech detected"}),
@@ -851,11 +877,18 @@ pub async fn run_pipeline(
     let prompt = dict_prompt.clone();
 
     let local = tauri::async_runtime::spawn_blocking(move || {
+        // A long recording whose last bit is silence: the earlier pieces are the text.
+        if tail_silent {
+            return Ok(String::new());
+        }
         // Reuses the already-loaded model; only the first dictation after a launch or a
         // model switch pays the disk read.
         whisper::transcribe_with_model(&model_str, &audio_data, &lang, &allowed_langs, &prompt)
     })
     .await;
+    // Transcribed: give the model's memory back right away (it loads again, in the
+    // background, the moment the next dictation starts).
+    whisper::release_after_dictation();
     let raw_text = match local {
         Ok(Ok(text)) => Ok(text),
         // "Sounded like Tamil. Add it in Language Model..." is advice, shown as it is.
@@ -882,6 +915,12 @@ pub async fn run_pipeline(
         }
     };
 
+    let raw = match (earlier_text.is_empty(), raw.trim().is_empty()) {
+        (true, _) => raw,
+        (false, true) => earlier_text.clone(),
+        (false, false) => format!("{} {}", earlier_text, raw.trim()),
+    };
+
     if raw.is_empty() {
         app.emit(
             "processing-done",
@@ -905,9 +944,7 @@ pub async fn run_pipeline(
     let heard = vocab::apply(&raw, &vocab_terms);
 
     let formatted = cleanup::formatting_enabled(&app);
-    // Settings → Writing → Tone per app: your choice wins over LocalFlow's guess.
-    let tone_exe = app_tone_exe(&app, &app_name).unwrap_or_else(|| app_exe.clone());
-    let cleaned = match cleanup::cleanup_text(app.clone(), heard.clone(), tone_exe) {
+    let cleaned = match cleanup::cleanup_text(app.clone(), heard.clone(), app_exe.clone()) {
         Ok(t) => t,
         Err(e) => {
             eprintln!("Cleanup error: {}", e);
@@ -942,7 +979,7 @@ pub async fn run_pipeline(
             }
         }
     } else {
-        // Settings → Writing → Voice snippets.
+        // Formatting options → Voice snippets.
         let snips = app
             .try_state::<DbState>()
             .and_then(|db| db.0.lock().ok().map(|c| snippets::load(&c)))
@@ -1020,7 +1057,6 @@ pub async fn run_pipeline(
     } else {
         tauri::async_runtime::spawn_blocking(inject::focus_snapshot).await.ok()
     };
-    inject::set_keep_on_clipboard(setting_is_true(&app, "keep_on_clipboard"));
     let pasted = inject::inject_text_clipboard(text_to_inject.clone()).await;
     let accepts_text = if into_self {
         Some(inject::self_text_focused())
@@ -1720,6 +1756,31 @@ fn get_notch_geometry() -> notch::NotchGeometry {
 
 static APP_HANDLE: once_cell::sync::OnceCell<tauri::AppHandle> = once_cell::sync::OnceCell::new();
 
+/// Transcribe one piece of a long recording (16 kHz mono) with the same model,
+/// language and dictionary as a normal dictation. Used by longrec.rs.
+pub fn transcribe_piece(audio16: &[f32]) -> Result<String, String> {
+    let app = APP_HANDLE.get().ok_or("App not ready")?;
+    let pipeline = app.state::<Arc<PipelineState>>();
+    let model_path = whisper::get_active_model_path(app)?;
+    let model_str = model_path.to_str().unwrap_or("").to_string();
+    let vocab_terms = vocab::load_from_app(app);
+    let prompt = vocab::whisper_prompt(&vocab_terms);
+    let lang = pipeline.current_language.lock().unwrap().clone();
+    let allowed = pipeline.languages.lock().unwrap().clone();
+    let romanize = *pipeline.romanize.lock().unwrap();
+    let rms = if audio16.is_empty() {
+        0.0
+    } else {
+        (audio16.iter().map(|s| s * s).sum::<f32>() / audio16.len() as f32).sqrt()
+    };
+    if rms < 0.005 {
+        return Ok(String::new()); // a silent stretch
+    }
+    let text = whisper::transcribe_with_model(&model_str, audio16, &lang, &allowed, &prompt)?;
+    let text = if romanize { translit::devanagari_to_latin(&text) } else { text };
+    Ok(vocab::apply(&text, &vocab_terms))
+}
+
 /// The mic just opened: start loading the active speech model in the background.
 pub fn preload_speech_model() {
     let Some(app) = APP_HANDLE.get() else { return };
@@ -1728,29 +1789,6 @@ pub fn preload_speech_model() {
         return; // missing or broken: the pipeline reports that when you stop
     }
     whisper::preload(path.to_string_lossy().to_string());
-}
-
-/// True only if the setting is stored as "true" (missing means off).
-fn setting_is_true(app: &tauri::AppHandle, key: &str) -> bool {
-    let Some(db) = app.try_state::<DbState>() else { return false };
-    let Ok(conn) = db.0.lock() else { return false };
-    conn.query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| r.get::<_, String>(0))
-        .map(|v| v == "true")
-        .unwrap_or(false)
-}
-
-/// The tone the user picked for this app (`app_tones`: {"Slack": "casual", ...}),
-/// as the app token cleanup.rs understands. None = let LocalFlow guess.
-fn app_tone_exe(app: &tauri::AppHandle, app_name: &str) -> Option<String> {
-    let db = app.try_state::<DbState>()?;
-    let conn = db.0.lock().ok()?;
-    let json: String = conn
-        .query_row("SELECT value FROM settings WHERE key = 'app_tones'", [], |r| r.get(0))
-        .ok()?;
-    let map: std::collections::HashMap<String, String> = serde_json::from_str(&json).ok()?;
-    let name = app_name.trim().to_lowercase();
-    let tone = map.iter().find(|(k, _)| k.trim().to_lowercase() == name)?.1;
-    cleanup::exe_for_tone(tone).map(str::to_string)
 }
 
 /// True unless the setting is stored as "false" (missing means on).

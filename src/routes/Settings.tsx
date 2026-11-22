@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Globe, Keyboard, Mic, MonitorCheck, Shield, History, Circle, Volume2, Music, Move, Check, CircleAlert, ExternalLink, Accessibility, RotateCcw, Power, Minus, Plus, PanelTop, ClipboardCopy, Timer, AppWindow, Fingerprint, MonitorOff, Droplet, Music2, MessageSquareQuote, PenLine, ClipboardCheck } from "lucide-react";
+import { Globe, Keyboard, Mic, MonitorCheck, Shield, History, Circle, Volume2, Music, Move, Check, CircleAlert, ExternalLink, Accessibility, RotateCcw, Power, Minus, Plus, PanelTop, ClipboardCopy, Timer, AppWindow, Fingerprint, MonitorOff, Droplet, Music2, AudioLines, Speaker } from "lucide-react";
 import RemoveLocalFlow from "../components/RemoveLocalFlow";
 import { listAudioDevices, setAudioDevice, setSetting, getSetting, setBubbleSize, BUBBLE_SCALE_MIN, BUBBLE_SCALE_MAX, BUBBLE_SCALE_STEP, setBubbleVisible, setEarconsEnabled, setSoundSet, setBubbleMode, getBubblePlacement, setBubblePlacement, getNudgeRange, getPermissionStatus, requestAccessibilityPermission, requestMicrophonePermission, openPrivacySettings, setHistoryRetention, setHideFromCapture, historyLockSupported, unlockHistory, type PermissionStatus, type BubbleMode } from "../lib/ipc";
 import { enable as enableAutostart, disable as disableAutostart, isEnabled as isAutostartEnabled } from "@tauri-apps/plugin-autostart";
@@ -9,9 +9,9 @@ import { useAppStore } from "../lib/store";
 import { toOrbVariant, type OrbVariant } from "../windows/OrbBubble";
 import Dropdown from "../components/Dropdown";
 import { CaptureExample, NoSaveApps } from "../components/PrivacyExtras";
-import { AppTones, SnippetsEditor } from "../components/WritingSettings";
 import OrbStylePicker from "../components/OrbStylePicker";
-import { Link } from "react-router-dom";
+import MicCheck from "../components/MicCheck";
+import { Link, useLocation } from "react-router-dom";
 
 import { langName, parseLanguages } from "../lib/languages";
 
@@ -21,7 +21,9 @@ function Section({
   children,
   attention,
   className,
+  id,
 }: {
+  id?: string;
   title: string;
   children: React.ReactNode;
   /** Pulse the section gold to flag it needs the user's attention (e.g. a missing permission). */
@@ -30,6 +32,7 @@ function Section({
 }) {
   return (
     <section
+      id={id}
       style={{ marginBottom: 18 }}
       className={["settings-section", attention ? "section-attn" : "", className ?? ""].filter(Boolean).join(" ")}
     >
@@ -67,9 +70,9 @@ function SettingRow({
   );
 }
 
-function Switch({ checked, onChange }: { checked: boolean; onChange: () => void }) {
+function Switch({ checked, onChange, disabled }: { checked: boolean; onChange: () => void; disabled?: boolean }) {
   return (
-    <button className={`switch ${checked ? "on" : ""}`} onClick={onChange} aria-pressed={checked}>
+    <button className={`switch ${checked ? "on" : ""}`} onClick={onChange} aria-pressed={checked} disabled={disabled}>
       <span />
     </button>
   );
@@ -156,6 +159,7 @@ function PermissionsSection() {
     <Section
       title={perms.is_macos ? "Permissions (macOS)" : "Permissions (Windows)"}
       attention={missingPermission}
+      id="permissions"
       className="settings-permissions"
     >
       <Row
@@ -383,6 +387,22 @@ function BubbleSizeStepper({
 
 export default function SettingsPage() {
   const { privacyMode, togglePrivacy, language, setLanguage } = useAppStore();
+
+  // "Fix it" on an error links to /settings#audio etc.: scroll there and flash it.
+  const { hash } = useLocation();
+  useEffect(() => {
+    const id = hash.slice(1);
+    if (!id) return;
+    const t = setTimeout(() => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      el.classList.remove("settings-flash");
+      void el.offsetWidth; // restart the animation
+      el.classList.add("settings-flash");
+    }, 120);
+    return () => clearTimeout(t);
+  }, [hash]);
   // Options: auto-detect among the languages chosen on the Language Model page, or
   // pin one of them. (Only the Multilingual flow model hears anything but English.)
   const [myLanguages, setMyLanguages] = useState<string[]>(["en", "hi"]);
@@ -409,7 +429,9 @@ export default function SettingsPage() {
   const [showPasteCard, setShowPasteCard] = useState(true);
   const [orbOpacity, setOrbOpacity] = useState(1);
   const [pauseMedia, setPauseMedia] = useState(true);
-  const [keepOnClipboard, setKeepOnClipboard] = useState(false);
+  const [audioSource, setAudioSourceState] = useState<"mic" | "system">("mic");
+  const [systemSupported, setSystemSupported] = useState(false);
+  const [micCheckOpen, setMicCheckOpen] = useState(false);
   const [retention, setRetention] = useState("0");
   const [hideFromCapture, setHideFromCaptureState] = useState(false);
   const [showCaptureExample, setShowCaptureExample] = useState(false);
@@ -452,7 +474,9 @@ export default function SettingsPage() {
       setOrbOpacity(Number.isFinite(op) ? op : 1);
       setRetention((await getSetting("history_retention_days")) ?? "0");
       setPauseMedia((await getSetting("pause_media")) !== "false");
-      setKeepOnClipboard((await getSetting("keep_on_clipboard")) === "true");
+      const supported = await invoke<boolean>("system_audio_supported").catch(() => false);
+      setSystemSupported(supported);
+      setAudioSourceState(supported && (await getSetting("audio_source")) === "system" ? "system" : "mic");
       setHideFromCaptureState((await getSetting("hide_from_capture")) === "true");
       setLockSupported(await historyLockSupported().catch(() => false));
       setHistoryLock((await getSetting("history_lock")) === "true");
@@ -520,39 +544,9 @@ export default function SettingsPage() {
       <div className="settings-bento-grid">
         <PermissionsSection />
 
-      <Section title="Audio input" className="settings-audio">
-        <SettingRow icon={Mic} label="Microphone" description="Which microphone to listen to">
-          <Dropdown
-            ariaLabel="Microphone"
-            value={selectedDevice}
-            placeholder="No microphones found"
-            options={devices.map((d) => ({ value: d, label: d }))}
-            onChange={(v) => {
-              setSelectedDevice(v);
-              save("mic_device", v);
-              setAudioDevice(v).catch(console.error);
-            }}
-          />
-        </SettingRow>
-        <SettingRow
-          icon={Music2}
-          label="Pause music while dictating"
-          description={isMac
-            ? "Pauses Spotify or Music and turns everything else down while you talk, then puts it back."
-            : "Mutes other sound while you talk, then turns it back on."}
-        >
-          <Switch
-            checked={pauseMedia}
-            onChange={() => {
-              const next = !pauseMedia;
-              setPauseMedia(next);
-              save("pause_media", next ? "true" : "false");
-            }}
-          />
-        </SettingRow>
-      </Section>
 
-      <Section title="Language" className="settings-language">
+      <div className="settings-left-col">
+      <Section title="Language" id="language" className="settings-language">
         <SettingRow icon={Globe} label="Language you speak" description="Pick 'Auto-detect' if you speak more than one. Add languages under Language Model.">
           <Dropdown
             ariaLabel="Language you speak"
@@ -564,7 +558,7 @@ export default function SettingsPage() {
       </Section>
 
 
-      <Section title="Display" className="settings-display">
+      <Section title="Display" id="display" className="settings-display">
         <SettingRow
           icon={PanelTop}
           label="Animation"
@@ -717,8 +711,83 @@ export default function SettingsPage() {
           </SettingRow>
         )}
       </Section>
+      </div>
 
       <div className="settings-right-col">
+      <Section title="Audio input" id="audio" className="settings-audio">
+        {systemSupported && (
+          <SettingRow
+            icon={AudioLines}
+            label="Listen to"
+            description={audioSource === "system"
+              ? "Transcribes what your Mac is playing: videos, calls, voice notes. Your mic isn't used."
+              : "Your voice through the microphone. Pick System audio to transcribe what's playing instead."}
+          >
+            <div className="segmented" role="radiogroup" aria-label="Listen to">
+              {([["mic", "Microphone"], ["system", "System audio"]] as const).map(([id, label]) => (
+                <button
+                  key={id}
+                  type="button"
+                  role="radio"
+                  aria-checked={audioSource === id}
+                  className={`segmented-option ${audioSource === id ? "is-active" : ""}`}
+                  onClick={() => {
+                    setAudioSourceState(id);
+                    save("audio_source", id);
+                    invoke("set_audio_source", { source: id }).catch(console.error);
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </SettingRow>
+        )}
+        {audioSource === "mic" && (
+          <SettingRow icon={Mic} label="Microphone" description="Which microphone to listen to">
+            <Dropdown
+              ariaLabel="Microphone"
+              width={220}
+              value={selectedDevice}
+              placeholder="No microphones found"
+              options={devices.map((d) => ({ value: d, label: d }))}
+              onChange={(v) => {
+                setSelectedDevice(v);
+                save("mic_device", v);
+                setAudioDevice(v).catch(console.error);
+              }}
+            />
+          </SettingRow>
+        )}
+        <SettingRow
+          icon={audioSource === "system" ? Speaker : Volume2}
+          label="Check audio levels"
+          description={audioSource === "system" ? "Play something and see how loud it comes through." : "Talk and watch the meter, to test your mic."}
+        >
+          <button type="button" className="button" onClick={() => setMicCheckOpen(true)}>Check levels</button>
+        </SettingRow>
+        <SettingRow
+          icon={Music2}
+          label="Pause music while dictating"
+          description={audioSource === "system"
+            ? "Off while listening to system audio: that's the sound being transcribed."
+            : isMac
+              ? "Pauses Spotify or Music and turns everything else down while you talk, then puts it back."
+              : "Mutes other sound while you talk, then turns it back on."}
+        >
+          <Switch
+            checked={pauseMedia && audioSource !== "system"}
+            disabled={audioSource === "system"}
+            onChange={() => {
+              const next = !pauseMedia;
+              setPauseMedia(next);
+              save("pause_media", next ? "true" : "false");
+            }}
+          />
+        </SettingRow>
+        <MicCheck open={micCheckOpen} source={audioSource} device={selectedDevice} onClose={() => setMicCheckOpen(false)} />
+      </Section>
+
       <Section title="Startup" className="settings-startup">
         <SettingRow icon={Power} label="Launch at login" description="Open LocalFlow automatically when you start your computer">
           <Switch
@@ -743,7 +812,7 @@ export default function SettingsPage() {
         </SettingRow>
       </Section>
 
-      <Section title="Privacy" className="settings-privacy">
+      <Section title="Privacy" id="privacy" className="settings-privacy">
         <SettingRow icon={Shield} label="Incognito mode" description="Pause saving — nothing you dictate is recorded while this is on">
           <Switch checked={privacyMode} onChange={togglePrivacy} />
         </SettingRow>
@@ -823,39 +892,6 @@ export default function SettingsPage() {
 
 
       </div>
-
-      <Section title="Writing" className="settings-writing">
-        <SettingRow
-          icon={MessageSquareQuote}
-          label="Voice snippets"
-          description="Say a phrase and LocalFlow types saved text instead, like your email, address or a sign-off. Pick phrases you wouldn't say by accident."
-          stacked
-        >
-          <SnippetsEditor />
-        </SettingRow>
-        <SettingRow
-          icon={PenLine}
-          label="Tone per app"
-          description="Casual in chats, formal in email. Used when AI formatting is on (Formatting options); LocalFlow guesses for apps not listed here."
-          stacked
-        >
-          <AppTones />
-        </SettingRow>
-        <SettingRow
-          icon={ClipboardCheck}
-          label="Keep text on the clipboard"
-          description="After pasting, leave your dictation on the clipboard instead of putting back what was there."
-        >
-          <Switch
-            checked={keepOnClipboard}
-            onChange={() => {
-              const next = !keepOnClipboard;
-              setKeepOnClipboard(next);
-              save("keep_on_clipboard", next ? "true" : "false");
-            }}
-          />
-        </SettingRow>
-      </Section>
 
       <section className="privacy-strip settings-privacy-callout">
         <div className="privacy-strip-copy">

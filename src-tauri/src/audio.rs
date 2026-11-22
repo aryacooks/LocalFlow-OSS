@@ -101,6 +101,13 @@ pub struct AudioState {
     /// The actual capture sample rate (device-dependent). Buffer audio is stored at
     /// this rate and resampled to 16 kHz before transcription.
     pub sample_rate: Mutex<u32>,
+    /// "mic" (default) or "system": what Settings → Audio input listens to.
+    pub source: Mutex<String>,
+    /// The system-audio capture while it runs (macOS).
+    #[cfg(target_os = "macos")]
+    pub tap: Mutex<Option<crate::systap::SystemTap>>,
+    /// The mic check in Settings is running (levels only, not a dictation).
+    pub testing: Mutex<bool>,
 }
 
 impl AudioState {
@@ -112,6 +119,10 @@ impl AudioState {
             amplitude: Mutex::new(AudioAmplitude::default()),
             device_name: Mutex::new(String::new()),
             sample_rate: Mutex::new(SAMPLE_RATE),
+            source: Mutex::new("mic".into()),
+            #[cfg(target_os = "macos")]
+            tap: Mutex::new(None),
+            testing: Mutex::new(false),
         }
     }
 }
@@ -128,11 +139,62 @@ pub fn start_capture_internal(
     state: &Arc<AudioState>,
     device_name: Option<String>,
 ) -> Result<(), String> {
+    start_capture(state, device_name, false)
+}
+
+fn listening_to_system(state: &AudioState) -> bool {
+    state.source.lock().map(|s| s.as_str() == "system").unwrap_or(false)
+}
+
+/// Start listening. `test` = the mic check in Settings: levels only, no dictation side
+/// effects (music isn't paused, the model isn't loaded, nothing counts as recording).
+pub fn start_capture(
+    state: &Arc<AudioState>,
+    device_name: Option<String>,
+    test: bool,
+) -> Result<(), String> {
     use cpal::SampleFormat;
+
+    // Anything already open (e.g. the mic check) is replaced.
+    *state.stream.lock().unwrap() = None;
+    #[cfg(target_os = "macos")]
+    {
+        *state.tap.lock().unwrap() = None;
+    }
+    *state.testing.lock().unwrap() = test;
+
+    let system = listening_to_system(state);
+
+    // macOS: what the Mac is playing, through a Core Audio tap.
+    #[cfg(target_os = "macos")]
+    if system {
+        let max_samples = 48_000 * MAX_RECORDING_SECS;
+        {
+            let mut buffer = state.buffer.lock().unwrap();
+            buffer.clear();
+            buffer.shrink_to_fit();
+            buffer.reserve_exact(max_samples);
+        }
+        let st = state.clone();
+        let (tap, rate) = crate::systap::SystemTap::start(Box::new(move |mono: &[f32]| {
+            process_input(mono, 1, &st, max_samples)
+        }))?;
+        *state.sample_rate.lock().unwrap() = rate;
+        *state.tap.lock().unwrap() = Some(tap);
+        return finish_start(state, test, system);
+    }
 
     let host = cpal::default_host();
 
-    let device = if let Some(ref name) = device_name {
+    // Windows: system audio is a "loopback" recording of the speakers.
+    #[cfg(windows)]
+    let loopback = system;
+    #[cfg(not(windows))]
+    let loopback = false;
+
+    let device = if loopback {
+        host.default_output_device().ok_or("No speakers or headphones found to listen to.")?
+    } else if let Some(ref name) = device_name {
         match host
             .input_devices()
             .map_err(|e| e.to_string())?
@@ -160,7 +222,11 @@ pub fn start_capture_internal(
     // Prefer a config that natively supports 16 kHz (no resampling needed);
     // otherwise fall back to the device's default config and resample later.
     // Most macOS mics only support 44.1/48 kHz, so the fallback is the norm there.
-    let supported_config = {
+    let supported_config = if loopback {
+        device
+            .default_output_config()
+            .map_err(|e| format!("Can't listen to system audio: {}", e))?
+    } else {
         let direct = device
             .supported_input_configs()
             .ok()
@@ -244,12 +310,24 @@ pub fn start_capture_internal(
     }
 
     *state.stream.lock().unwrap() = Some(stream);
+    finish_start(state, test, system)
+}
+
+fn finish_start(state: &Arc<AudioState>, test: bool, system: bool) -> Result<(), String> {
+    if test {
+        return Ok(());
+    }
     *state.is_recording.lock().unwrap() = true;
     RECORDING.store(true, std::sync::atomic::Ordering::SeqCst);
+    // No time limit: older audio is transcribed in pieces while you keep talking.
+    crate::longrec::start(state.clone());
     // Load the speech model while you talk, so it's ready when you stop.
     crate::preload_speech_model();
     // Pause / turn down music while you talk (Settings → Pause music while dictating).
-    crate::media::begin();
+    // Never when transcribing system audio: that's the sound we want.
+    if !system {
+        crate::media::begin();
+    }
 
     Ok(())
 }
@@ -411,6 +489,50 @@ pub fn set_audio_device(state: State<'_, Arc<AudioState>>, device_name: String) 
     *state.device_name.lock().unwrap() = device_name;
 }
 
+/// Settings → Audio input → Listen to: "mic" or "system".
+#[tauri::command]
+pub fn set_audio_source(state: State<'_, Arc<AudioState>>, source: String) {
+    *state.source.lock().unwrap() = if source == "system" { "system".into() } else { "mic".into() };
+}
+
+/// Whether "System audio" can be offered here.
+#[tauri::command]
+pub fn system_audio_supported() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        crate::systap::supported()
+    }
+    #[cfg(windows)]
+    {
+        true
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        false
+    }
+}
+
+/// Settings → Check audio levels: listen without dictating; read levels with get_amplitude.
+#[tauri::command]
+pub fn start_level_meter(state: State<'_, Arc<AudioState>>) -> Result<(), String> {
+    if *state.is_recording.lock().unwrap() {
+        return Ok(()); // a dictation is running; its levels are already live
+    }
+    let device = state.device_name.lock().unwrap().clone();
+    let dev = (!device.is_empty()).then_some(device);
+    *state.amplitude.lock().unwrap() = AudioAmplitude::default();
+    start_capture(state.inner(), dev, true)
+}
+
+#[tauri::command]
+pub fn stop_level_meter(state: State<'_, Arc<AudioState>>) {
+    // Only the check's own capture: never cut off a dictation started meanwhile.
+    if *state.testing.lock().unwrap() && !*state.is_recording.lock().unwrap() {
+        stop_capture_internal(state.inner());
+        state.buffer.lock().unwrap().clear();
+    }
+}
+
 #[tauri::command]
 pub fn start_audio_capture(
     state: State<'_, Arc<AudioState>>,
@@ -482,6 +604,11 @@ pub fn set_master_mute(_mute: bool) -> Result<(), String> {
 
 pub fn stop_capture_internal(state: &AudioState) {
     *state.stream.lock().unwrap() = None;
+    #[cfg(target_os = "macos")]
+    {
+        *state.tap.lock().unwrap() = None;
+    }
+    *state.testing.lock().unwrap() = false;
     *state.is_recording.lock().unwrap() = false;
     RECORDING.store(false, std::sync::atomic::Ordering::SeqCst);
     crate::whisper::touch();

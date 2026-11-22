@@ -1,12 +1,10 @@
 import { useEffect, useState } from "react";
-import { Plus, Trash2 } from "lucide-react";
-import Dropdown from "./Dropdown";
-import { AppSearch } from "./PrivacyExtras";
-import { getSetting, listKnownApps, setSetting, type KnownApp } from "../lib/ipc";
+import { MessageSquareQuote, Plus, Trash2 } from "lucide-react";
+import { getSetting, setSetting } from "../lib/ipc";
 
 interface Snippet { trigger: string; text: string }
 
-/** Settings → Writing → Voice snippets (setting `snippets`). */
+/** Formatting options → Voice snippets (setting `snippets`). */
 export function SnippetsEditor() {
   const [list, setList] = useState<Snippet[]>([]);
   const [trigger, setTrigger] = useState("");
@@ -73,63 +71,18 @@ export function SnippetsEditor() {
   );
 }
 
-const TONES = [
-  { value: "auto", label: "Let LocalFlow guess" },
-  { value: "casual", label: "Casual" },
-  { value: "neutral", label: "Neutral" },
-  { value: "formal", label: "Formal" },
-  { value: "notes", label: "Notes" },
-  { value: "code", label: "Code" },
-];
-
-/** Settings → Writing → Tone per app (setting `app_tones`: {"Slack": "casual"}). */
-export function AppTones() {
-  const [tones, setTones] = useState<Record<string, string>>({});
-  const [known, setKnown] = useState<KnownApp[]>([]);
-
-  useEffect(() => {
-    getSetting("app_tones").then((v) => {
-      try { const o = JSON.parse(v ?? "{}"); if (o && typeof o === "object") setTones(o); } catch { /* empty */ }
-    }).catch(() => {});
-    listKnownApps().then(setKnown).catch(() => {});
-  }, []);
-
-  const save = (next: Record<string, string>) => {
-    setTones(next);
-    setSetting("app_tones", JSON.stringify(next)).catch(console.error);
-  };
-  const names = Object.keys(tones);
-  const taken = new Set(names.map((n) => n.toLowerCase()));
-
+/** The snippets editor as a section of Formatting options, styled like the Dictionary. */
+export function SnippetsSection() {
   return (
-    <div className="app-tones">
-      {names.length > 0 && (
-        <ul className="app-tone-list">
-          {names.map((name) => (
-            <li key={name} className="app-tone-item">
-              <span className="app-tone-name">{name}</span>
-              <Dropdown
-                ariaLabel={`Tone in ${name}`}
-                width={170}
-                value={tones[name]}
-                options={TONES}
-                onChange={(v) => save({ ...tones, [name]: v })}
-              />
-              <button type="button" aria-label={`Remove ${name}`} onClick={() => {
-                const next = { ...tones };
-                delete next[name];
-                save(next);
-              }}>
-                <Trash2 size={14} />
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-      <AppSearch
-        apps={known.filter((k) => !taken.has(k.name.toLowerCase()))}
-        onPick={(name) => save({ ...tones, [name]: "casual" })}
-      />
+    <div className="snippets-embedded">
+      <div className="dict-head">
+        <span className="dict-head-icon"><MessageSquareQuote size={20} /></span>
+        <div className="dict-head-text">
+          <h3>Voice snippets</h3>
+          <p>Say a phrase and LocalFlow types saved text instead, like your email, address or a sign-off. A one-word snippet only works when you say just that word; longer phrases also work mid-sentence.</p>
+        </div>
+      </div>
+      <SnippetsEditor />
     </div>
   );
 }

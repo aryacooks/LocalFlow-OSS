@@ -5,6 +5,9 @@
     <!-- "Pause music while dictating": pause Spotify / Apple Music while you talk. -->
     <key>NSAppleEventsUsageDescription</key>
     <string>LocalFlow pauses Spotify or Music while you dictate, then resumes them.</string>
+    <!-- Settings → Audio input → System audio: transcribe what the Mac is playing. -->
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>LocalFlow can transcribe audio playing on your Mac when you choose System audio as the input.</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>LocalFlow needs microphone access to transcribe your voice on-device.</string>
     <!-- Disable App Nap. LocalFlow is a background voice utility whose global MOUSE

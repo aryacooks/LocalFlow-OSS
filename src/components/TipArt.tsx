@@ -223,6 +223,124 @@ const ART: Record<string, ReactNode> = {
       ))}
     </>
   ),
+  // Voice snippets: a short phrase turns into a full block of text.
+  snippets: (
+    <>
+      <g className="a-pop" style={{ transformOrigin: "40px 40px" }}>
+        <path className="n" d="M20 26h40a6 6 0 0 1 6 6v14a6 6 0 0 1-6 6H36l-8 7v-7h-8a6 6 0 0 1-6-6V32a6 6 0 0 1 6-6z" />
+        <path className="i" d="M26 39h28" />
+      </g>
+      <path className="i" d="M74 40h10m-4-4 4 4-4 4" />
+      <g className="a-rise">
+        <rect className="n" x="94" y="18" width="48" height="46" rx="7" />
+        <rect className="t a-fix" x="100" y="26" width="36" height="7" rx="3.5" />
+        <path className="i" d="M101 43h32M101 53h22" />
+      </g>
+    </>
+  ),
+  // Check audio levels: the meter climbs into the green.
+  miccheck: (
+    <>
+      <rect className="n" x="22" y="18" width="116" height="40" rx="8" />
+      <Bars x={48} y={38} cls="a-bar" n={8} />
+      <rect className="n" x="22" y="66" width="116" height="10" rx="5" />
+      <rect className="t a-fix" x="24" y="68" width="74" height="6" rx="3" />
+    </>
+  ),
+  // System audio: sound from the speaker becomes text.
+  sysaudio: (
+    <>
+      <path className="n" d="M26 36h10l14-11v40L36 54H26z" />
+      <path className="i a-breathe" d="M58 34a10 10 0 0 1 0 22" style={{ transformOrigin: "58px 45px" }} />
+      <path className="i a-breathe" d="M65 27a20 20 0 0 1 0 36" style={{ transformOrigin: "58px 45px", animationDelay: ".3s" }} />
+      <path className="i" d="M84 45h10m-4-4 4 4-4 4" />
+      {[32, 45, 58].map((y, j) => (
+        <rect key={y} className="t a-fix" x="104" y={y - 3} width={[34, 26, 30][j]} height="6" rx="3" style={{ animationDelay: `${j * 0.3}s` }} />
+      ))}
+    </>
+  ),
+  // Music pauses while you talk: the note waits, the bars talk.
+  music: (
+    <>
+      <g className="a-float">
+        <path className="i" d="M48 60V26l22-5v32" />
+        <circle className="n" cx="42" cy="60" r="7" />
+        <circle className="n" cx="64" cy="54" r="7" />
+      </g>
+      <rect className="t" x="86" y="30" width="7" height="26" rx="2" />
+      <rect className="t" x="99" y="30" width="7" height="26" rx="2" />
+      <Bars x={116} y={43} cls="a-bar" n={3} />
+    </>
+  ),
+  // Lock History: a padlock over the list.
+  lock: (
+    <>
+      {[26, 42, 58].map((y) => (
+        <path key={y} className="i faint" d={`M24 ${y}h56`} />
+      ))}
+      <g className="a-pop" style={{ transformOrigin: "112px 46px" }}>
+        <path className="i" d="M101 40v-8a11 11 0 0 1 22 0v8" />
+        <rect className="n" x="96" y="40" width="32" height="28" rx="6" />
+        <circle className="t a-breathe" cx="112" cy="54" r="4" />
+      </g>
+    </>
+  ),
+  // Hidden when sharing your screen: you see the orb, the call doesn't.
+  share: (
+    <>
+      <rect className="n" x="16" y="18" width="58" height="42" rx="6" />
+      <circle className="t" cx="62" cy="50" r="5" />
+      <rect className="n" x="86" y="18" width="58" height="42" rx="6" />
+      <circle className="i dash a-vanish" cx="132" cy="50" r="5" />
+      <path className="i" d="M45 72h70" />
+      <path className="i" d="M76 39h8m-3-3 3 3-3 3" />
+    </>
+  ),
+  // Auto-delete history: a clock, and old lines fade away one by one.
+  autodelete: (
+    <>
+      <circle className="n" cx="42" cy="45" r="20" />
+      <path className="i" d="M42 33v12l8 5" />
+      {[28, 45, 62].map((y, j) => (
+        <path key={y} className="i dash a-vanish" d={`M78 ${y}h${[56, 44, 50][j]}`} style={{ animationDelay: `${j * 0.4}s` }} />
+      ))}
+    </>
+  ),
+  // Don't save from these apps: an app tile with a "not saved" slash.
+  nosave: (
+    <>
+      <rect className="n" x="30" y="22" width="44" height="44" rx="11" />
+      <circle className="t" cx="52" cy="44" r="10" />
+      <path className="i" d="M86 44h10m-4-4 4 4-4 4" />
+      <rect className="n" x="106" y="26" width="30" height="36" rx="5" />
+      <path className="i faint" d="M112 36h18M112 46h12" />
+      <path className="ts thick a-pop" d="M104 66l34-44" style={{ transformOrigin: "121px 44px" }} />
+    </>
+  ),
+  // Orb transparency: the same orb, more and more see-through.
+  transparency: (
+    <>
+      <path className="i faint" d="M20 30h120M20 45h120M20 60h120" />
+      {[44, 80, 116].map((cx, j) => (
+        <g key={cx} style={{ opacity: [1, 0.6, 0.3][j] }}>
+          <circle className="n" cx={cx} cy="45" r="13" />
+          <circle className="t a-breathe" cx={cx} cy="45" r="6" style={{ animationDelay: `${j * 0.3}s` }} />
+        </g>
+      ))}
+    </>
+  ),
+  // Full-screen apps: the orb slides down to the real bottom edge.
+  fullscreen: (
+    <>
+      <rect className="n" x="22" y="12" width="116" height="66" rx="6" />
+      <path className="i faint" d="M34 30h60M34 42h44" />
+      <circle className="i dash" cx="122" cy="52" r="6" />
+      <g className="a-rise">
+        <circle className="n" cx="122" cy="68" r="6" />
+        <circle className="t" cx="122" cy="68" r="3" />
+      </g>
+    </>
+  ),
   // Esc cancels: press Esc and the line is dropped.
   esc: (
     <>

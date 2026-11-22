@@ -255,18 +255,6 @@ pub fn app_context(exe: &str) -> &'static str {
     }
 }
 
-/// An app token whose `app_context` is `tone`, for Settings → Tone per app.
-pub fn exe_for_tone(tone: &str) -> Option<&'static str> {
-    match tone {
-        "casual" => Some("slack.exe"),
-        "formal" => Some("outlook.exe"),
-        "code" => Some("code.exe"),
-        "notes" => Some("notion.exe"),
-        "neutral" => Some("neutral"),
-        _ => None, // "auto"
-    }
-}
-
 /// Regex-based cleanup as graceful degradation fallback
 pub fn regex_cleanup(raw: &str) -> String {
     // Resolve spoken self-corrections first, before fillers are stripped (some cues,

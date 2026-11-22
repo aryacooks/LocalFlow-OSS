@@ -460,6 +460,7 @@ fn cancel_recording(
     {
         crate::audio::stop_capture_internal(audio);
         audio.buffer.lock().unwrap().clear();
+        crate::longrec::cancel();
     }
     *pipeline.is_processing.lock().unwrap() = false;
     *pipeline.is_command_mode.lock().unwrap() = false;
