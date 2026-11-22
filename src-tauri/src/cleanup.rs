@@ -330,11 +330,11 @@ static SPOKEN_SUBS: Lazy<Vec<(Regex, &'static str)>> = Lazy::new(|| {
         // comma, world."), so each punctuation command also swallows the commas,
         // semicolons, colons and periods right next to it. Otherwise "comma" came
         // out as ",,".
-        (p(r"(?i)[\s,;:]*\bquestion\s+mark\b[,;:.]?"), "?"),
+        (p(r"(?i)[\s,;:?]*\bquestion\s+mark\b[,;:.?]?"), "?"),
         // "explanation mark/point" is not a slip of the tongue — it is what Whisper
         // reliably hears for "exclamation mark", so the spoken command silently failed.
         (
-            p(r"(?i)[\s,;:]*\b(?:exclamation|explanation)\s+(?:mark|point)\b[,;:.]?"),
+            p(r"(?i)[\s,;:!]*\b(?:exclamation|explanation)\s+(?:mark|point)\b[,;:.!]?"),
             "!",
         ),
         (p(r"(?i)[\s,;:]*\b(?:full\s+stop|full-stop)\b[,;:.]?"), "."),
@@ -342,6 +342,11 @@ static SPOKEN_SUBS: Lazy<Vec<(Regex, &'static str)>> = Lazy::new(|| {
         (p(r"(?i)[\s,;:]*\bcomma\b[,;:.]?"), ","),
         (p(r"(?i)[\s,;:]*\bperiod\b[,;:.]?"), "."),
         (p(r"(?i)[\s,;:]*\bcolon\b[,;:.]?"), ":"),
+        // Parakeet writes "M dash". It also hears "en dash" as "and dash",
+        // which is ambiguous in prose but clear on its own or between operands.
+        (p(r"(?i)[ \t,]*\b(?:em|m)[ \t\-\u{2010}\u{2011}]*dash\b[,.]?[ \t]*"), " — "),
+        (p(r"(?i)[ \t,]*\b(?:en|n|short)[ \t\-\u{2010}\u{2011}]*dash\b[,.]?[ \t]*"), " – "),
+        (p(r"(?i)^\s*and[ \t]+dash\s*[.]?\s*$"), " – "),
     ]
 });
 
@@ -360,7 +365,7 @@ static SPOKEN_SUBS: Lazy<Vec<(Regex, &'static str)>> = Lazy::new(|| {
 // over real dictation history found "less than" 11 times, "plus" 7 and "times" 4, nearly
 // all of it prose — "plus, we shipped it", "three times faster", "less than ideal".
 // Converting those on sight would wreck more text than it fixed, so they convert ONLY
-// between two operands (see `is_operand`). That is enough for "x equals 50" while
+// between two operands (see `math_operand`). That is enough for "x equals 50" while
 // leaving English alone.
 //
 // Patterns use `[ \t]*` rather than `\s*` so a substitution can never swallow a newline
@@ -371,25 +376,30 @@ static SPOKEN_SUBS: Lazy<Vec<(Regex, &'static str)>> = Lazy::new(|| {
 /// A number, or a single letter standing in for a variable. "a", "A" and "I" are
 /// deliberately excluded: they are English words, and without that exclusion
 /// "5 times a day" becomes "5 * a day" — the single most likely false positive here.
-fn is_operand(tok: &str) -> bool {
+fn math_operand(tok: &str) -> Option<&str> {
     if matches!(tok, "a" | "A" | "I") {
-        return false;
+        return None;
+    }
+    // The recognizer leaves a bare "one" ambiguous in prose. An operator with
+    // an operand on each side gives it a numeric meaning here.
+    if tok.eq_ignore_ascii_case("one") {
+        return Some("1");
     }
     let mut chars = tok.chars();
     if let (Some(c), None) = (chars.next(), chars.next()) {
         if c.is_ascii_alphabetic() {
-            return true;
+            return Some(tok);
         }
     }
     // A number, possibly decimal. Rejects bare "." and version-like "1.2.3".
-    tok.chars().any(|c| c.is_ascii_digit())
+    (tok.chars().any(|c| c.is_ascii_digit())
         && tok.chars().all(|c| c.is_ascii_digit() || c == '.')
         && tok.matches('.').count() <= 1
-        && !tok.ends_with('.')
+        && !tok.ends_with('.')).then_some(tok)
 }
 
 // (pattern, symbol). The capture groups are the candidate operands either side; the
-// substitution only happens when `is_operand` accepts both. Longer phrases first, so
+// substitution only happens when `math_operand` accepts both. Longer phrases first, so
 // "greater than or equal to" is not half-matched by "greater than".
 static SPOKEN_OPERATORS: Lazy<Vec<(Regex, &'static str)>> = Lazy::new(|| {
     let op = |spoken: &str, sym: &'static str| {
@@ -419,6 +429,7 @@ static SPOKEN_OPERATORS: Lazy<Vec<(Regex, &'static str)>> = Lazy::new(|| {
         op(r"minus", "-"),
         op(r"times", "*"),
         op(r"modulo", "%"),
+        op(r"and[ \t]+dash", "–"),
     ]
 });
 
@@ -443,41 +454,39 @@ static SPOKEN_SYMBOLS: Lazy<Vec<(Regex, &'static str)>> = Lazy::new(|| {
         (p(r"(?i)[ \t]*\bampersand\b[ \t]*"), " & "),
         (p(r"(?i)[ \t]*\basterisk\b[ \t]*"), " * "),
         (p(r"(?i)[ \t]*\b(?:vertical\s+bar|pipe\s+symbol)\b[ \t]*"), " | "),
-        (p(r"(?i)[ \t]*\bem[\s-]?dash\b[ \t]*"), " — "),
-        (p(r"(?i)[ \t]*\ben[\s-]?dash\b[ \t]*"), " – "),
         // — hug the token on the LEFT —
         (p(r"(?i)[ \t]*\b(?:percent|percentage)\s+sign\b"), "%"),
-        (p(r"(?i)[ \t]*\bdegrees?\s+sign\b"), "°"),
-        (p(r"(?i)[ \t]*\b(?:ellipsis|dot\s+dot\s+dot)\b"), "…"),
+        (p(r"(?i)[ \t]*\bdegrees?\s+(?:sign|sine)\b"), "°"),
+        (p(r"(?i)[ \t]*\b(?:ellipsis|dot\s+dot\s+dot)\b[.]?"), "…"),
         (
-            p(r"(?i)[ \t]*\b(?:close|closing|right)\s+(?:paren|parenthesis|parentheses)\b"),
+            p(r"(?i)[ \t]*\b(?:close|closing|right)\s+(?:round\s+brackets?|parens?|parin|parenthesis|parentheses)\b"),
             ")",
         ),
         (
-            p(r"(?i)[ \t]*\b(?:close|closing|right)\s+(?:square\s+)?bracket\b"),
+            p(r"(?i)[ \t]*\b(?:close|closing|right)\s+(?:square\s+)?brackets?\b"),
             "]",
         ),
         (
-            p(r"(?i)[ \t]*\b(?:close|closing|right)\s+(?:curly\s+)?(?:brace|bracket)\b"),
+            p(r"(?i)[ \t]*\b(?:close|closing|right)\s+(?:curly\s+brackets?|(?:curly\s+)?braces?)\b"),
             "}",
         ),
         (p(r"(?i)[ \t]*\b(?:close|closing)\s+quote\b"), "\""),
         // — hug the token on the RIGHT —
-        (p(r"(?i)[ \t]*\bdollar\s+sign\b[ \t]*"), " $$"),
+        (p(r"(?i)[ \t]*\b(?:dollars?|dolla)\s+(?:sign|sine)\b[ \t]*"), " $"),
         (
             p(r"(?i)[ \t]*\b(?:hash\s*tag|hash\s+sign|pound\s+sign|number\s+sign)\b[ \t]*"),
             " #",
         ),
         (
-            p(r"(?i)[ \t]*\b(?:open|left)\s+(?:paren|parenthesis|parentheses)\b[ \t]*"),
+            p(r"(?i)[ \t]*\b(?:open|left)\s+(?:round\s+brackets?|parens?|parin|parenthesis|parentheses)\b[ \t]*"),
             " (",
         ),
         (
-            p(r"(?i)[ \t]*\b(?:open|left)\s+(?:square\s+)?bracket\b[ \t]*"),
+            p(r"(?i)[ \t]*\b(?:open|left)\s+(?:square\s+)?brackets?\b[ \t]*"),
             " [",
         ),
         (
-            p(r"(?i)[ \t]*\b(?:open|left)\s+(?:curly\s+)?(?:brace|bracket)\b[ \t]*"),
+            p(r"(?i)[ \t]*\b(?:open|left)\s+(?:curly\s+brackets?|(?:curly\s+)?braces?)\b[ \t]*"),
             " {",
         ),
         (p(r"(?i)[ \t]*\bopen\s+quote\b[ \t]*"), " \""),
@@ -486,7 +495,7 @@ static SPOKEN_SYMBOLS: Lazy<Vec<(Regex, &'static str)>> = Lazy::new(|| {
         (p(r"(?i)[ \t]*\bunderscore\b[ \t]*"), "_"),
         (p(r"(?i)[ \t]*\bback[\s-]?slash\b[ \t]*"), "\\"),
         (p(r"(?i)[ \t]*\bforward\s+slash\b[ \t]*"), "/"),
-        (p(r"(?i)[ \t]*\bcaret\b[ \t]*"), "^"),
+        (p(r"(?i)[ \t]*\b(?:(?:caret|carat|carrot)\s+(?:sign|sine|symbol)|caret)\b[ \t]*"), "^"),
         (p(r"(?i)[ \t]*\btilde\b[ \t]*"), "~"),
         (p(r"(?i)[ \t]*\bback[\s-]?tick\b[ \t]*"), "`"),
         (
@@ -497,15 +506,31 @@ static SPOKEN_SYMBOLS: Lazy<Vec<(Regex, &'static str)>> = Lazy::new(|| {
     ]
 });
 
+static SPOKEN_SYMBOL_RE: Lazy<Regex> = Lazy::new(|| {
+    let alternatives = SPOKEN_SYMBOLS
+        .iter()
+        .enumerate()
+        .map(|(i, (pattern, _))| format!("(?P<symbol{i}>{})", pattern.as_str()))
+        .collect::<Vec<_>>()
+        .join("|");
+    Regex::new(&alternatives).unwrap()
+});
+
 /// Convert dictated notation into symbols: named symbols anywhere, bare operators only
 /// between two operands.
 fn apply_spoken_symbols(input: &str) -> String {
-    let mut text = input.to_string();
-
-    for (re, rep) in SPOKEN_SYMBOLS.iter() {
-        text = re.replace_all(&text, *rep).to_string();
-    }
-
+    // Match the original text in one pass. An inserted underscore would hide the
+    // word boundary of the next command in "underscore forward slash".
+    let mut text = SPOKEN_SYMBOL_RE
+        .replace_all(input, |captures: &regex::Captures| {
+            let symbol = captures
+                .iter()
+                .skip(1)
+                .position(|capture| capture.is_some())
+                .expect("a named symbol matched");
+            SPOKEN_SYMBOLS[symbol].1
+        })
+        .into_owned();
     text = SPOKEN_PERCENT_RE.replace_all(&text, "${1}%").to_string();
 
     for (re, sym) in SPOKEN_OPERATORS.iter() {
@@ -515,8 +540,8 @@ fn apply_spoken_symbols(input: &str) -> String {
         for _ in 0..8 {
             let next = re
                 .replace_all(&text, |caps: &regex::Captures| {
-                    if is_operand(&caps[1]) && is_operand(&caps[2]) {
-                        format!("{} {} {}", &caps[1], sym, &caps[2])
+                    if let (Some(left), Some(right)) = (math_operand(&caps[1]), math_operand(&caps[2])) {
+                        format!("{left} {sym} {right}")
                     } else {
                         caps[0].to_string()
                     }
@@ -562,7 +587,9 @@ pub fn apply_spoken_commands(input: &str) -> String {
 /// `commands`: punctuation words, line breaks, "scratch that", symbols.
 /// `emoji`: "laughing emoji" → 😂. `recap`: re-capitalize sentence starts afterwards.
 fn spoken(input: &str, commands: bool, emoji: bool, recap: bool) -> String {
-    let mut text = input.to_string();
+    // Remove stray model punctuation before substitutions, so a deliberately
+    // dictated standalone "comma" or "question mark" survives.
+    let mut text = LEADING_ORPHAN_RE.replace(input, "").into_owned();
     if commands {
         text = spoken_edits(&text);
     }
@@ -579,11 +606,6 @@ fn spoken(input: &str, commands: bool, emoji: bool, recap: bool) -> String {
     text = MULTI_NL_RE.replace_all(&text, "\n\n").to_string();
     text = text.trim().to_string();
     text = TAIL_ORPHAN_RE.replace(&text, "").trim_end().to_string();
-    text = LEADING_ORPHAN_RE
-        .replace(&text, "")
-        .trim_start()
-        .to_string();
-
     // Re-capitalize sentence starts and the first word of each new line.
     if recap { recapitalize(&text) } else { text }
 }
@@ -699,7 +721,7 @@ static TERMINAL_DUP_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"([!?])\.+").unwr
 // Spoken words that place a full stop deliberately. When one of these ends the raw
 // dictation the final period is the user's own, so it is kept.
 static SPOKEN_PERIOD_TAIL_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?i)\b(?:full[\s-]*stop|period)\s*$").unwrap());
+    Lazy::new(|| Regex::new(r"(?i)\b(?:full[\s-]*stop|period)\s*[.,;:]?\s*$").unwrap());
 
 /// Drop the sentence-ending full stop from the very end of a dictation.
 ///
@@ -806,9 +828,6 @@ fn builtin_format(raw: &str, o: FormatOptions) -> String {
     if o.fillers {
         text = strip_fillers(&text);
     }
-    if o.capitals {
-        text = sentence_case(&text);
-    }
     text
 }
 
@@ -822,7 +841,8 @@ pub fn format_dictation(
     if !o.enabled {
         return raw.trim().to_string();
     }
-    let rewritten = if o.ai { ai(o) } else { None };
+    let rewritten = if o.ai { ai(o) } else { None }
+        .map(|text| crate::numbers::restore_digits(text, raw));
     // A small model sometimes answers with its prompt's examples instead of your
     // words. Use its text only when it's clearly a cleaned-up version of what you said.
     let rewritten = rewritten.filter(|t| {
@@ -832,11 +852,33 @@ pub fn format_dictation(
         }
         ok
     });
-    let text = match rewritten {
-        Some(t) => trim_surrounding_quotes(&t),
-        None => builtin_format(raw, o),
-    };
-    finalize(&text, o)
+    let builtin = std::cell::OnceCell::new();
+    let builtin = || builtin.get_or_init(|| finalize(&builtin_format(raw, o), o));
+    if let Some(text) = rewritten {
+        let formatted = finalize(&trim_surrounding_quotes(&text), o);
+        if !o.commands || spoken_marks_preserved(raw, &formatted, builtin) {
+            return formatted;
+        }
+    }
+    builtin().clone()
+}
+
+fn spoken_marks_preserved<'a>(raw: &str, formatted: &str, builtin: impl Fn() -> &'a String) -> bool {
+    SPOKEN_SUBS
+        .iter()
+        .chain(SPOKEN_SYMBOLS.iter())
+        .chain(SPOKEN_OPERATORS.iter())
+        .map(|(pattern, replacement)| (pattern, *replacement))
+        .chain(std::iter::once((&*SPOKEN_PERCENT_RE, "%")))
+        .all(|(pattern, replacement)| {
+            let dictated = pattern.find_iter(raw).count();
+            if dictated == 0 {
+                return true;
+            }
+            let mark = replacement.trim_matches([' ', '\t']);
+            let present = formatted.matches(mark).count();
+            present >= dictated || present >= builtin().matches(mark).count()
+        })
 }
 
 fn content_words(s: &str) -> Vec<String> {
@@ -909,6 +951,14 @@ pub fn build_cleanup_prompt_for(
     } else {
         "- Keep self-corrections exactly as spoken (\"no wait\", \"I mean\"); do not resolve them.\n"
     };
+    let punctuation_rule = if o.commands {
+        r#"- Treat "scratch that", "delete that", "cancel that", and "ignore that" as editing commands: remove the preceding clause and the command itself without leaving stray punctuation.
+- Keep "scratch all that", "delete all that", "clear all that" and "scratch everything" exactly as spoken; they are handled afterwards.
+- Preserve explicitly dictated punctuation, line breaks, brackets, and symbols. Keep an em dash (including "M dash") as an em dash (—), and an en dash as an en dash (–).
+"#
+    } else {
+        "- Keep spoken punctuation, symbol, and editing command words as spoken.\n"
+    };
     // (input, output, removes fillers, resolves a correction)
     const EXAMPLES: &[(&str, &str, bool, bool)] = &[
         ("so um, yesterday i went to the office no i mean i went to the park and like it was raining uh you know",
@@ -936,9 +986,8 @@ Task: Clean up the raw voice transcript to make it clean, natural, and readable.
 Target App Context: {context_hint}
 {style}{vocabulary}
 Rules:
-{filler_rule}{correction_rule}- Treat "scratch that", "delete that", "cancel that", and "ignore that" as editing commands: remove the preceding clause and the command itself without leaving stray punctuation.
-- Keep "scratch all that", "delete all that", "clear all that" and "scratch everything" exactly as spoken; they are handled afterwards.
-- Fix capitalization and basic punctuation.
+{filler_rule}{correction_rule}{punctuation_rule}- Fix capitalization and basic punctuation.
+- Keep numbers written in digits and preserve their values.
 - End each sentence with the punctuation that actually fits it. Questions end with "?" and exclamations with "!". Never append a full stop after a "?" or "!", and never turn a question into a statement.
 - Do NOT put a full stop at the very end of the output. Full stops BETWEEN sentences are required; the last sentence just ends. A final "?" or "!" is kept.
 - Keep any "<name> emoji" phrase exactly as spoken (e.g. "laughing emoji", "thumbs up emoji"); it is turned into the emoji afterwards. Never write the emoji yourself and never drop the phrase.
@@ -953,6 +1002,7 @@ Output: "#,
         raw_text = raw_text,
         filler_rule = filler_rule,
         correction_rule = correction_rule,
+        punctuation_rule = punctuation_rule,
         examples = examples,
     )
 }
@@ -1368,6 +1418,93 @@ mod tests {
     }
 
     #[test]
+    fn advertised_spoken_commands_use_their_documented_marks() {
+        for (input, expected) in [
+            ("comma", ","),
+            ("period.", "."),
+            ("full stop.", "."),
+            ("question mark", "?"),
+            ("exclamation mark", "!"),
+            ("exclamation point", "!"),
+            ("colon", ":"),
+            ("semicolon", ";"),
+            ("dot dot dot.", "…"),
+            ("first new line second next line third new paragraph fourth", "First\nSecond\nThird\n\nFourth"),
+            ("open round bracket hi close round bracket", "(Hi)"),
+            ("open square bracket hi close square bracket", "[Hi]"),
+            ("open curly bracket hi close curly bracket", "{Hi}"),
+            ("open quote hi close quote", "\"Hi\""),
+            ("quotation mark hi quotation mark", "\"Hi\""),
+            ("they apostrophe re", "They're"),
+            ("john at sign example.com", "John@example.com"),
+            ("hashtag test", "#test"),
+            ("dollar sign 50", "$50"),
+            ("50 percent sign", "50%"),
+            ("Tom ampersand Jerry", "Tom & Jerry"),
+            ("asterisk", "*"),
+            ("file underscore name", "File_name"),
+            ("folder forward slash file", "Folder/file"),
+            ("folder backslash file", "Folder\\file"),
+            ("x vertical bar y", "X | y"),
+            ("tilde", "~"),
+            ("x caret sign y", "X^y"),
+            ("backtick", "`"),
+            ("50 degree sign", "50°"),
+            ("ready em dash ship it", "Ready — ship it"),
+            ("5 en dash 10", "5 – 10"),
+            ("5 short dash 10", "5 – 10"),
+            ("5 plus or minus 2", "5 ± 2"),
+            ("x equals fifty", "X = 50"),
+            ("two plus four", "2 + 4"),
+            ("one plus one", "1 + 1"),
+            ("six minus two", "6 - 2"),
+            ("two times three", "2 * 3"),
+            ("four divided by two", "4 / 2"),
+            ("seven multiplied by eight", "7 * 8"),
+            ("two to the power of three", "2 ^ 3"),
+            ("x greater than fifty", "X > 50"),
+            ("x less than fifty", "X < 50"),
+            ("x greater than or equal to fifty", "X >= 50"),
+            ("x less than or equal to fifty", "X <= 50"),
+            ("five modulo two", "5 % 2"),
+            ("fifty percent", "50%"),
+        ] {
+            assert_eq!(finalize_dictation(&crate::numbers::normalize(input)), expected, "{input}");
+        }
+
+        for command in ["scratch that", "delete that", "cancel that", "ignore that"] {
+            let input = format!("Keep this. Remove this {command}, use this.");
+            assert_eq!(finalize_dictation(&input), "Keep this. Use this", "{command}");
+        }
+        for command in ["scratch all that", "delete all that", "clear all that", "scratch everything"] {
+            let input = format!("Discard this. And this {command}, keep this.");
+            assert_eq!(finalize_dictation(&input), "Keep this", "{command}");
+        }
+    }
+
+    #[test]
+    fn spoken_commands_handle_recognizer_variants() {
+        for (input, expected) in [
+            ("M dash.", "—"),
+            ("This is ready, M-dash, ship it.", "This is ready — ship it"),
+            ("And dash.", "–"),
+            ("5 and dash 10", "5 – 10"),
+            ("Turn and dash home.", "Turn and dash home"),
+            ("open parin hi close parin.", "(Hi)"),
+            ("open curly braces hi close curly braces.", "{Hi}"),
+            ("are you there? Question mark yes exclamation point.", "Are you there? Yes!"),
+            ("dolla sine 50", "$50"),
+            ("50 degree sine", "50°"),
+            ("carat sign", "^"),
+            ("x carat sine y", "X^y"),
+            ("x underscore forward slash y", "X_/y"),
+            ("24 carat gold", "24 carat gold"),
+        ] {
+            assert_eq!(finalize_dictation(input), expected, "{input}");
+        }
+    }
+
+    #[test]
     fn identifier_symbols_hug_both_sides() {
         assert_eq!(apply_spoken_commands("my underscore var"), "My_var");
         assert_eq!(
@@ -1573,11 +1710,52 @@ mod options_tests {
     }
 
     #[test]
+    fn ai_rewrite_keeps_recognized_digits() {
+        let options = FormatOptions { ai: true, ..NONE };
+        assert_eq!(format_dictation("50", options, |_| Some("fifty".into())), "50");
+        assert_eq!(
+            format_dictation("order 50 copies. pick one of us", options, |_| {
+                Some("Order fifty copies. Pick one of us".into())
+            }),
+            "Order 50 copies. Pick one of us"
+        );
+        assert_eq!(
+            format_dictation("margin is 50.05 percent", FormatOptions { commands: true, ..options }, |_| {
+                Some("Margin is fifty point zero five percent".into())
+            }),
+            "Margin is 50.05%"
+        );
+    }
+
+    #[test]
+    fn ai_rewrite_preserves_explicit_spoken_marks() {
+        let options = FormatOptions { ai: true, commands: true, ..NONE };
+        let raw = "we can ship this m dash after the review";
+        assert_eq!(format_dictation(raw, options, |_| Some("We can ship this - after the review".into())),
+            "we can ship this — after the review");
+        assert_eq!(format_dictation(raw, options, |_| Some("We can ship this — after the review".into())),
+            "We can ship this — after the review");
+        assert_eq!(format_dictation("use open curly bracket hello close curly bracket", options, |_| {
+            Some("Use hello".into())
+        }), "use {hello}");
+    }
+
+    #[test]
+    fn dictating_an_email_preserves_the_domain() {
+        assert_eq!(
+            run("email john at sign example.com.", FormatOptions::ALL),
+            "Email john@example.com"
+        );
+    }
+
+    #[test]
     fn prompt_follows_the_choices() {
         let all = build_cleanup_prompt_for("x", "", "", "", FormatOptions::ALL);
         assert!(all.contains("Remove filler words") && all.contains("Resolve self-corrections"));
         let keep = build_cleanup_prompt_for("x", "", "", "", FormatOptions { ai: true, ..NONE });
         assert!(!keep.contains("Remove filler words") && !keep.contains("Resolve self-corrections"));
+        assert!(all.contains("Preserve explicitly dictated punctuation"));
+        assert!(keep.contains("Keep spoken punctuation"));
         assert!(!keep.contains("so um, yesterday") && keep.contains("the build is green"));
     }
 

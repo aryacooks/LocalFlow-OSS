@@ -398,7 +398,8 @@ pub fn transcribe_with_model(
     prompt: &str,
 ) -> Result<String, String> {
     if crate::parakeet::is_parakeet(model_path) {
-        return crate::parakeet::transcribe(model_path, audio);
+        return crate::parakeet::transcribe(model_path, audio)
+            .map(|text| crate::numbers::normalize(&text));
     }
     crate::parakeet::unload();
     let ctx = context_for(model_path)?;
@@ -723,7 +724,11 @@ pub fn transcribe_samples(
         // Telugu goes through Kannada; `finish` moves it back to Telugu script.
         let text = chosen.finish(&strip_non_speech(&collapse_repetitions(&collect_segments(&state, audio))));
         if !multilingual || script_ok(&text, allowed) {
-            return Ok(text);
+            return Ok(if chosen.whisper == "en" {
+                crate::numbers::normalize(&text)
+            } else {
+                text
+            });
         }
         eprintln!("[whisper] '{}' decode came back in a foreign script, retrying: {}", chosen.whisper, text);
     }
