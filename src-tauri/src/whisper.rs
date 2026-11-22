@@ -84,6 +84,8 @@ fn spawn_model_reaper() {
                 }
                 if cached.last_used.elapsed() >= MODEL_IDLE_TTL {
                     *cache = None;
+                    drop(cache);
+                    return_freed_memory();
                 }
             })
             .ok();
@@ -155,19 +157,6 @@ pub fn invalidate_model_cache() {
     *MODEL_CACHE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
-}
-
-/// Free the speech model now that a dictation is transcribed (Whisper or Parakeet).
-/// Skipped if a new dictation already started: it has loaded the model for itself.
-/// The model loads again as soon as the next dictation starts (`preload`), while you
-/// talk, so memory is only used while you're actually dictating.
-pub fn release_after_dictation() {
-    if crate::audio::RECORDING.load(std::sync::atomic::Ordering::SeqCst) {
-        return;
-    }
-    invalidate_model_cache();
-    crate::parakeet::unload();
-    return_freed_memory();
 }
 
 /// Hand freed memory back to macOS now. Without this the allocator keeps the pages it

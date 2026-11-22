@@ -59,6 +59,8 @@ fn spawn_reaper() {
                 if let Ok(mut m) = MODEL.try_lock() {
                     if m.as_ref().is_some_and(|l| l.last_used.elapsed() >= IDLE_TTL) {
                         *m = None;
+                        drop(m);
+                        crate::whisper::return_freed_memory();
                     }
                 }
             })

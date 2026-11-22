@@ -3798,3 +3798,26 @@ html.dark .model-state-icon.is-ready { background: #2f6b3c; }
 .model-advice-tag.is-multi { background: var(--oil-green, #073929); color: #f1ece2; }
 html.dark .model-advice-tag.is-multi { background: #2f6b3c; }
 @media (max-width: 640px) { .model-advice-row { flex-direction: column; gap: 6px; } }
+
+/* Formatting options: "What you can say" lists. */
+.fmt-say { margin-top: 10px; }
+.fmt-say > summary {
+  display: inline-flex; align-items: center; gap: 6px; cursor: pointer; list-style: none;
+  font-size: 12.5px; font-weight: 700; color: var(--accent);
+}
+.fmt-say > summary::-webkit-details-marker { display: none; }
+.fmt-say > summary::before { content: "▸"; font-size: 10px; transition: transform .15s ease; }
+.fmt-say[open] > summary::before { transform: rotate(90deg); }
+.fmt-say-body {
+  display: grid; gap: 12px; margin-top: 10px; padding: 12px 14px;
+  border: 2px solid var(--separator); border-radius: 10px; background: var(--control);
+  box-shadow: 2px 2px 0 var(--separator);
+}
+.fmt-say-label { font-size: 11px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: var(--secondary); }
+.fmt-say-note { margin: 3px 0 0; font-size: 12.5px; line-height: 18px; color: var(--label); }
+.fmt-say-words { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
+.fmt-say-words span {
+  padding: 2px 9px; border-radius: 6px; font-size: 12.5px; font-weight: 600; color: var(--label);
+  background: color-mix(in srgb, var(--oil-gold, #fbb927) 22%, var(--panel-solid, var(--panel)));
+  border: 1.5px solid var(--separator-soft);
+}

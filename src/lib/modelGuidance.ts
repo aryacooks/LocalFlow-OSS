@@ -20,4 +20,4 @@ export function recommendationText(ramMb: number, offeredIds: string[] = []): st
 export const MULTILINGUAL_NOTE = "For Hindi, other languages, or mixing them with English, choose Flow Multilingual.";
 
 export const MODEL_MEMORY_NOTE =
-  "The model loads when you start dictating, while you talk, and unloads as soon as your text is ready, so it only uses memory while you dictate.";
+  "The model loads when you start dictating, while you talk, and stays ready for 30 seconds after so quick follow-ups start instantly. Then it unloads and frees the memory.";

@@ -886,9 +886,6 @@ pub async fn run_pipeline(
         whisper::transcribe_with_model(&model_str, &audio_data, &lang, &allowed_langs, &prompt)
     })
     .await;
-    // Transcribed: give the model's memory back right away (it loads again, in the
-    // background, the moment the next dictation starts).
-    whisper::release_after_dictation();
     let raw_text = match local {
         Ok(Ok(text)) => Ok(text),
         // "Sounded like Tamil. Add it in Language Model..." is advice, shown as it is.

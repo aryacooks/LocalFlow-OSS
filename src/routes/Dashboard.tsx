@@ -1089,7 +1089,8 @@ export default function Dashboard() {
 
         {/*
           How recording works. The 8 minutes mirrors CHUNK_SECS in src-tauri/src/longrec.rs,
-          and the unload mirrors whisper::release_after_dictation: change each pair together.
+          and the 30 seconds mirrors MODEL_IDLE_TTL in src-tauri/src/whisper.rs: change
+          each pair together.
         */}
         <div className="dashboard-limits">
           <div className="dashboard-limit-note">
@@ -1102,7 +1103,7 @@ export default function Dashboard() {
           </div>
           <div className="dashboard-limit-note">
             <span className="limit-icon"><FreeIcon /></span>
-            <p><strong>Memory frees itself.</strong> The model loads when you start talking and unloads as soon as your text is ready.</p>
+            <p><strong>Memory frees itself.</strong> The model loads when you start talking and stays ready for 30 s after, then unloads to keep your Mac light.</p>
           </div>
         </div>
       </section>

@@ -17,6 +17,65 @@ import { useAppStore } from "../lib/store";
 // One row per kind of formatting. `key` is the setting; all are on unless switched off.
 // Only `fmt_ai` needs a download, everything else is built in.
 type OptKey = "fmt_fillers" | "fmt_corrections" | "fmt_capitals" | "fmt_commands" | "fmt_emoji" | "fmt_ai";
+/** "What you can say": the exact words each option listens for (see cleanup.rs / emoji.rs). */
+interface SayGroup { label: string; words: string[]; note?: string }
+const MORE: Partial<Record<OptKey, SayGroup[]>> = {
+  fmt_fillers: [
+    { label: "Always removed", words: ["um", "umm", "uh", "uhm", "erm", "hmm", "mhm"] },
+    { label: "Removed when used as filler", note: "At the start of a phrase, before a pause.",
+      words: ["so", "well", "like", "okay", "right", "look", "anyway", "actually", "basically", "literally", "honestly", "seriously", "obviously", "you know", "I mean", "you see", "I guess", "to be honest", "to tell you the truth", "at the end of the day"] },
+    { label: "Removed at the very end", words: ["you know", "I mean", "you see"] },
+    { label: "Hedges", note: "Kept when they mean something, like \u201cwhat kind of person\u201d.", words: ["kind of", "sort of"] },
+    { label: "Always kept", note: "Real meaning stays: \u201cright now\u201d, \u201cI like it\u201d, \u201cso that it works\u201d, \u201cI think\u201d.", words: [] },
+  ],
+  fmt_corrections: [
+    { label: "Say anywhere", note: "Everything just before it is replaced by what comes after.",
+      words: ["no wait", "no actually", "actually no", "I mean", "I meant", "or rather", "or actually"] },
+    { label: "With a pause around it", note: "\u201cat 6, sorry, 8\u201d types \u201cat 8\u201d; \u201cI'm sorry about that\u201d is left alone.",
+      words: ["sorry", "wait", "actually", "no"] },
+  ],
+  fmt_capitals: [
+    { label: "What it does", note: "Capitalises the first word and every word after a full stop, question mark, exclamation mark or new line. The last full stop is dropped; a final ? or ! stays.", words: [] },
+  ],
+  fmt_commands: [
+    { label: "Punctuation", words: ["comma", "period", "full stop", "question mark", "exclamation mark", "exclamation point", "colon", "semicolon", "dot dot dot"] },
+    { label: "Lines", words: ["new line", "next line", "new paragraph"] },
+    { label: "Delete the last part", note: "Removes what you said since the last comma or full stop.",
+      words: ["scratch that", "delete that", "cancel that", "ignore that"] },
+    { label: "Delete everything", note: "Removes all you said before it; only what comes after is typed.",
+      words: ["scratch all that", "delete all that", "clear all that", "scratch everything"] },
+    { label: "Brackets and quotes", words: ["open paren", "close paren", "open bracket", "close bracket", "open curly brace", "close curly brace", "open quote", "close quote", "quotation mark", "apostrophe"] },
+    { label: "Symbols", words: ["at sign", "hashtag", "dollar sign", "percent sign", "ampersand", "asterisk", "underscore", "forward slash", "backslash", "vertical bar", "tilde", "caret", "backtick", "degree sign", "em dash", "en dash", "plus or minus"] },
+    { label: "Maths, between two numbers or letters", note: "\u201cx equals 50\u201d types x = 50, \u201c50 percent\u201d types 50%. In normal sentences these words stay words.",
+      words: ["equals", "plus", "minus", "times", "divided by", "multiplied by", "to the power of", "greater than", "less than", "greater than or equal to", "less than or equal to", "modulo", "percent"] },
+  ],
+  fmt_emoji: [
+    { label: "How", note: "Say the emoji's name, then \u201cemoji\u201d. Around 580 names work, so try the obvious word.",
+      words: ["laughing emoji", "thumbs up emoji", "heart emoji", "fire emoji", "smile emoji", "crying emoji", "party emoji", "rocket emoji", "clapping emoji", "thinking emoji", "eyes emoji", "check mark emoji", "praying emoji", "100 emoji", "sunglasses emoji", "wink emoji"] },
+  ],
+};
+
+function SayList({ groups }: { groups: SayGroup[] }) {
+  return (
+    <details className="fmt-say">
+      <summary>What you can say</summary>
+      <div className="fmt-say-body">
+        {groups.map((g) => (
+          <div key={g.label} className="fmt-say-group">
+            <div className="fmt-say-label">{g.label}</div>
+            {g.note && <p className="fmt-say-note">{g.note}</p>}
+            {g.words.length > 0 && (
+              <div className="fmt-say-words">
+                {g.words.map((w) => <span key={w}>{w}</span>)}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </details>
+  );
+}
+
 const BUILT_IN: { key: OptKey; title: string; desc: string; say: string; get: string }[] = [
   { key: "fmt_fillers", title: "Remove filler words", desc: "Drops \u201cum\u201d, \u201cuh\u201d and \u201cyou know\u201d.",
     say: "um so we should uh ship it", get: "so we should ship it" },
@@ -24,7 +83,7 @@ const BUILT_IN: { key: OptKey; title: string; desc: string; say: string; get: st
     say: "send it to bob no wait to jim", get: "send it to jim" },
   { key: "fmt_capitals", title: "Capital letters", desc: "Starts each sentence with a capital and leaves off the full stop at the very end.",
     say: "sounds good. see you then.", get: "Sounds good. See you then" },
-  { key: "fmt_commands", title: "Spoken punctuation", desc: "Say \u201ccomma\u201d, \u201cquestion mark\u201d, \u201cnew line\u201d or \u201cscratch that\u201d.",
+  { key: "fmt_commands", title: "Spoken punctuation", desc: "Say \u201ccomma\u201d, \u201cquestion mark\u201d, \u201cnew line\u201d, \u201cscratch that\u201d or \u201cscratch all that\u201d.",
     say: "are you free comma today question mark", get: "are you free, today?" },
   { key: "fmt_emoji", title: "Spoken emoji", desc: "Say the name of an emoji followed by \u201cemoji\u201d.",
     say: "nice work thumbs up emoji", get: "nice work \ud83d\udc4d" },
@@ -53,7 +112,9 @@ export default function LLMSettingsPage() {
   
   // Test states
   const [testInput, setTestInput] = useState(
-    "so um, yesterday i went to the office no i mean i went to the park and like it was raining uh you know"
+    // Exercises every option: fillers, a correction, capitals, spoken punctuation and
+    // "scratch that", an emoji, and grammar for the AI rewrite.
+    "um so lets meet on tuesday no wait thursday comma at the office new line can you bring the slides question mark lunch is on me scratch that i dont think their ready yet uh you know thumbs up emoji"
   );
   const [testOutput, setTestOutput] = useState("");
   const [testingInference, setTestingInference] = useState(false);
@@ -223,6 +284,7 @@ export default function LLMSettingsPage() {
               <div className="fmt-opt-title">{o.title} <span className="fmt-badge">Built in</span></div>
               <div className="fmt-opt-desc">{o.desc}</div>
               <div className="fmt-opt-ex"><span>{o.say}</span><ArrowRight size={12} /><b>{o.get}</b></div>
+              {MORE[o.key] && <SayList groups={MORE[o.key]!} />}
             </div>
             <button
               className={`switch ${opts[o.key] ? "on" : ""}`}

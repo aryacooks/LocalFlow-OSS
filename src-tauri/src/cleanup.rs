@@ -307,6 +307,13 @@ fn sentence_case(text: &str) -> String {
 // never in command mode. Tradeoff: literally dictating one of these words gets
 // converted — this is the standard dictation behavior.
 
+// "scratch all that" / "scratch everything" → remove everything said before it.
+// Only phrases nobody says by accident: "start over" and "delete everything" turn up
+// in ordinary sentences ("we need to start over on the design").
+static CMD_CLEAR_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)\b(?:(?:scratch|delete|clear|erase)\s+all\s+(?:of\s+)?that|scratch\s+everything)\b[\s.,!?;:]*").unwrap()
+});
+
 // "scratch/delete/cancel that" → remove the preceding clause.
 static CMD_DELETE_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?i)\b(?:scratch|delete|cancel|ignore)\s+that\b").unwrap());
@@ -585,7 +592,11 @@ fn spoken(input: &str, commands: bool, emoji: bool, recap: bool) -> String {
 fn spoken_edits(input: &str) -> String {
     // 1. Deletions: drop everything from the previous clause boundary up to and
     //    including the "scratch that". Iterates because each edit shifts indices.
-    let mut text = input.to_string();
+    // 0. "Scratch all that": keep only what comes after the last one.
+    let mut text = match CMD_CLEAR_RE.find_iter(input).last() {
+        Some(m) => input[m.end()..].to_string(),
+        None => input.to_string(),
+    };
     while let Some(m) = CMD_DELETE_RE.find(&text) {
         let (start, end) = (m.start(), m.end());
         // The clause to delete sits right before "scratch that", possibly ending in
@@ -926,6 +937,7 @@ Target App Context: {context_hint}
 {style}{vocabulary}
 Rules:
 {filler_rule}{correction_rule}- Treat "scratch that", "delete that", "cancel that", and "ignore that" as editing commands: remove the preceding clause and the command itself without leaving stray punctuation.
+- Keep "scratch all that", "delete all that", "clear all that" and "scratch everything" exactly as spoken; they are handled afterwards.
 - Fix capitalization and basic punctuation.
 - End each sentence with the punctuation that actually fits it. Questions end with "?" and exclamations with "!". Never append a full stop after a "?" or "!", and never turn a question into a statement.
 - Do NOT put a full stop at the very end of the output. Full stops BETWEEN sentences are required; the last sentence just ends. A final "?" or "!" is kept.
@@ -1585,5 +1597,17 @@ mod options_tests {
         assert!(crate::cleanup::plausible_rewrite("i dont think their coming today", "I don't think they're coming today"));
         assert!(crate::cleanup::plausible_rewrite("are you coming question mark", "Are you coming?"));
         assert!(!crate::cleanup::plausible_rewrite("hello", ""));
+    }
+
+    #[test]
+    fn scratch_all_that_clears_everything_before_it() {
+        let o = FormatOptions::ALL;
+        let clean = |t: &str| crate::cleanup::format_dictation(t, FormatOptions { ai: false, ..o }, |_| None);
+        assert_eq!(clean("hello there scratch all that see you tomorrow"), "See you tomorrow");
+        assert_eq!(clean("first idea. delete all of that. second idea"), "Second idea");
+        assert_eq!(clean("one thing scratch everything another thing"), "Another thing");
+        // Ordinary sentences are left alone.
+        assert_eq!(clean("we need to start over on the design"), "We need to start over on the design");
+        assert_eq!(clean("keep this scratch that but this stays"), "But this stays");
     }
 }
