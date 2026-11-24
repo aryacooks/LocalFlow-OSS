@@ -119,6 +119,9 @@ jobs:
           b=src-tauri/target/release/bundle
           mkdir -p out
           cp "$b/dmg/LocalFlow_${VERSION}_aarch64.dmg" out/
+          # Same DMG under a fixed name, so the website can link to
+          # releases/latest/download/LocalFlow_aarch64.dmg without GitHub's rate-limited API.
+          cp "$b/dmg/LocalFlow_${VERSION}_aarch64.dmg" out/LocalFlow_aarch64.dmg
           cp "$b/macos/LocalFlow.app.tar.gz" "out/LocalFlow_${VERSION}_aarch64.app.tar.gz"
           notes=$(git log -1 --pretty=%s)
           repo="${{ github.repository }}"
