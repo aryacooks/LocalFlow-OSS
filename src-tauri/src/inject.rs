@@ -453,12 +453,11 @@ pub fn focused_accepts_text() -> Option<bool> {
         // Ask a few times: an Electron app (Claude, Slack, VS Code…) only builds its
         // tree after the AXManualAccessibility request above, so the first answer can
         // be "nothing focused" even with the cursor in a text box.
-        let mut verdict = None;
         for attempt in 0..3 {
             if attempt > 0 {
                 std::thread::sleep(std::time::Duration::from_millis(120));
             }
-            verdict = classify_focus(sys_ref, &copy);
+            let verdict = classify_focus(sys_ref, &copy);
             if verdict != Some(false) {
                 return verdict;
             }
@@ -473,7 +472,9 @@ pub fn focused_accepts_text() -> Option<bool> {
         if frontmost_is_electron() {
             return None;
         }
-        let Some(app) = focused_app else { return verdict };
+        // Chrome can accept the paste while both system-wide focus queries return
+        // AX_NO_VALUE. Without the app we cannot check its focused window.
+        let app = focused_app?;
         let app_ref = app.as_CFTypeRef() as AXUIElementRef;
         // The system-wide query can come back empty while the app itself knows its
         // focused element; ask it directly before giving up.
@@ -491,6 +492,49 @@ pub fn focused_accepts_text() -> Option<bool> {
             None
         }
     }
+}
+
+/// The frontmost app shows its text boxes through a web engine: Electron apps,
+/// Chromium browsers (Chrome, Edge, Brave, Opera, Vivaldi, Comet), Arc/Dia, Safari or
+/// Firefox. Their accessibility info for web text boxes (Gemini, ChatGPT, Gmail…) is
+/// updated late, so "the text didn't change" can't be trusted there.
+#[cfg(target_os = "macos")]
+fn frontmost_is_web_engine() -> bool {
+    use objc::runtime::Object;
+    use objc::{class, msg_send, sel, sel_impl};
+    use std::ffi::CStr;
+    let (path, bundle) = unsafe {
+        let workspace: *mut Object = msg_send![class!(NSWorkspace), sharedWorkspace];
+        let app: *mut Object = msg_send![workspace, frontmostApplication];
+        if app.is_null() {
+            return false;
+        }
+        let s = |o: *mut Object| -> String {
+            if o.is_null() {
+                return String::new();
+            }
+            let p: *const std::os::raw::c_char = msg_send![o, UTF8String];
+            if p.is_null() { String::new() } else { CStr::from_ptr(p).to_string_lossy().into_owned() }
+        };
+        let url: *mut Object = msg_send![app, bundleURL];
+        let path: *mut Object = if url.is_null() { std::ptr::null_mut() } else { msg_send![url, path] };
+        let id: *mut Object = msg_send![app, bundleIdentifier];
+        (s(path), s(id))
+    };
+    const BROWSERS: &[&str] = &[
+        "com.apple.Safari", "com.apple.SafariTechnologyPreview", "org.mozilla.firefox",
+        "company.thebrowser.Browser", "company.thebrowser.dia",
+    ];
+    if BROWSERS.contains(&bundle.as_str()) {
+        return true;
+    }
+    // Chromium apps ship "<Name> Framework.framework" (Google Chrome Framework,
+    // Microsoft Edge Framework, Electron Framework…).
+    std::fs::read_dir(std::path::Path::new(&path).join("Contents/Frameworks"))
+        .map(|d| {
+            d.flatten().any(|e| e.file_name().to_string_lossy().ends_with(" Framework.framework"))
+        })
+        .unwrap_or(false)
 }
 
 /// True when the frontmost app is built on Electron (it ships Electron Framework).
@@ -747,10 +791,16 @@ pub fn paste_verdict(before: FocusSnapshot) -> Option<bool> {
     }
 
     let texty = before.editable || TEXT_ROLES.contains(&before.role.as_str());
+    let web = frontmost_is_web_engine();
+    eprintln!(
+        "paste verdict: role={} editable={} readable={} web={}",
+        before.role, before.editable, before.sig.is_some(), web
+    );
     if texty {
         // A real text box whose text we could read, and it didn't change: the paste
-        // didn't arrive. Electron apps sometimes report stale text, so trust them.
-        if before.sig.is_some() && !frontmost_is_electron() {
+        // didn't arrive. Web text boxes (browsers, Electron) report their text late,
+        // so there an unchanged reading proves nothing: trust the paste.
+        if before.sig.is_some() && !web {
             return Some(false);
         }
         // Can't read its text (password fields, some editors): it's a text box,
@@ -761,7 +811,8 @@ pub fn paste_verdict(before: FocusSnapshot) -> Option<bool> {
     if NOT_TEXT.contains(&before.role.as_str()) {
         // Electron apps (Claude, Slack…) often report the whole page as focused
         // while the cursor is in their chat box, and the paste lands fine.
-        if before.role == "AXWebArea" && frontmost_is_electron() {
+        // Browsers do the same with rich editors like Gemini's or ChatGPT's box.
+        if before.role == "AXWebArea" && web {
             return None;
         }
         return Some(false);
