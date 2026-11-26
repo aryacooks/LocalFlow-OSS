@@ -159,7 +159,7 @@ const HOW: Record<string, How> = {
   snippets: { steps: [
     <>Open <b>Formatting options</b> and scroll to <b>Voice snippets</b>.</>,
     <>Type a phrase to say (like <Say>my address</Say>) and the text it should become, then press <b>Add</b>.</>,
-    <>Dictate the phrase and the saved text is typed. One-word snippets only work when you say just that word.</>,
+    <>Dictate the phrase and the saved text is typed. One-word snippets work alone or after “my”, like “here is my email”.</>,
   ], go: { label: "Open Formatting options", to: "/llm" } },
   dictionary: { steps: [
     <>Open <b>Formatting options</b> and scroll to <b>Dictionary</b>.</>,

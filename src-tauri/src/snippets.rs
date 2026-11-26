@@ -5,8 +5,10 @@
 ///
 /// - The whole dictation is the phrase ("My email.") → just the saved text, no full stop.
 /// - The phrase inside a sentence ("send it to my email please") → replaced in place,
-///   for phrases of two words or more. A one-word snippet ("email") only fires when it's
-///   all you said, or "I'll send you an email" would turn into the address.
+///   for phrases of two words or more.
+/// - A one-word snippet ("email") fires when it's all you said, or mid-sentence after
+///   "my" ("here is my email" → "here is me@…"). Never on its own mid-sentence, or
+///   "I'll send you an email" would turn into the address.
 /// Matching ignores case, and commas or extra spaces between the phrase's words.
 use regex::Regex;
 use serde::Deserialize;
@@ -52,13 +54,17 @@ pub fn expand(text: &str, snippets: &[Snippet]) -> String {
     let mut out = text.to_string();
     for s in &list {
         let w = words(&s.trigger);
-        if w.len() < 2 {
-            continue;
-        }
-        let pattern = format!(
-            r"(?i)\b{}\b",
-            w.iter().map(|x| regex::escape(x)).collect::<Vec<_>>().join(r"[\s,]+")
-        );
+        let phrase = w.iter().map(|x| regex::escape(x)).collect::<Vec<_>>().join(r"[\s,]+");
+        // One word: only as "my <word>" (the "my" is replaced too, unless the trigger
+        // already starts with it).
+        let pattern = if w.len() < 2 {
+            if w.first().map_or(true, |x| x == "my") {
+                continue;
+            }
+            format!(r"(?i)\bmy[\s,]+{phrase}\b")
+        } else {
+            format!(r"(?i)\b{phrase}\b")
+        };
         if let Ok(re) = Regex::new(&pattern) {
             out = re.replace_all(&out, regex::NoExpand(&s.text)).into_owned();
         }
@@ -106,5 +112,13 @@ mod tests {
         let s = [sn("Email", "me@example.com")];
         assert_eq!(expand("Email.", &s), "me@example.com");
         assert_eq!(expand("I'll send you an email.", &s), "I'll send you an email.");
+    }
+
+    #[test]
+    fn one_word_snippet_after_my() {
+        let s = [sn("Email", "me@example.com")];
+        assert_eq!(expand("Okay, here is my email.", &s), "Okay, here is me@example.com.");
+        assert_eq!(expand("My email is below", &s), "me@example.com is below");
+        assert_eq!(expand("Check your email.", &s), "Check your email.");
     }
 }
