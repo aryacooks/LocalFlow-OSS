@@ -25,8 +25,9 @@ import PlugConnectedIcon from "./components/ui/plug-connected-icon";
 import BugIcon from "./components/ui/bug-icon";
 import type { AnimatedIconHandle } from "./components/ui/types";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { listModels, listAudioDevices, getSetting, isLlamaCliInstalled, listLlmModels, getPermissionStatus, checkUpdate } from "./lib/ipc";
+import { listModels, listAudioDevices, getSetting, isLlamaCliInstalled, listLlmModels, getPermissionStatus } from "./lib/ipc";
 
+import { runCheck, useUpdateStore } from "./lib/updateStore";
 import ThemeTransitionOverlay from "./ThemeTransitionOverlay";
 import OnboardingWizard from "./components/OnboardingWizard";
 
@@ -197,11 +198,12 @@ export default function App() {
   // independently so finishing one (e.g. downloading a model) clears only that reminder.
   const [needModel, setNeedModel] = useState(false);
   // Newer version on the website: checked at launch and every 6 hours.
-  const [updateVersion, setUpdateVersion] = useState<string | null>(null);
+  const updateVersion = useUpdateStore(({ phase }) => phase.kind === "available" ? phase.status.latest : null);
   useEffect(() => {
-    const check = () => checkUpdate().then((u) => setUpdateVersion(u.available ? u.latest : null)).catch(() => {});
-    const first = setTimeout(check, 8000);
-    const every = setInterval(check, 6 * 60 * 60 * 1000);
+    const first = setTimeout(() => {
+      if (useUpdateStore.getState().phase.kind === "idle") void runCheck();
+    }, 8000);
+    const every = setInterval(runCheck, 6 * 60 * 60 * 1000);
     return () => { clearTimeout(first); clearInterval(every); };
   }, []);
   const [needFormatting, setNeedFormatting] = useState(false);
