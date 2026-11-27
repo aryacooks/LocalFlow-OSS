@@ -468,9 +468,8 @@ pub fn run() {
             }
         });
 }
-/// Logical size of the bubble window when it only shows the orb (idle or active).
-const BUBBLE_IDLE_W: f64 = placement::ORB_BOX;
-const BUBBLE_IDLE_H: f64 = placement::ORB_BOX;
+/// Matches IDLE_HIT_SIZE in MicBubble.tsx.
+const IDLE_BUBBLE_SIZE: (f64, f64) = (18.0, 18.0);
 
 fn bubble_scale(monitor_size: tauri::PhysicalSize<u32>, scale_factor: f64) -> f64 {
     let logical_width = monitor_size.width as f64 / scale_factor;
@@ -590,9 +589,6 @@ fn adaptive_scale_for(b: &tauri::WebviewWindow, monitor: &tauri::Monitor) -> f64
 /// right-anchored, so changing the width only moves the LEFT edge — the logo never
 /// shifts on screen.
 fn place_bubble(b: &tauri::WebviewWindow, logical_w: f64, logical_h: f64) {
-    if let Ok(mut last) = LAST_BUBBLE_SIZE.lock() {
-        *last = (logical_w, logical_h);
-    }
     // Notch island: a fixed-size window flush with the top of the notch screen,
     // centred on the notch. Size and position settings don't apply.
     if bubble_is_notch(b.app_handle()) {
@@ -660,7 +656,12 @@ fn place_bubble(b: &tauri::WebviewWindow, logical_w: f64, logical_h: f64) {
     }
 }
 
-static LAST_BUBBLE_SIZE: std::sync::Mutex<(f64, f64)> = std::sync::Mutex::new((BUBBLE_IDLE_W, BUBBLE_IDLE_H));
+static LAST_BUBBLE_SIZE: std::sync::Mutex<(f64, f64)> = std::sync::Mutex::new(IDLE_BUBBLE_SIZE);
+
+fn place_current_bubble(b: &tauri::WebviewWindow) {
+    let (w, h) = LAST_BUBBLE_SIZE.lock().map(|size| *size).unwrap_or(IDLE_BUBBLE_SIZE);
+    place_bubble(b, w, h);
+}
 
 /// Re-place the orb at its current size (e.g. a full-screen app came or went).
 pub fn replace_bubble(app: &tauri::AppHandle) {
@@ -668,8 +669,7 @@ pub fn replace_bubble(app: &tauri::AppHandle) {
         return;
     }
     if let Some(b) = app.get_webview_window("bubble") {
-        let (w, h) = LAST_BUBBLE_SIZE.lock().map(|g| *g).unwrap_or((BUBBLE_IDLE_W, BUBBLE_IDLE_H));
-        place_bubble(&b, w, h);
+        place_current_bubble(&b);
     }
 }
 
@@ -721,7 +721,7 @@ pub fn show_bubble_window(app: &tauri::AppHandle) {
         // field you're dictating into (the caret vanishes, paste lands nowhere). Marking
         // it non-focusable makes show() just order it front without becoming key.
         let _ = b.set_focusable(false);
-        place_bubble(&b, BUBBLE_IDLE_W, BUBBLE_IDLE_H);
+        place_current_bubble(&b);
         let _ = b.show();
         let _ = b.set_always_on_top(true);
         notch::apply_window_mode(&b, bubble_is_notch(app));
@@ -1676,6 +1676,9 @@ fn open_main_window(app: tauri::AppHandle) {
 /// MicBubble as its state changes). Logical CSS-px dimensions; bottom-right anchored.
 #[tauri::command]
 fn resize_bubble(app: tauri::AppHandle, width: f64, height: f64) {
+    if let Ok(mut size) = LAST_BUBBLE_SIZE.lock() {
+        *size = (width, height);
+    }
     // Don't resurrect a hidden bubble when the React side reports a state change.
     if bubble_hidden(&app) {
         return;
@@ -1692,7 +1695,7 @@ fn set_bubble_visible(app: tauri::AppHandle, visible: bool) -> Result<(), String
     if let Some(b) = app.get_webview_window("bubble") {
         if visible {
             let _ = b.set_focusable(false); // never steal focus from the dictation target
-            place_bubble(&b, BUBBLE_IDLE_W, BUBBLE_IDLE_H);
+            place_current_bubble(&b);
             let _ = b.show();
             let _ = b.set_always_on_top(true);
             notch::apply_window_mode(&b, bubble_is_notch(&app));
@@ -1982,7 +1985,7 @@ fn drop_bubble(app: tauri::AppHandle) -> Option<String> {
             }));
             std::thread::sleep(std::time::Duration::from_millis(16));
         }
-        place_bubble(&bw, BUBBLE_IDLE_W, BUBBLE_IDLE_H);
+        place_current_bubble(&bw);
     });
     Some(spot.to_string())
 }

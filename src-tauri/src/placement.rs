@@ -123,6 +123,10 @@ pub const NEIGHBOUR_REACH: f64 = 0.85;
 /// the screen edge.
 pub fn window_origin(spot: &str, orb_at: (f64, f64), orb: f64, w: f64, h: f64) -> (f64, f64) {
     let (row, col) = parts(spot);
+    // An idle window hugs the dot at the centre of the full animation box.
+    if w <= orb && h <= orb {
+        return (orb_at.0 + (orb - w) / 2.0, orb_at.1 + (orb - h) / 2.0);
+    }
     let x = match col {
         'l' => orb_at.0,
         'r' => orb_at.0 + orb - w,

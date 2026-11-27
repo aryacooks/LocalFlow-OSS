@@ -39,6 +39,8 @@ function shortError(text: string): string {
   return t.length > 18 ? "Didn't Work" : t || "Error";
 }
 
+const IDLE_HIT_SIZE = 18;
+
 export default function MicBubble() {
   const [status, setStatus] = useState<"idle" | "recording" | "processing" | "command" | "done">("idle");
   const [bars, setBars] = useState<number[]>(Array(8).fill(0.1));
@@ -180,8 +182,10 @@ export default function MicBubble() {
       // Room for the short label beside the orb (above/below it in the centre column).
       if ((spot[1] ?? "r") === "c") { width = 160; height = ORB_BOX + 30; }
       else { width = ORB_BOX + 150; height = ORB_BOX; }
+    } else if (status === "idle") {
+      width = height = IDLE_HIT_SIZE;
     } else {
-      width = ORB_BOX; height = ORB_BOX; // same box idle and active, so the orb never jumps
+      width = height = ORB_BOX;
     }
     // In notch mode Rust keeps the window at the notch and ignores the size.
     if (mode === "notch") return;
@@ -264,7 +268,7 @@ export default function MicBubble() {
   const hitSize =
     status === "recording" || status === "command" ? 46
     : status === "processing" || status === "done" ? 34
-    : 18;
+    : IDLE_HIT_SIZE;
 
   /* ── Actions ────────────────────────────────────────────────── */
   // Drag the orb anywhere; on release it snaps to the nearest of the 8 spots (Rust).
@@ -366,6 +370,11 @@ export default function MicBubble() {
   const vAnchor = (inset: number): React.CSSProperties =>
     row === "t" ? { top: s(inset) } : { bottom: s(inset) };
 
+  // Keep the canvas centred in the smaller native window while the dot is idle.
+  const compact = status === "idle" && !menuOpen;
+  const boxSize = compact ? IDLE_HIT_SIZE : ORB_BOX;
+  const canvasInset = (boxSize - ORB_BOX) / 2;
+
   if (mode === "notch") {
     return <NotchIsland status={status} bars={bars} isError={isError} text={transcribedText} notch={notch} />;
   }
@@ -383,7 +392,7 @@ export default function MicBubble() {
       }}
     >
       {/* ─── Orb ─── */}
-      <div style={{ position: "absolute", ...hAnchor(0), ...vAnchor(0), pointerEvents: "none", opacity: orbOpacity, transition: "opacity 200ms ease" }}>
+      <div style={{ position: "absolute", ...hAnchor(canvasInset), ...vAnchor(canvasInset), pointerEvents: "none", opacity: orbOpacity, transition: "opacity 200ms ease" }}>
         <OrbBubble
           variant={variant}
           status={status}
@@ -411,11 +420,10 @@ export default function MicBubble() {
         onMouseLeave={() => setLogoHovered(false)}
         style={{
           position: "absolute",
-          ...hAnchor((ORB_BOX - hitSize) / 2),
-          ...vAnchor((ORB_BOX - hitSize) / 2),
+          ...hAnchor((boxSize - hitSize) / 2),
+          ...vAnchor((boxSize - hitSize) / 2),
           width: s(hitSize),
           height: s(hitSize),
-          transition: "width .2s ease, height .2s ease, left .2s ease, right .2s ease, top .2s ease, bottom .2s ease",
           borderRadius: "50%",
           pointerEvents: "auto",
           cursor: drag.current?.moved ? "grabbing" : "pointer",
